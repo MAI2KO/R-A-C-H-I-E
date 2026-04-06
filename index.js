@@ -477,6 +477,11 @@ function renderSettingsView(result, view = "home") {
 const commands = [
 
   new SlashCommandBuilder()
+   .setName("linked-servers")
+   .setDescription("Show all linked Discord servers for this state")
+   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
     .setName("help")
     .setDescription("Show help for using the booking system"),
 
@@ -1276,6 +1281,42 @@ simply run /book again and choose another time.`
       )
       return
     }
+
+    if (interaction.commandName === "linked-servers") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  const result = await postToAppsScript({
+    action: "get_linked_servers_for_current_state",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not load linked servers."}`)
+    return
+  }
+
+  const links = Array.isArray(result.links) ? result.links : []
+
+  if (!links.length) {
+    await interaction.editReply(`State ${result.state_code}\nNo linked Discord servers found.`)
+    return
+  }
+
+  const lines = links.map((link, index) =>
+    `${index + 1}. ${link.discord_server_name || "[unnamed server]"}`
+  )
+
+  await interaction.editReply(
+    `State ${result.state_code}\n\nLinked Discord servers\n${lines.join("\n")}`
+  )
+  return
+}
 
     /* -------------------- SHEET LINK -------------------- */
 
