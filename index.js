@@ -549,26 +549,8 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName("register")
-    .setDescription("Register your player details")
-    .addStringOption(option =>
-      option
-        .setName("alliance")
-        .setDescription("Alliance tag")
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName("name")
-        .setDescription("In game name")
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName("id")
-        .setDescription("Player ID numbers only")
-        .setRequired(true)
-    ),
+   .setName("register")
+   .setDescription("Register your player details"),
 
   new SlashCommandBuilder()
     .setName("my-info")
@@ -702,6 +684,41 @@ function buildLinkStateModal() {
           .setRequired(true)
           .setMaxLength(50)
           .setPlaceholder("Example: myalliancediscord or 9999statediscord")
+      )
+    )
+}
+
+function buildRegisterModal() {
+  return new ModalBuilder()
+    .setCustomId("register_modal")
+    .setTitle("Register player details")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("alliance")
+          .setLabel("Alliance tag")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(3)
+          .setPlaceholder("Example: YOU")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("name")
+          .setLabel("In game name")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(30)
+          .setPlaceholder("Example: NO BEND")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("id")
+          .setLabel("Player ID numbers only")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(20)
+          .setPlaceholder("Example: 8008135")
       )
     )
 }
@@ -1131,6 +1148,47 @@ client.on("interactionCreate", async interaction => {
         )
         return
       }
+
+      if (interaction.customId === "register_modal") {
+  await interaction.deferReply({ flags: 64 })
+
+  const allianceRaw = String(interaction.fields.getTextInputValue("alliance") || "").trim()
+  const name = String(interaction.fields.getTextInputValue("name") || "").trim()
+  const id = String(interaction.fields.getTextInputValue("id") || "").trim()
+
+  const alliance = allianceRaw.toUpperCase()
+
+  if (!/^[A-Z0-9]{3}$/.test(alliance)) {
+    await interaction.editReply("❌ Alliance tag must be 2 to 3 letters or numbers only.")
+    return
+  }
+
+  if (!/^[0-9]+$/.test(id)) {
+    await interaction.editReply("❌ Player ID must contain numbers only.")
+    return
+  }
+
+  const result = await postToAppsScript({
+    action: "register_player_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    discordUserId: interaction.user.id,
+    discordTag: interaction.user.tag,
+    inGameName: name,
+    playerId: id,
+    alliance: alliance
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error}`)
+    return
+  }
+
+  await interaction.editReply(
+    `Registered\nAlliance: ${result.alliance}\nName: ${result.inGameName}\nPlayer ID: ${result.playerId}`
+  )
+  return
+}
 
       if (!interaction.customId.startsWith("book_modal:")) return
 
@@ -1609,33 +1667,9 @@ Use:
     /* -------------------- REGISTER -------------------- */
 
     if (interaction.commandName === "register") {
-      await interaction.deferReply({ flags: 64 })
-
-      const alliance = interaction.options.getString("alliance")
-      const name = interaction.options.getString("name")
-      const id = interaction.options.getString("id")
-
-      const result = await postToAppsScript({
-        action: "register_player_for_server",
-        adminKey: process.env.ADMIN_API_KEY,
-        discordServerId: interaction.guildId,
-        discordUserId: interaction.user.id,
-        discordTag: interaction.user.tag,
-        inGameName: name,
-        playerId: id,
-        alliance: alliance
-      })
-
-      if (!result.ok) {
-        await interaction.editReply(`❌ ${result.error}`)
-        return
-      }
-
-      await interaction.editReply(
-        `Registered\nAlliance: ${result.alliance}\nName: ${result.inGameName}\nPlayer ID: ${result.playerId}`
-      )
-      return
-    }
+  await interaction.showModal(buildRegisterModal())
+  return
+}
 
     /* -------------------- MY INFO -------------------- */
 
