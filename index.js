@@ -477,6 +477,11 @@ function renderSettingsView(result, view = "home") {
 const commands = [
 
   new SlashCommandBuilder()
+   .setName("admin-help")
+   .setDescription("Show admin help for managing the booking system")
+   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
    .setName("linked-servers")
    .setDescription("Show all linked Discord servers for this state")
    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
@@ -1199,61 +1204,36 @@ client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return
 
     if (interaction.commandName === "help") {
-      await interaction.reply({
-        flags: 64,
-        content:
-`R.A.C.H.I.E Minister Booking Bot
-
-USER COMMANDS
+  await interaction.reply(
+`R.A.C.H.I.E User Guide
 
 /register
-Register your in-game name, alliance and player ID.
+Save your alliance, name and player ID.
 
 /book
 Book a minister slot.
 
 /remove-booking
-Cancel your booking.
+Cancel one of your bookings.
 
 /my-bookings
 See your current bookings.
 
 /times
-Check available times for each minister day.
+Check available times for Construction, Research and Troop Training.
+
+/booking-link
+Get the booking page link for this state.
+
+Tip
+
+Register first, then book.
+If a slot is taken, run /book again and choose another time.`
+  )
+  return
+}
 
 
-ADMIN COMMANDS
-
-/setup
-Create a new state booking sheet.
-
-/link-state
-Link this Discord to an existing state.
-
-/unlink-state
-Remove a linked Discord server.
-
-/settings
-Configure booking requirements and limits.
-
-/open-bookings
-Allow players to start booking.
-
-/close-bookings
-Stop new bookings.
-
-/reset-state-password
-Generate a new join password for linking servers.
-
-
-TIP
-
-If a slot is taken while you are booking,
-simply run /book again and choose another time.`
-      })
-
-      return
-    }
 
     if (interaction.commandName === "reset-state-password") {
       await interaction.deferReply({ flags: 64 })
@@ -1281,6 +1261,53 @@ simply run /book again and choose another time.`
       )
       return
     }
+
+    if (interaction.commandName === "admin-help") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  await interaction.editReply(
+`R.A.C.H.I.E Admin Guide
+
+/setup
+Create a new state sheet and link this server.
+
+/link-state
+Link this server to an existing state.
+
+/unlink-state
+Remove a linked Discord server from this state.
+
+/linked-servers
+Show all linked Discord servers for this state.
+
+/settings
+Manage booking requirements and limits.
+
+/sheet-link
+Get the state sheet link.
+
+/open-bookings
+Open bookings and post an announcement in this channel.
+
+/close-bookings
+Close bookings and post an announcement in this channel.
+
+/reset-state-password
+Generate a new join password for server linking.
+
+Tip
+
+The state join password can be reset at any time using /reset-state-password.
+This will not affect any servers that are already linked.
+Only new servers will need the updated password.`
+  )
+  return
+}
 
     if (interaction.commandName === "linked-servers") {
   await interaction.deferReply({ flags: 64 })
