@@ -477,6 +477,11 @@ function renderSettingsView(result, view = "home") {
 const commands = [
 
   new SlashCommandBuilder()
+   .setName("set-announcements")
+   .setDescription("Set the channel for booking announcements")
+   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
    .setName("admin-help")
    .setDescription("Show admin help for managing the booking system")
    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
@@ -1400,6 +1405,32 @@ Only new servers will need the updated password.`
   await interaction.editReply(
     `State ${result.state_code}\n\nLinked Discord servers\n${lines.join("\n")}`
   )
+  return
+}
+
+if (interaction.commandName === "set-announcements") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  const channelId = interaction.channelId
+
+  const result = await postToAppsScript({
+    action: "set_announcement_channel",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    channelId: channelId
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not save channel."}`)
+    return
+  }
+
+  await interaction.editReply("✅ This channel has been set for announcements.")
   return
 }
 
