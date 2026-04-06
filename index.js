@@ -1164,7 +1164,7 @@ client.on("interactionCreate", async interaction => {
   const alliance = allianceRaw.toUpperCase()
 
   if (!/^[A-Z0-9]{3}$/.test(alliance)) {
-    await interaction.editReply("❌ Alliance tag must be 2 to 3 letters or numbers only.")
+    await interaction.editReply("❌ Alliance tag must be 3 letters or numbers only.")
     return
   }
 
