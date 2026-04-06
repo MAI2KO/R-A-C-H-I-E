@@ -477,9 +477,16 @@ function renderSettingsView(result, view = "home") {
 const commands = [
 
   new SlashCommandBuilder()
-   .setName("set-announcements")
-   .setDescription("Set the channel for booking announcements")
-   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  .setName("set-announcements")
+  .setDescription("Set the channel for booking announcements")
+  .addChannelOption(option =>
+    option
+      .setName("channel")
+      .setDescription("Channel to send announcements in")
+      .addChannelTypes(0)
+      .setRequired(true)
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
    .setName("admin-help")
@@ -1416,7 +1423,14 @@ if (interaction.commandName === "set-announcements") {
     return
   }
 
-  const channelId = interaction.channelId
+  const channel = interaction.options.getChannel("channel")
+
+if (!channel || !channel.isTextBased()) {
+  await interaction.editReply("❌ Please select a valid text channel.")
+  return
+}
+
+const channelId = channel.id
 
   const result = await postToAppsScript({
     action: "set_announcement_channel",
