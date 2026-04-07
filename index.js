@@ -271,6 +271,50 @@ async function fetchSettingsForServer(interaction) {
   })
 }
 
+async function sendAnnouncementToLinkedServers(interaction, announcement) {
+  const result = await postToAppsScript({
+    action: "get_linked_servers_for_current_state",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId
+  })
+
+  if (!result.ok) {
+    throw new Error(result.error || "Could not load linked servers.")
+  }
+
+  const links = Array.isArray(result.links) ? result.links : []
+  let sentCount = 0
+
+  for (const link of links) {
+    const channelId = String(link.announcement_channel_id || "").trim()
+    if (!channelId) {
+      continue
+    }
+
+    try {
+      const channel = await client.channels.fetch(channelId)
+
+      if (!channel || !channel.isTextBased()) {
+        continue
+      }
+
+      await channel.send(announcement)
+      sentCount++
+    } catch (error) {
+      console.log(
+        `Could not send announcement to server ${link.discord_server_id}:`,
+        error?.message || error
+      )
+    }
+  }
+
+  return {
+    state_code: result.state_code,
+    total_links: links.length,
+    sent_count: sentCount
+  }
+}
+
 function buildSettingsHomeText(result) {
   const s = result.settings
 
@@ -477,6 +521,23 @@ function renderSettingsView(result, view = "home") {
 const commands = [
 
   new SlashCommandBuilder()
+  .setName("admin-remove-booking")
+  .setDescription("Remove a booking for a player")
+  .addStringOption(option =>
+    option
+      .setName("day")
+      .setDescription("Which booking to remove")
+      .setRequired(true)
+      .addChoices(
+        { name: "Construction", value: "Construction" },
+        { name: "Research", value: "Research" },
+        { name: "Troop", value: "Troop" },
+        { name: "All days", value: "ALL" }
+      )
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
   .setName("set-announcements")
   .setDescription("Set the channel for booking announcements")
   .addChannelOption(option =>
@@ -538,6 +599,11 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
+    .setName("clear-bookings")
+    .setDescription("Clear all booking entries from the booking sheet")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),  
+
+  new SlashCommandBuilder()
     .setName("my-bookings")
     .setDescription("Show your current bookings for this state"),
 
@@ -593,6 +659,11 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
+    .setName("grant-access")
+    .setDescription("Give a user edit access to the booking sheet")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
     .setName("remove-booking")
     .setDescription("Remove your booking")
     .addStringOption(option =>
@@ -639,6 +710,40 @@ client.once("clientReady", () => {
   console.log(`Bot ready: ${client.user.tag}`)
 })
 
+function buildAdminRemoveBookingModal(day) {
+  return new ModalBuilder()
+    .setCustomId(`admin_remove_booking_modal:${day}`)
+    .setTitle("Remove player booking")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("player_id")
+          .setLabel("Player ID")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(20)
+          .setPlaceholder("Enter the player's ID")
+      )
+    )
+}
+
+function buildGrantAccessModal() {
+  return new ModalBuilder()
+    .setCustomId("grant_access_modal")
+    .setTitle("Grant sheet access")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("email")
+          .setLabel("Email address")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(100)
+          .setPlaceholder("example@gmail.com")
+      )
+    )
+}
+
 function buildSetupModal() {
   return new ModalBuilder()
     .setCustomId("setup_modal")
@@ -661,6 +766,23 @@ function buildSetupModal() {
           .setRequired(true)
           .setMaxLength(50)
           .setPlaceholder("Example: myalliancediscord or 9999statediscord")
+      )
+    )
+}
+
+function buildClearBookingsModal() {
+  return new ModalBuilder()
+    .setCustomId("clear_bookings_modal")
+    .setTitle("Clear all bookings")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("confirm")
+          .setLabel('Type CLEAR to confirm')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(5)
+          .setPlaceholder("CLEAR")
       )
     )
 }
@@ -1074,6 +1196,32 @@ client.on("interactionCreate", async interaction => {
       return
     }
 
+    if (interaction.commandName === "grant-access") {
+  if (!userCanManageServer(interaction)) {
+    await interaction.reply({
+      content: "❌ You do not have permission to use this command.",
+      flags: 64
+    })
+    return
+  }
+
+  await interaction.showModal(buildGrantAccessModal())
+  return
+}
+
+    if (interaction.commandName === "clear-bookings") {
+  if (!userCanManageServer(interaction)) {
+    await interaction.reply({
+      content: "❌ You do not have permission to use this command.",
+      flags: 64
+    })
+    return
+  }
+
+  await interaction.showModal(buildClearBookingsModal())
+  return
+}
+
     if (interaction.isModalSubmit()) {
 
       if (interaction.customId === "setup_modal") {
@@ -1105,14 +1253,66 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.editReply(
-          `✅ State ${result.state_code} created\n\n` +
-          `Sheet:\n${result.sheet_url}\n\n` +
-          `Booking page:\n${result.booking_url}\n\n` +
-          `Join password:\n${result.join_password}\n\n` +
-          `Share that password only with trusted server admins.`
-        )
+       `✅ State ${result.state_code} created\n\n` +
+       `Sheet:\n${result.sheet_url}\n\n` +
+       `Booking page:\n${result.booking_url}\n\n` +
+       `Join password:\n${result.join_password}\n\n` +
+       `Share that password only with trusted server admins.\n\n` +
+       `Next step:\n` +
+       `Run /set-announcements and choose the channel where booking updates should be posted.`
+       )
         return
       }
+
+      if (interaction.customId.startsWith("admin_remove_booking_modal:")) {
+  if (!userCanManageServer(interaction)) {
+    await interaction.reply({
+      content: "❌ You do not have permission to use this command.",
+      flags: 64
+    })
+    return
+  }
+
+  await interaction.deferReply({ flags: 64 })
+
+  const day = interaction.customId.split(":")[1]
+  const playerId = String(interaction.fields.getTextInputValue("player_id") || "").trim()
+
+  if (!/^[0-9]+$/.test(playerId)) {
+    await interaction.editReply("❌ Player ID must contain numbers only.")
+    return
+  }
+
+  const result = await postToAppsScript({
+    action: "admin_remove_booking_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    playerId: playerId,
+    day: day
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not remove booking."}`)
+    return
+  }
+
+  if (!result.removed) {
+    await interaction.editReply(`❌ No booking found for player ID ${playerId} on ${day}.`)
+    return
+  }
+
+  if (day === "ALL") {
+    await interaction.editReply(
+      `✅ Removed ${result.removed_count} booking(s) for player ID ${playerId}.`
+    )
+    return
+  }
+
+  await interaction.editReply(
+    `✅ Removed ${day} booking for player ID ${playerId}.`
+  )
+  return
+}
 
       if (interaction.customId === "link_state_modal") {
         if (!userCanManageServer(interaction)) {
@@ -1146,18 +1346,21 @@ client.on("interactionCreate", async interaction => {
 
         if (result.already_linked) {
           await interaction.editReply(
-            `✅ This server is already linked to state ${result.state_code}\n\n` +
-            `Sheet:\n${result.sheet_url}\n\n` +
-            `Booking page:\n${result.booking_url}`
-          )
+          `✅ This server is already linked to state ${result.state_code}\n\n` +
+          `Sheet:\n${result.sheet_url}\n\n` +
+          `Booking page:\n${result.booking_url}\n\n` +
+          `You can run /set-announcements at any time to change where booking updates are posted.`
+         )
           return
         }
 
         await interaction.editReply(
-          `✅ This server is now linked to state ${result.state_code}\n\n` +
-          `Sheet:\n${result.sheet_url}\n\n` +
-          `Booking page:\n${result.booking_url}`
-        )
+        `✅ This server is now linked to state ${result.state_code}\n\n` +
+        `Sheet:\n${result.sheet_url}\n\n` +
+        `Booking page:\n${result.booking_url}\n\n` +
+        `Next step:\n` +
+        `Run /set-announcements and choose the channel where booking updates should be posted.`
+       )
         return
       }
 
@@ -1198,6 +1401,79 @@ client.on("interactionCreate", async interaction => {
 
   await interaction.editReply(
     `Registered\nAlliance: ${result.alliance}\nName: ${result.inGameName}\nPlayer ID: ${result.playerId}`
+  )
+  return
+}
+
+if (interaction.customId === "clear_bookings_modal") {
+  if (!userCanManageServer(interaction)) {
+    await interaction.reply({
+      content: "❌ You do not have permission to use this command.",
+      flags: 64
+    })
+    return
+  }
+
+  await interaction.deferReply({ flags: 64 })
+
+  const confirm = String(interaction.fields.getTextInputValue("confirm") || "").trim()
+
+  if (confirm !== "CLEAR") {
+    await interaction.editReply(
+      "❌ Clear cancelled. You must type CLEAR exactly to wipe all booking entries from the sheet."
+    )
+    return
+  }
+
+  const result = await postToAppsScript({
+    action: "clear_bookings_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not clear bookings."}`)
+    return
+  }
+
+  await interaction.editReply(
+    `✅ All booking entries have been cleared for state ${result.state_code}.`
+  )
+  return
+}
+
+if (interaction.customId === "grant_access_modal") {
+  if (!userCanManageServer(interaction)) {
+    await interaction.reply({
+      content: "❌ You do not have permission to use this command.",
+      flags: 64
+    })
+    return
+  }
+
+  await interaction.deferReply({ flags: 64 })
+
+  const email = String(interaction.fields.getTextInputValue("email") || "").trim()
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    await interaction.editReply("❌ Please enter a valid email address.")
+    return
+  }
+
+  const result = await postToAppsScript({
+    action: "grant_sheet_access_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    email: email
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not grant access."}`)
+    return
+  }
+
+  await interaction.editReply(
+    `✅ ${result.email} now has edit access to the sheet for state ${result.state_code}.`
   )
   return
 }
@@ -1272,6 +1548,20 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (!interaction.isChatInputCommand()) return
+
+    if (interaction.commandName === "admin-remove-booking") {
+  if (!userCanManageServer(interaction)) {
+    await interaction.reply({
+      content: "❌ You do not have permission to use this command.",
+      flags: 64
+    })
+    return
+  }
+
+  const day = interaction.options.getString("day")
+  await interaction.showModal(buildAdminRemoveBookingModal(day))
+  return
+}
 
     if (interaction.commandName === "help") {
   await interaction.reply(
@@ -1444,7 +1734,9 @@ const channelId = channel.id
     return
   }
 
-  await interaction.editReply("✅ This channel has been set for announcements.")
+  await interaction.editReply(
+  `✅ Announcement channel set to #${channel.name}`
+)
   return
 }
 
@@ -1544,12 +1836,16 @@ Use:
 /help`
 
   try {
-    await interaction.channel.send(announcement)
-    await interaction.editReply("✅ Bookings opened and announcement posted in this channel.")
-  } catch (error) {
-    console.error("Could not post open-bookings announcement:", error)
+    const sent = await sendAnnouncementToLinkedServers(interaction, announcement)
+
     await interaction.editReply(
-      "✅ Bookings opened, but I could not post the announcement in this channel. Check my channel permissions."
+      `✅ Bookings opened for state ${sent.state_code}.\n` +
+      `Announcements sent to ${sent.sent_count} linked server channel(s).`
+    )
+  } catch (error) {
+    console.error("Could not send open-bookings announcements:", error)
+    await interaction.editReply(
+      `✅ Bookings opened for state ${result.state_code}, but announcements could not be sent.`
     )
   }
 
@@ -1590,12 +1886,16 @@ Use:
 /help`
 
   try {
-    await interaction.channel.send(announcement)
-    await interaction.editReply("✅ Bookings closed and announcement posted in this channel.")
-  } catch (error) {
-    console.error("Could not post close-bookings announcement:", error)
+    const sent = await sendAnnouncementToLinkedServers(interaction, announcement)
+
     await interaction.editReply(
-      "✅ Bookings closed, but I could not post the announcement in this channel. Check my channel permissions."
+      `✅ Bookings closed for state ${sent.state_code}.\n` +
+      `Announcements sent to ${sent.sent_count} linked server channel(s).`
+    )
+  } catch (error) {
+    console.error("Could not send close-bookings announcements:", error)
+    await interaction.editReply(
+      `✅ Bookings closed for state ${result.state_code}, but announcements could not be sent.`
     )
   }
 
