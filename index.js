@@ -32,6 +32,7 @@ const pendingUnlinks = new Map()
 const pendingBookings = new Map()
 const pendingAdminBookings = new Map()
 const pendingAdminReserves = new Map()
+const pendingAdminRemoveReserved = new Map()
 
 const BOOKING_PAGE_SIZE = 25
 const BOOKING_TTL_MS = 15 * 60 * 1000
@@ -44,9 +45,10 @@ function cleanupPendingSessions() {
   const now = Date.now()
 
   const maps = [
-    pendingBookings,
-    pendingAdminBookings,
-    pendingAdminReserves
+   pendingBookings,
+   pendingAdminBookings,
+   pendingAdminReserves,
+   pendingAdminRemoveReserved
   ]
 
   for (const map of maps) {
@@ -86,6 +88,17 @@ function getPendingAdminReserveOrThrow(token) {
   const entry = pendingAdminReserves.get(token)
   if (!entry) {
     throw new Error("This reserve session has expired. Run /admin-reserve-slots again.")
+  }
+
+  return entry
+}
+
+function getPendingAdminRemoveReservedOrThrow(token) {
+  cleanupPendingSessions()
+
+  const entry = pendingAdminRemoveReserved.get(token)
+  if (!entry) {
+    throw new Error("This reserved-slot removal session has expired. Run /admin-remove-reserved again.")
   }
 
   return entry
@@ -225,6 +238,54 @@ function buildAdminReserveComponents(token, page = 0) {
     content:
       `Admin reserve for ${entry.day}\n` +
       `Select up to 5 time slots\n` +
+      `Page ${safePage + 1} of ${totalPages}`,
+    components: [selectRow, buttons]
+  }
+}
+
+function buildAdminRemoveReservedComponents(token, page = 0) {
+  const entry = getPendingAdminRemoveReservedOrThrow(token)
+  const totalPages = Math.max(1, Math.ceil(entry.times.length / BOOKING_PAGE_SIZE))
+  const safePage = Math.max(0, Math.min(page, totalPages - 1))
+
+  const start = safePage * BOOKING_PAGE_SIZE
+  const pageTimes = entry.times.slice(start, start + BOOKING_PAGE_SIZE)
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`admin_remove_reserved_select:${token}:${safePage}`)
+    .setPlaceholder(pageTimes.length ? "Select reserved slots to remove" : "No reserved slots found")
+    .setDisabled(pageTimes.length === 0)
+    .setMinValues(pageTimes.length ? 1 : 0)
+    .setMaxValues(pageTimes.length ? Math.min(5, pageTimes.length) : 1)
+    .addOptions(
+      pageTimes.length
+        ? pageTimes.map(time => ({
+            label: time,
+            value: time,
+            description: `${entry.day} reserved slot`
+          }))
+        : [{ label: "No reserved slots", value: "none", description: "No reserved slots" }]
+    )
+
+  const selectRow = new ActionRowBuilder().addComponents(select)
+
+  const buttons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`admin_remove_reserved_page:${token}:${safePage - 1}`)
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage <= 0),
+    new ButtonBuilder()
+      .setCustomId(`admin_remove_reserved_page:${token}:${safePage + 1}`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage >= totalPages - 1)
+  )
+
+  return {
+    content:
+      `Admin remove reserved slots for ${entry.day}\n` +
+      `Select up to 5 reserved time slots\n` +
       `Page ${safePage + 1} of ${totalPages}`,
     components: [selectRow, buttons]
   }
@@ -978,6 +1039,22 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
+    .setName("admin-remove-reserved")
+    .setDescription("Remove reserved booking slots")
+    .addStringOption(option =>
+      option
+        .setName("day")
+        .setDescription("Which day")
+        .setRequired(true)
+        .addChoices(
+          { name: "Construction", value: "Construction" },
+          { name: "Research", value: "Research" },
+          { name: "Troop", value: "Troop" }
+        )
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
     .setName("reset-state-password")
     .setDescription("Generate a new join password for a state")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
@@ -1357,6 +1434,65 @@ client.on("interactionCreate", async interaction => {
         return
       }
 
+      if (interaction.customId.startsWith("admin_remove_reserved_select:")) {
+  const [, token] = interaction.customId.split(":")
+  const entry = getPendingAdminRemoveReservedOrThrow(token)
+
+  if (interaction.user.id !== entry.requestedBy) {
+    await interaction.reply({
+      content: "❌ This reserved-slot removal menu belongs to someone else.",
+      flags: 64
+    })
+    return
+  }
+
+  const times = interaction.values.filter(v => v && v !== "none")
+
+  if (!times.length) {
+    await interaction.reply({
+      content: "❌ No valid reserved slots selected.",
+      flags: 64
+    })
+    return
+  }
+
+  await interaction.deferUpdate()
+
+  const result = await postToAppsScript({
+    action: "admin_remove_reserved_slots_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    day: entry.day,
+    times: times
+  })
+
+  pendingAdminRemoveReserved.delete(token)
+
+  if (!result.ok) {
+    await interaction.editReply({
+      content: `❌ ${result.error || "Could not remove reserved slots."}`,
+      components: []
+    })
+    return
+  }
+
+  let message = `✅ Removed ${result.count} reserved slot(s) for ${result.day}`
+
+  if (Array.isArray(result.times) && result.times.length) {
+    message += `\nRemoved: ${result.times.join(", ")}`
+  }
+
+  if (Array.isArray(result.failed) && result.failed.length) {
+    message += `\nFailed: ${result.failed.map(x => `${x.time} (${x.error})`).join(", ")}`
+  }
+
+  await interaction.editReply({
+    content: message,
+    components: []
+  })
+  return
+}
+
       return
     }
 
@@ -1508,6 +1644,25 @@ client.on("interactionCreate", async interaction => {
         await interaction.update(ui)
         return
       }
+
+      if (interaction.customId.startsWith("admin_remove_reserved_page:")) {
+        const [, token, pageRaw] = interaction.customId.split(":")
+        const entry = getPendingAdminRemoveReservedOrThrow(token)
+
+        if (interaction.user.id !== entry.requestedBy) {
+         await interaction.reply({
+           content: "❌ This reserved-slot removal menu belongs to someone else.",
+           flags: 64
+          })
+           return
+        }
+
+          const page = parseInt(pageRaw, 10) || 0
+          const ui = buildAdminRemoveReservedComponents(token, page)
+
+          await interaction.update(ui)
+          return
+        }
 
       return
     }
@@ -2352,6 +2507,48 @@ Use:
           `✅ Bookings closed for state ${result.state_code}, but announcements could not be sent.`
         )
       }
+
+      if (interaction.commandName === "admin-remove-reserved") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  const day = interaction.options.getString("day")
+
+  const result = await postToAppsScript({
+    action: "get_reserved_times_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    day: day
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not load reserved slots."}`)
+    return
+  }
+
+  if (!Array.isArray(result.times) || result.times.length === 0) {
+    await interaction.editReply(`❌ No reserved slots found for ${day}.`)
+    return
+  }
+
+  const token = createBookingToken()
+
+  pendingAdminRemoveReserved.set(token, {
+    createdAt: Date.now(),
+    discordServerId: interaction.guildId,
+    requestedBy: interaction.user.id,
+    day: day,
+    times: result.times
+  })
+
+  const ui = buildAdminRemoveReservedComponents(token, 0)
+  await interaction.editReply(ui)
+  return
+}
 
       return
     }
