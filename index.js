@@ -905,6 +905,11 @@ const commands = [
         )
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  
+  new SlashCommandBuilder()
+    .setName("setup-help")
+    .setDescription("Show setup instructions for admins")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),  
 
   new SlashCommandBuilder()
     .setName("set-announcements")
@@ -982,7 +987,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("times")
-    .setDescription("Check available times")
+    .setDescription("Check available times and the current booking date")
     .addStringOption(option =>
       option
         .setName("day")
@@ -2180,7 +2185,7 @@ client.on("interactionCreate", async interaction => {
   await interaction.editReply(
     `✅ ${result.day} date updated.\n` +
     `Date: ${result.display_date}\n` +
-    `Stored as: ${result.iso_date}\n` +
+    `Stored as: ${result.iso_date}\n` + 
     `Time zone: UTC`
   )
   return
@@ -2311,11 +2316,11 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "help") {
-      await interaction.reply(
+  await interaction.reply(
 `R.A.C.H.I.E User Guide
 
 /register
-Save your alliance, name and player ID.
+Set your alliance, name and player ID.
 
 /book
 Book a minister slot.
@@ -2326,8 +2331,11 @@ Cancel one of your bookings.
 /my-bookings
 See your current bookings.
 
+/my-info
+See your saved player details.
+
 /times
-Check available times for Construction, Research and Troop Training.
+Check available times and the current UTC booking date for Construction, Research and Troop Training.
 
 /booking-link
 Get the booking page link for this state.
@@ -2335,10 +2343,11 @@ Get the booking page link for this state.
 Tip
 
 Register first, then book.
+All booking times are in UTC.
 If a slot is taken, run /book again and choose another time.`
-      )
-      return
-    }
+  )
+  return
+}
 
     if (interaction.commandName === "reset-state-password") {
       await interaction.deferReply({ flags: 64 })
@@ -2367,19 +2376,22 @@ If a slot is taken, run /book again and choose another time.`
       return
     }
 
-    if (interaction.commandName === "admin-help") {
-      await interaction.deferReply({ flags: 64 })
+   if (interaction.commandName === "admin-help") {
+  await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
-        await interaction.editReply("❌ You do not have permission to use this command.")
-        return
-      }
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
 
-      await interaction.editReply(
+  await interaction.editReply(
 `R.A.C.H.I.E Admin Guide
 
 /setup
 Create a new state sheet and link this server.
+
+/setup-help
+Show full setup instructions and settings help.
 
 /link-state
 Link this server to an existing state.
@@ -2390,11 +2402,20 @@ Remove a linked Discord server from this state.
 /linked-servers
 Show all linked Discord servers for this state.
 
+/set-announcements
+Choose which channel receives booking announcements.
+
 /settings
 Manage booking requirements and limits.
 
+/set-booking-date
+Set the UTC booking date for Construction, Research or Troop.
+
 /sheet-link
-Get the state sheet link.
+Get the state sheet link and booking page link.
+
+/booking-link
+Get the booking page link only.
 
 /open-bookings
 Open bookings and post announcements to linked servers.
@@ -2402,17 +2423,128 @@ Open bookings and post announcements to linked servers.
 /close-bookings
 Close bookings and post announcements to linked servers.
 
+/admin-add-booking
+Add a booking for a player.
+
+/admin-remove-booking
+Remove a booking for a player.
+
+/admin-reserve-slots
+Reserve up to 5 slots at once.
+
+/admin-remove-reserved
+Remove reserved slots.
+
+/clear-bookings
+Clear all booking entries from the sheet.
+
+/grant-access
+Give a trusted user edit access to the sheet.
+
 /reset-state-password
-Generate a new join password for server linking.
+Generate a new join password for future server linking.
 
 Tip
 
 The state join password can be reset at any time using /reset-state-password.
-This will not affect any servers that are already linked.
+This will not affect servers that are already linked.
 Only new servers will need the updated password.`
-      )
-      return
-    }
+  )
+  return
+}
+    if (interaction.commandName === "setup-help") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  await interaction.editReply(
+`R.A.C.H.I.E Setup Guide
+
+1. Create or link a state
+
+Use /setup if this is a brand new state.
+This creates the state sheet, booking page and join password.
+
+Use /link-state if the state already exists and this Discord should connect to it.
+
+2. Set the announcement channel
+
+Use /set-announcements and choose the channel where booking updates should be posted.
+
+This lets /open-bookings and /close-bookings send notices to linked servers.
+
+3. Optional sheet edit access
+
+Use /grant-access to give someone edit access to the Google Sheet.
+
+Only give this to trusted admins.
+Anyone with sheet edit access can change dates, bookings and settings directly in the sheet.
+
+4. Opening and closing bookings
+
+Use /open-bookings to allow players to book.
+Use /close-bookings to stop new bookings.
+
+5. Linking more Discord servers
+
+Use /link-state on other alliance Discord servers if they should share the same state sheet.
+Use /linked-servers to view all linked servers.
+Use /unlink-state to remove one.
+
+6. Admin booking tools
+
+Use /admin-add-booking to place a booking for a player.
+Use /admin-remove-booking to remove a player's booking.
+Use /admin-reserve-slots to block time slots as reserved.
+Use /admin-remove-reserved to remove reserved time slots.
+
+7. Booking date management
+
+Use /set-booking-date to set the UTC date for Construction, Research or Troop.
+Admins with sheet edit access can also change these dates directly in the sheet.
+
+8. Settings explained
+
+Use /settings to manage booking rules.
+
+Construction settings
+Choose whether FC, RFC and speed-ups must be entered when booking Construction.
+
+Research settings
+Choose whether shards and speed-ups must be entered when booking Research.
+
+Troop settings
+Choose whether speed-ups must be entered when booking Troop.
+
+Max bookings per player per day
+Controls how many booking actions a player can make in one day.
+
+Max linked Discord servers
+Controls how many Discord servers can be attached to the same state.
+
+9. Useful links
+
+Use /sheet-link to get the sheet and booking page.
+Use /booking-link to get just the booking page.
+
+10. Need to reset state access
+
+Use /reset-state-password to generate a new join password for future server links.
+
+Tip
+
+Recommended setup order:
+ /setup or /link-state
+ /set-announcements
+ /settings
+ /set-booking-date
+ /open-bookings`
+  )
+  return
+}
 
     if (interaction.commandName === "linked-servers") {
       await interaction.deferReply({ flags: 64 })
