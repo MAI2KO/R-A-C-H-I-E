@@ -2464,84 +2464,46 @@ Only new servers will need the updated password.`
 `R.A.C.H.I.E Setup Guide
 
 1. Create or link a state
+Use /setup for a new state.
+Use /link-state if the state already exists.
 
-Use /setup if this is a brand new state.
-This creates the state sheet, booking page and join password.
-
-Use /link-state if the state already exists and this Discord should connect to it.
-
-2. Set the announcement channel
-
-Use /set-announcements and choose the channel where booking updates should be posted.
-
-This lets /open-bookings and /close-bookings send notices to linked servers.
+2. Set announcements
+Use /set-announcements to choose where booking updates are posted.
 
 3. Optional sheet edit access
+Use /grant-access to give a trusted admin edit access to the sheet.
 
-Use /grant-access to give someone edit access to the Google Sheet.
-
-Only give this to trusted admins.
-Anyone with sheet edit access can change dates, bookings and settings directly in the sheet.
-
-4. Opening and closing bookings
-
-Use /open-bookings to allow players to book.
+4. Open or close bookings
+Use /open-bookings to allow booking.
 Use /close-bookings to stop new bookings.
 
-5. Linking more Discord servers
-
-Use /link-state on other alliance Discord servers if they should share the same state sheet.
-Use /linked-servers to view all linked servers.
+5. Link more Discord servers
+Use /link-state on other alliance servers.
+Use /linked-servers to view them.
 Use /unlink-state to remove one.
 
 6. Admin booking tools
+/admin-add-booking
+/admin-remove-booking
+/admin-reserve-slots
+/admin-remove-reserved
 
-Use /admin-add-booking to place a booking for a player.
-Use /admin-remove-booking to remove a player's booking.
-Use /admin-reserve-slots to block time slots as reserved.
-Use /admin-remove-reserved to remove reserved time slots.
+7. Booking dates
+Use /set-booking-date to set the UTC date for each minister day.
 
-7. Booking date management
-
-Use /set-booking-date to set the UTC date for Construction, Research or Troop.
-Admins with sheet edit access can also change these dates directly in the sheet.
-
-8. Settings explained
-
-Use /settings to manage booking rules.
-
-Construction settings
-Choose whether FC, RFC and speed-ups must be entered when booking Construction.
-
-Research settings
-Choose whether shards and speed-ups must be entered when booking Research.
-
-Troop settings
-Choose whether speed-ups must be entered when booking Troop.
-
-Max bookings per player per day
-Controls how many booking actions a player can make in one day.
-
-Max linked Discord servers
-Controls how many Discord servers can be attached to the same state.
+8. Settings
+Use /settings to control required booking fields, booking limits and linked server limits.
 
 9. Useful links
+Use /sheet-link for the sheet and booking page.
+Use /booking-link for the booking page only.
 
-Use /sheet-link to get the sheet and booking page.
-Use /booking-link to get just the booking page.
-
-10. Need to reset state access
-
-Use /reset-state-password to generate a new join password for future server links.
-
-Tip
-
-Recommended setup order:
- /setup or /link-state
- /set-announcements
- /settings
- /set-booking-date
- /open-bookings`
+Recommended order
+/setup or /link-state
+/set-announcements
+/settings
+/set-booking-date
+/open-bookings`
   )
   return
 }
