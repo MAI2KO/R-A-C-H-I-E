@@ -1080,6 +1080,46 @@ const commands = [
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
+    new SlashCommandBuilder()
+     .setName("set-booking-date")
+     .setDescription("Set the booking date for a minister day")
+     .addStringOption(option =>
+       option
+        .setName("day")
+        .setDescription("Which day")
+        .setRequired(true)
+        .addChoices(
+          { name: "Construction", value: "Construction" },
+          { name: "Research", value: "Research" },
+          { name: "Troop", value: "Troop" }
+        )
+      )
+     .addIntegerOption(option =>
+        option
+        .setName("year")
+        .setDescription("Year in UTC")
+        .setRequired(true)
+        .setMinValue(2024)
+        .setMaxValue(2100)
+      )
+      .addIntegerOption(option =>
+        option
+         .setName("month")
+         .setDescription("Month number")
+         .setRequired(true)
+         .setMinValue(1)
+         .setMaxValue(12)
+      )
+      .addIntegerOption(option =>
+        option
+         .setName("day_of_month")
+         .setDescription("Day of month")
+         .setRequired(true)
+         .setMinValue(1)
+         .setMaxValue(31)
+      )
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  
   new SlashCommandBuilder()
     .setName("remove-booking")
     .setDescription("Remove your booking")
@@ -1143,6 +1183,11 @@ client.on("interactionCreate", async interaction => {
 
         await interaction.deferUpdate()
 
+        await interaction.editReply({
+          content: "⏳ Updating settings...",
+          components: []
+        })
+
         const value = interaction.values[0]
 
         const updateResult = await postToAppsScript({
@@ -1179,6 +1224,11 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.deferUpdate()
+
+         await interaction.editReply({
+          content: "⏳ Updating settings...",
+          components: []
+        })
 
         const value = interaction.values[0]
 
@@ -1238,6 +1288,11 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.deferUpdate()
+
+         await interaction.editReply({
+          content: `⏳ Booking ${time} for ${entry.day}...`,
+          components: []
+        })
 
         const result = await submitBookingFromEntry(entry)
 
@@ -1334,6 +1389,11 @@ client.on("interactionCreate", async interaction => {
 
         await interaction.deferUpdate()
 
+         await interaction.editReply({
+          content: `⏳ Reserving selected slot(s) for ${entry.day}...`,
+          components: []
+        })
+
         const result = await postToAppsScript({
           action: "admin_reserve_slots_for_server",
           adminKey: process.env.ADMIN_API_KEY,
@@ -1390,6 +1450,11 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.deferUpdate()
+
+        await interaction.editReply({
+          content: "⏳ Unlinking selected server...",
+          components: []
+        })
 
         const targetDiscordServerId = interaction.values[0]
 
@@ -1458,6 +1523,11 @@ client.on("interactionCreate", async interaction => {
 
   await interaction.deferUpdate()
 
+  await interaction.editReply({
+    content: `⏳ Removing reserved slot(s) for ${entry.day}...`,
+    components: []
+  })
+
   const result = await postToAppsScript({
     action: "admin_remove_reserved_slots_for_server",
     adminKey: process.env.ADMIN_API_KEY,
@@ -1508,6 +1578,11 @@ client.on("interactionCreate", async interaction => {
 
         await interaction.deferUpdate()
 
+         await interaction.editReply({
+          content: "⏳ Loading settings...",
+          components: []
+        })
+
         const view = interaction.customId.split(":")[1]
         const refreshed = await fetchSettingsForServer(interaction)
 
@@ -1531,8 +1606,12 @@ client.on("interactionCreate", async interaction => {
 
         await interaction.deferUpdate()
 
-        const [, key, view] = interaction.customId.split(":")
+         await interaction.editReply({
+          content: "⏳ Updating settings...",
+          components: []
+        })
 
+        const [, key, view] = interaction.customId.split(":")
         const settingsResult = await fetchSettingsForServer(interaction)
 
         if (!settingsResult.ok) {
@@ -1576,6 +1655,11 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.deferUpdate()
+
+         await interaction.editReply({
+          content: "⏳ Loading settings...",
+          components: []
+        })
 
         const refreshed = await fetchSettingsForServer(interaction)
 
@@ -2061,6 +2145,46 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (!interaction.isChatInputCommand()) return
+ 
+    if (interaction.commandName === "set-booking-date") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  const day = interaction.options.getString("day")
+  const year = interaction.options.getInteger("year")
+  const month = interaction.options.getInteger("month")
+  const dayOfMonth = interaction.options.getInteger("day_of_month")
+
+  const isoDate =
+    String(year).padStart(4, "0") + "-" +
+    String(month).padStart(2, "0") + "-" +
+    String(dayOfMonth).padStart(2, "0")
+
+  const result = await postToAppsScript({
+    action: "set_booking_date_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    day: day,
+    date: isoDate
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not update booking date."}`)
+    return
+  }
+
+  await interaction.editReply(
+    `✅ ${result.day} date updated.\n` +
+    `Date: ${result.display_date}\n` +
+    `Stored as: ${result.iso_date}\n` +
+    `Time zone: UTC`
+  )
+  return
+}
 
     if (interaction.commandName === "grant-access") {
       if (!userCanManageServer(interaction)) {
@@ -2464,25 +2588,25 @@ Use:
     }
 
     if (interaction.commandName === "close-bookings") {
-      await interaction.deferReply({ flags: 64 })
+  await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
-        await interaction.editReply("❌ You do not have permission to use this command.")
-        return
-      }
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
 
-      const result = await postToAppsScript({
-        action: "close_bookings_for_server",
-        adminKey: process.env.ADMIN_API_KEY,
-        discordServerId: interaction.guildId
-      })
+  const result = await postToAppsScript({
+    action: "close_bookings_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId
+  })
 
-      if (!result.ok) {
-        await interaction.editReply(`❌ ${result.error || "Could not close bookings."}`)
-        return
-      }
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not close bookings."}`)
+    return
+  }
 
-      const announcement =
+  const announcement =
 `📢 Bookings are now CLOSED for state ${result.state_code}
 
 New bookings are currently disabled.
@@ -2494,21 +2618,24 @@ Need help?
 Use:
 /help`
 
-      try {
-        const sent = await sendAnnouncementToLinkedServers(interaction, announcement)
+  try {
+    const sent = await sendAnnouncementToLinkedServers(interaction, announcement)
 
-        await interaction.editReply(
-          `✅ Bookings closed for state ${sent.state_code}.\n` +
-          `Announcements sent to ${sent.sent_count} linked server channel(s).`
-        )
-      } catch (error) {
-        console.error("Could not send close-bookings announcements:", error)
-        await interaction.editReply(
-          `✅ Bookings closed for state ${result.state_code}, but announcements could not be sent.`
-        )
-      }
+    await interaction.editReply(
+      `✅ Bookings closed for state ${sent.state_code}.\n` +
+      `Announcements sent to ${sent.sent_count} linked server channel(s).`
+    )
+  } catch (error) {
+    console.error("Could not send close-bookings announcements:", error)
+    await interaction.editReply(
+      `✅ Bookings closed for state ${result.state_code}, but announcements could not be sent.`
+    )
+  }
 
-      if (interaction.commandName === "admin-remove-reserved") {
+  return
+}
+
+if (interaction.commandName === "admin-remove-reserved") {
   await interaction.deferReply({ flags: 64 })
 
   if (!userCanManageServer(interaction)) {
@@ -2549,9 +2676,6 @@ Use:
   await interaction.editReply(ui)
   return
 }
-
-      return
-    }
 
     if (interaction.commandName === "setup") {
       if (!userCanManageServer(interaction)) {
@@ -2598,29 +2722,47 @@ Use:
     }
 
     if (interaction.commandName === "times") {
-      await interaction.deferReply({ flags: 64 })
+  await interaction.deferReply({ flags: 64 })
 
-      const day = interaction.options.getString("day")
+  const day = interaction.options.getString("day")
 
-      const result = await postToAppsScript({
-        action: "get_times_for_server",
-        adminKey: process.env.ADMIN_API_KEY,
-        discordServerId: interaction.guildId,
-        day: day
-      })
+  const [timesResult, dateResult] = await Promise.all([
+    postToAppsScript({
+      action: "get_times_for_server",
+      adminKey: process.env.ADMIN_API_KEY,
+      discordServerId: interaction.guildId,
+      day: day
+    }),
+    postToAppsScript({
+      action: "get_booking_date_for_server",
+      adminKey: process.env.ADMIN_API_KEY,
+      discordServerId: interaction.guildId,
+      day: day
+    })
+  ])
 
-      if (!result.ok) {
-        await interaction.editReply(`❌ ${result.error}`)
-        return
-      }
+  if (!timesResult.ok) {
+    await interaction.editReply(`❌ ${timesResult.error}`)
+    return
+  }
 
-      const timesText = result.times.length
-        ? result.times.join(", ")
-        : "No times available"
+  if (!dateResult.ok) {
+    await interaction.editReply(`❌ ${dateResult.error || "Could not load booking date."}`)
+    return
+  }
 
-      await interaction.editReply(`${day} times:\n${timesText}`)
-      return
-    }
+  const timesText = timesResult.times.length
+    ? timesResult.times.map(time => `${time} UTC`).join(", ")
+    : "No times available"
+
+  const dateText = dateResult.display_date || "No date set"
+
+  await interaction.editReply(
+    `${day} date: ${dateText}\n` +
+    `Times (UTC):\n${timesText}`
+  )
+  return
+}
 
     if (interaction.commandName === "my-bookings") {
       await interaction.deferReply({ flags: 64 })
