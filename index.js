@@ -17,15 +17,24 @@ const {
 } = require("discord.js")
 
 const axios = require("axios")
+const OpenAI = require("openai")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
 console.log("BOT_TOKEN present:", !!process.env.BOT_TOKEN)
 console.log("APPS_SCRIPT_URL present:", !!process.env.APPS_SCRIPT_URL)
 console.log("ADMIN_API_KEY present:", !!process.env.ADMIN_API_KEY)
+console.log("OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY)
 
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+})
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 })
 
 const pendingUnlinks = new Map()
@@ -33,6 +42,12 @@ const pendingBookings = new Map()
 const pendingAdminBookings = new Map()
 const pendingAdminReserves = new Map()
 const pendingAdminRemoveReserved = new Map()
+
+const messageBuffers = new Map()
+const channelCooldowns = new Map()
+
+const MESSAGE_LIMIT = 10
+const COOLDOWN_MS = 30 * 60 * 1000
 
 const BOOKING_PAGE_SIZE = 25
 const BOOKING_TTL_MS = 15 * 60 * 1000
@@ -623,6 +638,26 @@ function yesNo(value) {
   return value ? "ON" : "OFF"
 }
 
+function isTooAggressive(text) {
+  const banned = ["idiot", "moron", "retard"]
+  return banned.some(word => text.toLowerCase().includes(word))
+}
+
+function soundsTooForcedBritish(text) {
+  const bannedPhrases = [
+    "blimey",
+    "old cobblers",
+    "good heavens",
+    "crikey",
+    "haven't we",
+    "what's left for us",
+    "talk about"
+  ]
+
+  const lower = text.toLowerCase()
+  return bannedPhrases.some(phrase => lower.includes(phrase))
+}
+
 async function sendBookingDm(user, message) {
   try {
     await user.send(message)
@@ -680,6 +715,86 @@ async function sendAnnouncementToLinkedServers(interaction, announcement) {
     state_code: result.state_code,
     total_links: links.length,
     sent_count: sentCount
+  }
+}
+
+async function triggerBanter(channel, messages) {
+  try {
+    const textBlock = messages
+      .map(m => `${m.author}: ${m.content}`)
+      .join("\n")
+
+    let prompt = `
+You are R.A.C.H.I.E, a cheeky Manchester woman in a Discord server.
+
+Read the last 10 messages and reply with one short, funny, context-aware comment mocking the conversation itself or the user.
+
+Voice and tone:
+- sound like a real northern English woman, lightly Manc
+- dry, sharp, playful
+- natural chat tone, not theatrical
+- mildly vulgar is fine
+- sound like someone reacting in the room, not performing a comedy sketch
+
+Rules:
+- 1 sentence preferred, 2 max
+- under 22 words
+- keep it short and punchy
+- no direct harassment
+- no slurs
+- no sexual content
+- no American slang
+- do not sound posh, old-fashioned or exaggerated
+- never use words like "blimey", "gosh", "crikey", "old cobblers", "good heavens", or similar forced British phrases
+- avoid sounding like a stereotype
+- do not explain the joke
+- do not mention AI unless the chat is specifically about AI
+- only use words like "muppet", "sausage", or "absolute salad" occasionally and only if they fit naturally
+- no emojis unless genuinely funny
+
+Good style examples:
+- you lot are chatting absolute shite again
+- state of this convo honestly
+- this is just organised waffle now
+- not one sensible thought in here
+- proper strange behaviour this
+- that is a rotten take
+- you lot love chatting with confidence and no facts
+
+Conversation:
+${textBlock}
+`
+
+    if (Math.random() < 0.3) {
+      const slangOptions = [
+        "muppet",
+        "sausage",
+        "absolute salad",
+        "weapon",
+        "donut",
+        "proper clown behaviour"
+      ]
+
+      const slang = slangOptions[Math.floor(Math.random() * slangOptions.length)]
+      prompt += `\nIf it fits naturally, include a playful insult like "${slang}".`
+    }
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 1,
+      max_tokens: 60
+    })
+
+    const reply = response.choices[0]?.message?.content?.trim()
+
+    if (!reply) return
+    if (isTooAggressive(reply)) return
+    if (soundsTooForcedBritish(reply)) return
+
+    await channel.send(reply)
+  } catch (err) {
+    console.error("Banter error:", err)
   }
 }
 
@@ -889,6 +1004,12 @@ function renderSettingsView(result, view = "home") {
 /* -------------------- COMMAND DEFINITIONS -------------------- */
 
 const commands = [
+
+  new SlashCommandBuilder()
+    .setName("banter-test")
+    .setDescription("Test the AI banter reply in this channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
   new SlashCommandBuilder()
     .setName("admin-remove-booking")
     .setDescription("Remove a booking for a player")
@@ -2376,6 +2497,43 @@ If a slot is taken, run /book again and choose another time.`
       return
     }
 
+    if (interaction.commandName === "banter-test") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  try {
+    const fetched = await interaction.channel.messages.fetch({ limit: 10 })
+
+    const messages = fetched
+      .filter(message => !message.author.bot && message.content && message.content.trim())
+      .map(message => ({
+        author: message.member?.displayName || message.author.username,
+        content: message.content.trim()
+      }))
+      .reverse()
+
+    if (!messages.length) {
+      await interaction.editReply("❌ No recent user messages found in this channel.")
+      return
+    }
+
+    await interaction.editReply("⏳ Generating banter...")
+
+    await triggerBanter(interaction.channel, messages)
+
+    await interaction.editReply("✅ Banter test sent.")
+    return
+  } catch (error) {
+    console.error("banter-test failed:", error)
+    await interaction.editReply("❌ Could not generate a banter reply.")
+    return
+  }
+}
+
    if (interaction.commandName === "admin-help") {
   await interaction.deferReply({ flags: 64 })
 
@@ -3082,6 +3240,43 @@ if (interaction.commandName === "admin-remove-reserved") {
     } catch (replyError) {
       console.error(replyError)
     }
+  }
+})
+
+client.on("messageCreate", async message => {
+  try {
+    if (message.author.bot) return
+    if (!message.guild) return
+    if (!message.content || !message.content.trim()) return
+
+    const channelId = message.channel.id
+
+    if (!messageBuffers.has(channelId)) {
+      messageBuffers.set(channelId, [])
+    }
+
+    const buffer = messageBuffers.get(channelId)
+
+    buffer.push({
+      author: message.member?.displayName || message.author.username,
+      content: message.content.trim()
+    })
+
+    if (buffer.length > MESSAGE_LIMIT) {
+      buffer.shift()
+    }
+
+    if (buffer.length < MESSAGE_LIMIT) return
+
+    const lastTime = channelCooldowns.get(channelId) || 0
+    if (Date.now() - lastTime < COOLDOWN_MS) return
+
+    await triggerBanter(message.channel, buffer)
+
+    messageBuffers.set(channelId, [])
+    channelCooldowns.set(channelId, Date.now())
+  } catch (err) {
+    console.error("Message handler error:", err)
   }
 })
 
