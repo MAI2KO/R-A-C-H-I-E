@@ -719,53 +719,62 @@ async function sendAnnouncementToLinkedServers(interaction, announcement) {
 }
 
 async function triggerBanter(channel, messages) {
+  if (!openai) return
+
   try {
+    const combinedLength = messages.reduce((total, m) => total + m.content.length, 0)
+    if (combinedLength < 120) return
+
     const textBlock = messages
       .map(m => `${m.author}: ${m.content}`)
       .join("\n")
 
     let prompt = `
-You are R.A.C.H.I.E, a cheeky Manchester woman in a Discord server.
+You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
 
-Read the last 10 messages and reply with one short, funny, context-aware comment mocking the conversation itself or the user.
+Read the last messages and find ONE specific message, opinion, claim, or short exchange that is the easiest to mock playfully.
 
-Voice and tone:
-- sound like a real northern English woman, lightly Manc
+If nothing clearly stands out, return exactly:
+NO_REPLY
+
+If something does stand out, reply with one short, natural, context-aware line reacting to that specific part of the chat.
+
+Voice:
 - dry, sharp, playful
-- natural chat tone, not theatrical
+- natural northern English, lightly Manc
+- sounds like a real person in chat
 - mildly vulgar is fine
-- sound like someone reacting in the room, not performing a comedy sketch
+- not theatrical, not exaggerated
 
 Rules:
-- 1 sentence preferred, 2 max
-- under 22 words
-- keep it short and punchy
-- no direct harassment
+- under 14 words
+- 1 sentence only
+- react to one specific moment, not the whole chat in general
+- do not explain what you are doing
 - no slurs
-- no sexual content
-- no American slang
-- do not sound posh, old-fashioned or exaggerated
-- never use words like "blimey", "gosh", "crikey", "old cobblers", "good heavens", or similar forced British phrases
-- avoid sounding like a stereotype
-- do not explain the joke
-- do not mention AI unless the chat is specifically about AI
-- only use words like "muppet", "sausage", or "absolute salad" occasionally and only if they fit naturally
-- no emojis unless genuinely funny
+- no direct harassment
+- no generic filler
+- no forced British phrases
+- do not sound like a stereotype
+- only use words like muppet, sausage, or absolute salad occasionally and only if they fit naturally
 
-Good style examples:
-- you lot are chatting absolute shite again
-- state of this convo honestly
-- this is just organised waffle now
-- not one sensible thought in here
-- proper strange behaviour this
-- that is a rotten take
-- you lot love chatting with confidence and no facts
+Good examples:
+- that is a rotten take, that
+- not you saying that with confidence as well
+- proper weird thing to admit out loud
+- that logic’s in the bin
+- you’ve fully embarrassed yourself there
+
+Bad examples:
+- generic insults that could fit any chat
+- comments about the whole conversation unless one clear pattern stands out
+- random British caricature phrases
 
 Conversation:
 ${textBlock}
 `
 
-    if (Math.random() < 0.3) {
+    if (Math.random() < 0.2) {
       const slangOptions = [
         "muppet",
         "sausage",
@@ -776,21 +785,28 @@ ${textBlock}
       ]
 
       const slang = slangOptions[Math.floor(Math.random() * slangOptions.length)]
-      prompt += `\nIf it fits naturally, include a playful insult like "${slang}".`
+      prompt += `\nIf it genuinely fits, you may naturally use a playful insult like "${slang}", but do not force it.`
     }
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      temperature: 1,
-      max_tokens: 60
+      temperature: 0.85,
+      max_tokens: 40
     })
 
     const reply = response.choices[0]?.message?.content?.trim()
 
-    if (!reply) return
+    if (!reply || reply === "NO_REPLY") return
     if (isTooAggressive(reply)) return
     if (soundsTooForcedBritish(reply)) return
+
+    const target = messages[messages.length - 1]?.sourceMessage
+
+    if (target) {
+      await target.reply(reply)
+      return
+    }
 
     await channel.send(reply)
   } catch (err) {
@@ -798,7 +814,101 @@ ${textBlock}
   }
 }
 
+async function triggerBanter(channel, messages) {
+  if (!openai) return
 
+  try {
+    const combinedLength = messages.reduce((total, m) => total + m.content.length, 0)
+    if (combinedLength < 120) return
+
+    const textBlock = messages
+      .map(m => `${m.author}: ${m.content}`)
+      .join("\n")
+
+    let prompt = `
+You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
+
+Read the last messages and find ONE specific message, opinion, claim, or short exchange that is the easiest to mock playfully.
+
+If nothing clearly stands out, return exactly:
+NO_REPLY
+
+If something does stand out, reply with one short, natural, context-aware line reacting to that specific part of the chat.
+
+Voice:
+- dry, sharp, playful
+- natural northern English, lightly Manc
+- sounds like a real person in chat
+- mildly vulgar is fine
+- not theatrical, not exaggerated
+
+Rules:
+- under 14 words
+- 1 sentence only
+- react to one specific moment, not the whole chat in general
+- do not explain what you are doing
+- no slurs
+- no direct harassment
+- no generic filler
+- no forced British phrases
+- do not sound like a stereotype
+- only use words like muppet, sausage, or absolute salad occasionally and only if they fit naturally
+
+Good examples:
+- that is a rotten take, that
+- not you saying that with confidence as well
+- proper weird thing to admit out loud
+- that logic’s in the bin
+- you’ve fully embarrassed yourself there
+
+Bad examples:
+- generic insults that could fit any chat
+- comments about the whole conversation unless one clear pattern stands out
+- random British caricature phrases
+
+Conversation:
+${textBlock}
+`
+
+    if (Math.random() < 0.2) {
+      const slangOptions = [
+        "muppet",
+        "sausage",
+        "absolute salad",
+        "weapon",
+        "donut",
+        "proper clown behaviour"
+      ]
+
+      const slang = slangOptions[Math.floor(Math.random() * slangOptions.length)]
+      prompt += `\nIf it genuinely fits, you may naturally use a playful insult like "${slang}", but do not force it.`
+    }
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.85,
+      max_tokens: 40
+    })
+
+    const reply = response.choices[0]?.message?.content?.trim()
+
+    if (!reply || reply === "NO_REPLY") return
+    if (isTooAggressive(reply)) return
+    if (soundsTooForcedBritish(reply)) return
+
+    const target = messages[messages.length - 1]?.sourceMessage
+
+    if (target) {
+      await target.reply(reply)
+      return
+    }
+
+    await channel.send(reply)
+  } catch (err) {
+    console.error("Banter error:", err)
+  }
+}
 
 function buildSettingsHomeText(result) {
   const s = result.settings
@@ -3247,9 +3357,14 @@ client.on("messageCreate", async message => {
   try {
     if (message.author.bot) return
     if (!message.guild) return
-    if (!message.content || !message.content.trim()) return
+    if (!message.content || message.content.trim().length < 4) return
 
     const channelId = message.channel.id
+    const lastTime = channelCooldowns.get(channelId) || 0
+
+    if (Date.now() - lastTime < COOLDOWN_MS) {
+      return
+    }
 
     if (!messageBuffers.has(channelId)) {
       messageBuffers.set(channelId, [])
@@ -3259,7 +3374,8 @@ client.on("messageCreate", async message => {
 
     buffer.push({
       author: message.member?.displayName || message.author.username,
-      content: message.content.trim()
+      content: message.content.trim(),
+      sourceMessage: message
     })
 
     if (buffer.length > MESSAGE_LIMIT) {
@@ -3268,10 +3384,7 @@ client.on("messageCreate", async message => {
 
     if (buffer.length < MESSAGE_LIMIT) return
 
-    const lastTime = channelCooldowns.get(channelId) || 0
-    if (Date.now() - lastTime < COOLDOWN_MS) return
-
-    await triggerBanter(message.channel, buffer)
+    await triggerBanter(message.channel, [...buffer])
 
     messageBuffers.set(channelId, [])
     channelCooldowns.set(channelId, Date.now())
