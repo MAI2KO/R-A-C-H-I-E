@@ -1116,6 +1116,16 @@ function renderSettingsView(result, view = "home") {
 const commands = [
 
   new SlashCommandBuilder()
+    .setName("banter-off")
+    .setDescription("Disable R.A.C.H.I.E banter in this server")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
+    .setName("banter-on")
+    .setDescription("Enable R.A.C.H.I.E banter in this server")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
     .setName("banter-test")
     .setDescription("Test the AI banter reply in this channel")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
@@ -1449,6 +1459,34 @@ client.on("interactionCreate", async interaction => {
         await interaction.editReply(renderSettingsView(refreshed, "home"))
         return
       }
+
+      if (interaction.commandName === "banter-off") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  banterDisabledServers.add(interaction.guildId)
+
+  await interaction.editReply("🔇 R.A.C.H.I.E banter is now OFF for this server.")
+  return
+}
+
+if (interaction.commandName === "banter-on") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  banterDisabledServers.delete(interaction.guildId)
+
+  await interaction.editReply("🎉 R.A.C.H.I.E banter is now ON for this server.")
+  return
+}
 
       if (interaction.customId === "settings_max_links_select") {
         if (!userCanManageServer(interaction)) {
@@ -3357,6 +3395,9 @@ client.on("messageCreate", async message => {
   try {
     if (message.author.bot) return
     if (!message.guild) return
+    if (banterDisabledServers.has(message.guildId)) {
+      return
+    }
     if (!message.content || message.content.trim().length < 4) return
 
     const channelId = message.channel.id
