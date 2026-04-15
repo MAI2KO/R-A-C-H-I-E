@@ -37,6 +37,7 @@ const client = new Client({
   ]
 })
 
+const banterDisabledServers = new Set()
 const pendingUnlinks = new Map()
 const pendingBookings = new Map()
 const pendingAdminBookings = new Map()
@@ -718,101 +719,6 @@ async function sendAnnouncementToLinkedServers(interaction, announcement) {
   }
 }
 
-async function triggerBanter(channel, messages) {
-  if (!openai) return
-
-  try {
-    const combinedLength = messages.reduce((total, m) => total + m.content.length, 0)
-    if (combinedLength < 120) return
-
-    const textBlock = messages
-      .map(m => `${m.author}: ${m.content}`)
-      .join("\n")
-
-    let prompt = `
-You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
-
-Read the last messages and find ONE specific message, opinion, claim, or short exchange that is the easiest to mock playfully.
-
-If nothing clearly stands out, return exactly:
-NO_REPLY
-
-If something does stand out, reply with one short, natural, context-aware line reacting to that specific part of the chat.
-
-Voice:
-- dry, sharp, playful
-- natural northern English, lightly Manc
-- sounds like a real person in chat
-- mildly vulgar is fine
-- not theatrical, not exaggerated
-
-Rules:
-- under 14 words
-- 1 sentence only
-- react to one specific moment, not the whole chat in general
-- do not explain what you are doing
-- no slurs
-- no direct harassment
-- no generic filler
-- no forced British phrases
-- do not sound like a stereotype
-- only use words like muppet, sausage, or absolute salad occasionally and only if they fit naturally
-
-Good examples:
-- that is a rotten take, that
-- not you saying that with confidence as well
-- proper weird thing to admit out loud
-- that logic’s in the bin
-- you’ve fully embarrassed yourself there
-
-Bad examples:
-- generic insults that could fit any chat
-- comments about the whole conversation unless one clear pattern stands out
-- random British caricature phrases
-
-Conversation:
-${textBlock}
-`
-
-    if (Math.random() < 0.2) {
-      const slangOptions = [
-        "muppet",
-        "sausage",
-        "absolute salad",
-        "weapon",
-        "donut",
-        "proper clown behaviour"
-      ]
-
-      const slang = slangOptions[Math.floor(Math.random() * slangOptions.length)]
-      prompt += `\nIf it genuinely fits, you may naturally use a playful insult like "${slang}", but do not force it.`
-    }
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.85,
-      max_tokens: 40
-    })
-
-    const reply = response.choices[0]?.message?.content?.trim()
-
-    if (!reply || reply === "NO_REPLY") return
-    if (isTooAggressive(reply)) return
-    if (soundsTooForcedBritish(reply)) return
-
-    const target = messages[messages.length - 1]?.sourceMessage
-
-    if (target) {
-      await target.reply(reply)
-      return
-    }
-
-    await channel.send(reply)
-  } catch (err) {
-    console.error("Banter error:", err)
-  }
-}
 
 async function triggerBanter(channel, messages) {
   if (!openai) return
@@ -2393,8 +2299,36 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (!interaction.isChatInputCommand()) return
- 
-    if (interaction.commandName === "set-booking-date") {
+
+if (interaction.commandName === "banter-off") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  banterDisabledServers.add(interaction.guildId)
+
+  await interaction.editReply("🔇 R.A.C.H.I.E banter is now OFF for this server.")
+  return
+}
+
+if (interaction.commandName === "banter-on") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!userCanManageServer(interaction)) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  banterDisabledServers.delete(interaction.guildId)
+
+  await interaction.editReply("✅ R.A.C.H.I.E banter is now ON for this server.")
+  return
+}
+
+if (interaction.commandName === "set-booking-date") {
   await interaction.deferReply({ flags: 64 })
 
   if (!userCanManageServer(interaction)) {
@@ -2428,14 +2362,10 @@ client.on("interactionCreate", async interaction => {
   await interaction.editReply(
     `✅ ${result.day} date updated.\n` +
     `Date: ${result.display_date}\n` +
-    `Stored as: ${result.iso_date}\n` + 
+    `Stored as: ${result.iso_date}\n` +
     `Time zone: UTC`
   )
   return
-
-  
-}
-
 }
 
     if (interaction.commandName === "grant-access") {
@@ -3371,54 +3301,42 @@ if (interaction.commandName === "admin-remove-reserved") {
 
 client.on("messageCreate", async message => {
   try {
-    // Ignore bots
     if (message.author.bot) return
-
-    // Ignore DMs
     if (!message.guild) return
 
-    // 🔇 Global banter OFF switch
     if (banterDisabledServers.has(message.guildId)) {
       return
     }
 
-    // Ignore very short messages
     if (!message.content || message.content.trim().length < 4) return
 
     const channelId = message.channel.id
 
-    // Cooldown check (prevents instant trigger after cooldown)
     const lastTime = channelCooldowns.get(channelId) || 0
     if (Date.now() - lastTime < COOLDOWN_MS) {
       return
     }
 
-    // Create buffer if missing
     if (!messageBuffers.has(channelId)) {
       messageBuffers.set(channelId, [])
     }
 
     const buffer = messageBuffers.get(channelId)
 
-    // Add message to buffer
     buffer.push({
       author: message.member?.displayName || message.author.username,
       content: message.content.trim(),
       sourceMessage: message
     })
 
-    // Keep only last X messages
     if (buffer.length > MESSAGE_LIMIT) {
       buffer.shift()
     }
 
-    // Not enough messages yet
     if (buffer.length < MESSAGE_LIMIT) return
 
-    // Trigger banter
     await triggerBanter(message.channel, [...buffer])
 
-    // Reset buffer + start cooldown
     messageBuffers.set(channelId, [])
     channelCooldowns.set(channelId, Date.now())
 
