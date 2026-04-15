@@ -1460,33 +1460,7 @@ client.on("interactionCreate", async interaction => {
         return
       }
 
-      if (interaction.commandName === "banter-off") {
-  await interaction.deferReply({ flags: 64 })
-
-  if (!userCanManageServer(interaction)) {
-    await interaction.editReply("❌ You do not have permission to use this command.")
-    return
-  }
-
-  banterDisabledServers.add(interaction.guildId)
-
-  await interaction.editReply("🔇 R.A.C.H.I.E banter is now OFF for this server.")
-  return
-}
-
-if (interaction.commandName === "banter-on") {
-  await interaction.deferReply({ flags: 64 })
-
-  if (!userCanManageServer(interaction)) {
-    await interaction.editReply("❌ You do not have permission to use this command.")
-    return
-  }
-
-  banterDisabledServers.delete(interaction.guildId)
-
-  await interaction.editReply("🎉 R.A.C.H.I.E banter is now ON for this server.")
-  return
-}
+      
 
       if (interaction.customId === "settings_max_links_select") {
         if (!userCanManageServer(interaction)) {
@@ -2458,6 +2432,10 @@ if (interaction.commandName === "banter-on") {
     `Time zone: UTC`
   )
   return
+
+  
+}
+
 }
 
     if (interaction.commandName === "grant-access") {
@@ -3393,42 +3371,57 @@ if (interaction.commandName === "admin-remove-reserved") {
 
 client.on("messageCreate", async message => {
   try {
+    // Ignore bots
     if (message.author.bot) return
+
+    // Ignore DMs
     if (!message.guild) return
+
+    // 🔇 Global banter OFF switch
     if (banterDisabledServers.has(message.guildId)) {
       return
     }
+
+    // Ignore very short messages
     if (!message.content || message.content.trim().length < 4) return
 
     const channelId = message.channel.id
-    const lastTime = channelCooldowns.get(channelId) || 0
 
+    // Cooldown check (prevents instant trigger after cooldown)
+    const lastTime = channelCooldowns.get(channelId) || 0
     if (Date.now() - lastTime < COOLDOWN_MS) {
       return
     }
 
+    // Create buffer if missing
     if (!messageBuffers.has(channelId)) {
       messageBuffers.set(channelId, [])
     }
 
     const buffer = messageBuffers.get(channelId)
 
+    // Add message to buffer
     buffer.push({
       author: message.member?.displayName || message.author.username,
       content: message.content.trim(),
       sourceMessage: message
     })
 
+    // Keep only last X messages
     if (buffer.length > MESSAGE_LIMIT) {
       buffer.shift()
     }
 
+    // Not enough messages yet
     if (buffer.length < MESSAGE_LIMIT) return
 
+    // Trigger banter
     await triggerBanter(message.channel, [...buffer])
 
+    // Reset buffer + start cooldown
     messageBuffers.set(channelId, [])
     channelCooldowns.set(channelId, Date.now())
+
   } catch (err) {
     console.error("Message handler error:", err)
   }
