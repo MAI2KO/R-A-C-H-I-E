@@ -37,7 +37,7 @@ const client = new Client({
   ]
 })
 
-const banterDisabledServers = new Set()
+const banterEnabledServers = new Set()
 const pendingUnlinks = new Map()
 const pendingBookings = new Map()
 const pendingAdminBookings = new Map()
@@ -2308,7 +2308,7 @@ if (interaction.commandName === "banter-off") {
     return
   }
 
-  banterDisabledServers.add(interaction.guildId)
+  banterEnabledServers.delete(interaction.guildId)
 
   await interaction.editReply("🔇 R.A.C.H.I.E banter is now OFF for this server.")
   return
@@ -2322,7 +2322,7 @@ if (interaction.commandName === "banter-on") {
     return
   }
 
-  banterDisabledServers.delete(interaction.guildId)
+  banterEnabledServers.add(interaction.guildId)
 
   await interaction.editReply("✅ R.A.C.H.I.E banter is now ON for this server.")
   return
@@ -3304,7 +3304,7 @@ client.on("messageCreate", async message => {
     if (message.author.bot) return
     if (!message.guild) return
 
-    if (banterDisabledServers.has(message.guildId)) {
+    if (!banterEnabledServers.has(message.guildId)) {
       return
     }
 
