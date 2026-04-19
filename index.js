@@ -37,7 +37,6 @@ const client = new Client({
   ]
 })
 
-const banterEnabledServers = new Set()
 const pendingUnlinks = new Map()
 const pendingBookings = new Map()
 const pendingAdminBookings = new Map()
@@ -631,8 +630,26 @@ async function submitBookingFromEntry(entry, overrides = {}) {
   })
 }
 
-function userCanManageServer(interaction) {
-  return interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+async function userCanManageServer(interaction) {
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return true
+  }
+
+  try {
+    const result = await postToAppsScript({
+      action: "get_bot_admin_role_for_server",
+      adminKey: process.env.ADMIN_API_KEY,
+      discordServerId: interaction.guildId
+    })
+
+    const roleId = String(result.bot_admin_role_id || "").trim()
+    if (!roleId) return false
+
+    return interaction.member?.roles?.cache?.has(roleId) || false
+  } catch (error) {
+    console.error("Permission check failed:", error)
+    return false
+  }
 }
 
 function yesNo(value) {
@@ -1022,13 +1039,36 @@ function renderSettingsView(result, view = "home") {
 const commands = [
 
   new SlashCommandBuilder()
-    .setName("banter-off")
-    .setDescription("Disable R.A.C.H.I.E banter in this server")
+    .setName("set-banter-channel")
+    .setDescription("Choose the channel where R.A.C.H.I.E banter is allowed")
+    .addChannelOption(option =>
+      option
+       .setName("channel")
+       .setDescription("Channel for banter")
+       .addChannelTypes(0)
+       .setRequired(true)
+      )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
-    .setName("banter-on")
-    .setDescription("Enable R.A.C.H.I.E banter in this server")
+    .setName("clear-banter-channel")
+    .setDescription("Disable the assigned R.A.C.H.I.E banter channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
+    .setName("set-bot-admin-role")
+    .setDescription("Set the role allowed to manage R.A.C.H.I.E")
+    .addRoleOption(option =>
+      option
+       .setName("role")
+       .setDescription("Role to allow")
+       .setRequired(true)
+      )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  new SlashCommandBuilder()
+    .setName("clear-bot-admin-role")
+    .setDescription("Clear the custom R.A.C.H.I.E admin role")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
@@ -1325,7 +1365,7 @@ client.on("interactionCreate", async interaction => {
   try {
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "settings_max_bookings_select") {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this control.",
             flags: 64
@@ -1369,7 +1409,7 @@ client.on("interactionCreate", async interaction => {
       
 
       if (interaction.customId === "settings_max_links_select") {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this control.",
             flags: 64
@@ -1471,18 +1511,20 @@ client.on("interactionCreate", async interaction => {
         })
 
         let dmMessage =
-          `📅 Booking confirmed\n\n` +
-          `State: ${result.state_code}\n` +
-          `Day: ${result.day}\n` +
-          `Time: ${result.time}`
+         `📅 Booking confirmed\n\n` +
+         `State: ${result.state_code}\n` +
+         `Day: ${result.day}\n` +
+         `Date: ${result.booking_date_display || "No date set"}\n` +
+         `Time: ${result.time} UTC`
 
         if (result.moved && result.oldTime) {
-          dmMessage =
-            `🔁 Booking changed\n\n` +
-            `State: ${result.state_code}\n` +
-            `Day: ${result.day}\n` +
-            `Old time: ${result.oldTime}\n` +
-            `New time: ${result.time}`
+         dmMessage =
+          `🔁 Booking changed\n\n` +
+          `State: ${result.state_code}\n` +
+          `Day: ${result.day}\n` +
+          `Date: ${result.booking_date_display || "No date set"}\n` +
+          `Old time: ${result.oldTime} UTC\n` +
+          `New time: ${result.time} UTC`
         }
 
         await sendBookingDm(interaction.user, dmMessage)
@@ -1722,7 +1764,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("settings_group:")) {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this control.",
             flags: 64
@@ -1750,7 +1792,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId.startsWith("settings_toggle:")) {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this control.",
             flags: 64
@@ -1800,7 +1842,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "settings_back:home") {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this control.",
             flags: 64
@@ -1907,7 +1949,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.isModalSubmit()) {
       if (interaction.customId === "setup_modal") {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this command.",
             flags: 64
@@ -1947,7 +1989,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "link_state_modal") {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this command.",
             flags: 64
@@ -2038,7 +2080,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "clear_bookings_modal") {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this command.",
             flags: 64
@@ -2075,7 +2117,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "grant_access_modal") {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this command.",
             flags: 64
@@ -2111,7 +2153,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId.startsWith("admin_remove_booking_modal:")) {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this command.",
             flags: 64
@@ -2161,7 +2203,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId.startsWith("admin_add_booking_modal:")) {
-        if (!userCanManageServer(interaction)) {
+        if (!(await userCanManageServer(interaction))) {
           await interaction.reply({
             content: "❌ You do not have permission to use this command.",
             flags: 64
@@ -2278,19 +2320,21 @@ client.on("interactionCreate", async interaction => {
       await interaction.editReply(message)
 
       let dmMessage =
-        `📅 Booking confirmed\n\n` +
-        `State: ${result.state_code}\n` +
-        `Day: ${result.day}\n` +
-        `Time: ${result.time}`
+       `📅 Booking confirmed\n\n` +
+       `State: ${result.state_code}\n` +
+       `Day: ${result.day}\n` +
+       `Date: ${result.booking_date_display || "No date set"}\n` +
+       `Time: ${result.time} UTC`
 
       if (result.moved && result.oldTime) {
-        dmMessage =
+         dmMessage =
           `🔁 Booking changed\n\n` +
           `State: ${result.state_code}\n` +
           `Day: ${result.day}\n` +
-          `Old time: ${result.oldTime}\n` +
-          `New time: ${result.time}`
-      }
+          `Date: ${result.booking_date_display || "No date set"}\n` +
+          `Old time: ${result.oldTime} UTC\n` +
+          `New time: ${result.time} UTC`
+        }
 
       await sendBookingDm(interaction.user, dmMessage)
 
@@ -2300,38 +2344,113 @@ client.on("interactionCreate", async interaction => {
 
     if (!interaction.isChatInputCommand()) return
 
-if (interaction.commandName === "banter-off") {
+  if (interaction.commandName === "set-banter-channel") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
 
-  banterEnabledServers.delete(interaction.guildId)
+  const channel = interaction.options.getChannel("channel")
 
-  await interaction.editReply("🔇 R.A.C.H.I.E banter is now OFF for this server.")
+  if (!channel || typeof channel.send !== "function") {
+    await interaction.editReply("❌ Please select a valid text channel.")
+    return
+  }
+
+  const result = await postToAppsScript({
+    action: "set_banter_channel_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    channelId: channel.id
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not set banter channel."}`)
+    return
+  }
+
+  await interaction.editReply(`✅ R.A.C.H.I.E banter channel set to #${channel.name}.`)
   return
 }
 
-if (interaction.commandName === "banter-on") {
+if (interaction.commandName === "clear-banter-channel") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
 
-  banterEnabledServers.add(interaction.guildId)
+  const result = await postToAppsScript({
+    action: "clear_banter_channel_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId
+  })
 
-  await interaction.editReply("✅ R.A.C.H.I.E banter is now ON for this server.")
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not clear banter channel."}`)
+    return
+  }
+
+  await interaction.editReply("✅ R.A.C.H.I.E banter channel cleared.")
+  return
+}  
+
+  if (interaction.commandName === "set-bot-admin-role") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.editReply("❌ Only a server admin can set the bot admin role.")
+    return
+  }
+
+  const role = interaction.options.getRole("role")
+
+  const result = await postToAppsScript({
+    action: "set_bot_admin_role_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    roleId: role.id
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not save bot admin role."}`)
+    return
+  }
+
+  await interaction.editReply(`✅ Bot admin role set to ${role}.`)
+  return
+}
+
+if (interaction.commandName === "clear-bot-admin-role") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.editReply("❌ Only a server admin can clear the bot admin role.")
+    return
+  }
+
+  const result = await postToAppsScript({
+    action: "clear_bot_admin_role_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not clear bot admin role."}`)
+    return
+  }
+
+  await interaction.editReply("✅ Bot admin role cleared.")
   return
 }
 
 if (interaction.commandName === "set-booking-date") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
@@ -2369,7 +2488,7 @@ if (interaction.commandName === "set-booking-date") {
 }
 
     if (interaction.commandName === "grant-access") {
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.reply({
           content: "❌ You do not have permission to use this command.",
           flags: 64
@@ -2382,7 +2501,7 @@ if (interaction.commandName === "set-booking-date") {
     }
 
     if (interaction.commandName === "clear-bookings") {
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.reply({
           content: "❌ You do not have permission to use this command.",
           flags: 64
@@ -2395,7 +2514,7 @@ if (interaction.commandName === "set-booking-date") {
     }
 
     if (interaction.commandName === "admin-remove-booking") {
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.reply({
           content: "❌ You do not have permission to use this command.",
           flags: 64
@@ -2411,7 +2530,7 @@ if (interaction.commandName === "set-booking-date") {
     if (interaction.commandName === "admin-reserve-slots") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2453,7 +2572,7 @@ if (interaction.commandName === "set-booking-date") {
     if (interaction.commandName === "admin-add-booking") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2529,7 +2648,7 @@ If a slot is taken, run /book again and choose another time.`
     if (interaction.commandName === "reset-state-password") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2556,7 +2675,7 @@ If a slot is taken, run /book again and choose another time.`
     if (interaction.commandName === "banter-test") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
@@ -2593,7 +2712,7 @@ If a slot is taken, run /book again and choose another time.`
    if (interaction.commandName === "admin-help") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
@@ -2669,7 +2788,7 @@ Only new servers will need the updated password.`
     if (interaction.commandName === "setup-help") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
@@ -2725,7 +2844,7 @@ Recommended order
     if (interaction.commandName === "linked-servers") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2761,7 +2880,7 @@ Recommended order
     if (interaction.commandName === "set-announcements") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2792,7 +2911,7 @@ Recommended order
     if (interaction.commandName === "sheet-link") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2819,7 +2938,7 @@ Recommended order
     if (interaction.commandName === "settings") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2838,7 +2957,7 @@ Recommended order
     if (interaction.commandName === "open-bookings") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -2898,7 +3017,7 @@ Use:
     if (interaction.commandName === "close-bookings") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
@@ -2946,7 +3065,7 @@ Use:
 if (interaction.commandName === "admin-remove-reserved") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!userCanManageServer(interaction)) {
+  if (!(await userCanManageServer(interaction))) {
     await interaction.editReply("❌ You do not have permission to use this command.")
     return
   }
@@ -2986,7 +3105,7 @@ if (interaction.commandName === "admin-remove-reserved") {
 }
 
     if (interaction.commandName === "setup") {
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.reply({
           content: "❌ You do not have permission to use this command.",
           flags: 64
@@ -2999,7 +3118,7 @@ if (interaction.commandName === "admin-remove-reserved") {
     }
 
     if (interaction.commandName === "link-state") {
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.reply({
           content: "❌ You do not have permission to use this command.",
           flags: 64
@@ -3092,10 +3211,10 @@ if (interaction.commandName === "admin-remove-reserved") {
       const troop = result.bookings?.Troop || "Not booked"
 
       await interaction.editReply(
-        `Bookings for ${result.playerName}\n` +
-        `Construction: ${construction}\n` +
-        `Research: ${research}\n` +
-        `Troop: ${troop}`
+       `Bookings for ${result.playerName}\n` +
+       `Construction: ${construction} ${construction !== "Not booked" ? `on ${result.dates?.Construction || "No date set"}` : ""}\n` +
+       `Research: ${research} ${research !== "Not booked" ? `on ${result.dates?.Research || "No date set"}` : ""}\n` +
+       `Troop: ${troop} ${troop !== "Not booked" ? `on ${result.dates?.Troop || "No date set"}` : ""}`
       )
       return
     }
@@ -3198,7 +3317,7 @@ if (interaction.commandName === "admin-remove-reserved") {
     if (interaction.commandName === "unlink-state") {
       await interaction.deferReply({ flags: 64 })
 
-      if (!userCanManageServer(interaction)) {
+      if (!(await userCanManageServer(interaction))) {
         await interaction.editReply("❌ You do not have permission to use this command.")
         return
       }
@@ -3303,12 +3422,23 @@ client.on("messageCreate", async message => {
   try {
     if (message.author.bot) return
     if (!message.guild) return
-
-    if (!banterEnabledServers.has(message.guildId)) {
-      return
-    }
-
     if (!message.content || message.content.trim().length < 4) return
+
+    const banterChannelResult = await postToAppsScript({
+  action: "get_banter_channel_for_server",
+  adminKey: process.env.ADMIN_API_KEY,
+  discordServerId: message.guildId
+})
+
+const allowedBanterChannelId = String(banterChannelResult.banter_channel_id || "").trim()
+
+if (!allowedBanterChannelId) {
+  return
+}
+
+if (message.channel.id !== allowedBanterChannelId) {
+  return
+}
 
     const channelId = message.channel.id
 
