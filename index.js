@@ -732,13 +732,29 @@ async function triggerBanter(channel, messages, spiceLevel = "standard") {
       .map(m => `${m.author}: ${m.content}`)
       .join("\n")
 
-    let spiceInstruction = "Keep it playful, dry and sharp."
+    let spiceInstruction = `
+Keep it playful, dry and sharp.
+Use light mockery.
+Avoid strong vulgarity.
+`
 
-    if (spiceLevel === "mild") {
-      spiceInstruction = "Keep it light, teasing and observational. Avoid harsh insults."
-    } else if (spiceLevel === "spicy") {
-      spiceInstruction = "Be sharper and cheekier, Be vulgar and chaotic, but still playful and not abusive."
-    }
+if (spiceLevel === "mild") {
+  spiceInstruction = `
+Keep it light, teasing and observational.
+Prioritise bemused or deadpan reactions over insults.
+Avoid vulgarity.
+Avoid calling people embarrassing, weird, pathetic, or similar.
+Sound more amused than savage.
+`
+} else if (spiceLevel === "spicy") {
+  spiceInstruction = `
+Be noticeably sharper, cheekier and more cutting.
+Mild vulgarity is allowed if it fits naturally.
+You can sound more dismissive, more fed up, and more personally mocking.
+Lean more towards a roast than a light tease.
+Do not become abusive, hateful, or bullying.
+`
+}
 
     let prompt = `
 You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
@@ -769,19 +785,31 @@ Rules:
 - do not sound like a stereotype
 - only use words like muppet, sausage, or absolute salad occasionally and only if they fit naturally
 - avoid repeating stock phrases like "not you", "state of this", or "you lot" too often
+- make the tone clearly match the requested spice level
 
-Good examples:
-- that is a rotten take, that
-- proper weird thing to admit out loud
+Good examples for mild:
+- that is a proper odd thing to say
+- bold claim for this time of day
+- that’s a strange hill to stand on
+- fair enough, but that is still nonsense
+
+Good examples for standard:
 - that logic’s in the bin
-- you’ve fully embarrassed yourself there
+- proper weird thing to admit out loud
 - bold thing to say with your chest
-- state of that opinion honestly
+- you’ve fully embarrassed yourself there
+
+Good examples for spicy:
+- that is a shocking amount of confidence for such a daft point
+- you are chatting complete shite there
+- that might be the dumbest thing said all hour
+- proper clown behaviour, that
 
 Bad examples:
 - generic insults that could fit any chat
 - comments about the whole conversation unless one clear pattern stands out
 - random British caricature phrases
+- repeating the same stock opener every time
 
 Spice:
 ${spiceInstruction}
@@ -807,7 +835,7 @@ ${textBlock}
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      temperature: 0.85,
+      temperature: 0.75,
       max_tokens: 40
     })
 
