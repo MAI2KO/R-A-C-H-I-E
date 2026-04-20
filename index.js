@@ -2454,6 +2454,8 @@ if (interaction.commandName === "set-banter-spice") {
     return
   }
 
+  banterConfigCache.delete(interaction.guildId)
+
   await interaction.editReply(`🔥 Banter spice level set to ${level}.`)
   return
 }
