@@ -52,6 +52,9 @@ const COOLDOWN_MS = 30 * 60 * 1000
 const BOOKING_PAGE_SIZE = 25
 const BOOKING_TTL_MS = 15 * 60 * 1000
 
+const banterConfigCache = new Map()
+const BANTER_CONFIG_TTL_MS = 5 * 60 * 1000
+
 function createBookingToken() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 }
@@ -692,52 +695,33 @@ async function fetchSettingsForServer(interaction) {
   })
 }
 
-async function sendAnnouncementToLinkedServers(interaction, announcement) {
+async function getBanterConfigForGuild(guildId) {
+  const cached = banterConfigCache.get(guildId)
+
+  if (cached && Date.now() - cached.timestamp < BANTER_CONFIG_TTL_MS) {
+    return cached.data
+  }
+
   const result = await postToAppsScript({
-    action: "get_linked_servers_for_current_state",
+    action: "get_banter_config_for_server",
     adminKey: process.env.ADMIN_API_KEY,
-    discordServerId: interaction.guildId
+    discordServerId: guildId
   })
 
-  if (!result.ok) {
-    throw new Error(result.error || "Could not load linked servers.")
+  const data = {
+    banterChannelId: String(result.banter_channel_id || "").trim(),
+    spiceLevel: result.spice_level || "standard"
   }
 
-  const links = Array.isArray(result.links) ? result.links : []
-  let sentCount = 0
+  banterConfigCache.set(guildId, {
+    data,
+    timestamp: Date.now()
+  })
 
-  for (const link of links) {
-    const channelId = String(link.announcement_channel_id || "").trim()
-    if (!channelId) {
-      continue
-    }
-
-    try {
-      const channel = await client.channels.fetch(channelId)
-
-      if (!channel || typeof channel.send !== "function") {
-        continue
-      }
-
-      await channel.send(announcement)
-      sentCount++
-    } catch (error) {
-      console.log(
-        `Could not send announcement to server ${link.discord_server_id}:`,
-        error?.message || error
-      )
-    }
-  }
-
-  return {
-    state_code: result.state_code,
-    total_links: links.length,
-    sent_count: sentCount
-  }
+  return data
 }
 
-
-async function triggerBanter(channel, messages) {
+async function triggerBanter(channel, messages, spiceLevel = "standard") {
   if (!openai) return
 
   try {
@@ -747,6 +731,14 @@ async function triggerBanter(channel, messages) {
     const textBlock = messages
       .map(m => `${m.author}: ${m.content}`)
       .join("\n")
+
+    let spiceInstruction = "Keep it playful, dry and sharp."
+
+    if (spiceLevel === "mild") {
+      spiceInstruction = "Keep it light, teasing and observational. Avoid harsh insults."
+    } else if (spiceLevel === "spicy") {
+      spiceInstruction = "Be sharper and cheekier, Be vulgar and chaotic, but still playful and not abusive."
+    }
 
     let prompt = `
 You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
@@ -776,18 +768,23 @@ Rules:
 - no forced British phrases
 - do not sound like a stereotype
 - only use words like muppet, sausage, or absolute salad occasionally and only if they fit naturally
+- avoid repeating stock phrases like "not you", "state of this", or "you lot" too often
 
 Good examples:
 - that is a rotten take, that
-- not you saying that with confidence as well
 - proper weird thing to admit out loud
 - that logic’s in the bin
 - you’ve fully embarrassed yourself there
+- bold thing to say with your chest
+- state of that opinion honestly
 
 Bad examples:
 - generic insults that could fit any chat
 - comments about the whole conversation unless one clear pattern stands out
 - random British caricature phrases
+
+Spice:
+${spiceInstruction}
 
 Conversation:
 ${textBlock}
@@ -797,7 +794,7 @@ ${textBlock}
       const slangOptions = [
         "muppet",
         "sausage",
-        "absolute salad",
+        "you salad",
         "weapon",
         "donut",
         "proper clown behaviour"
@@ -819,13 +816,6 @@ ${textBlock}
     if (!reply || reply === "NO_REPLY") return
     if (isTooAggressive(reply)) return
     if (soundsTooForcedBritish(reply)) return
-
-    const target = messages[messages.length - 1]?.sourceMessage
-
-    if (target) {
-      await target.reply(reply)
-      return
-    }
 
     await channel.send(reply)
   } catch (err) {
@@ -1037,6 +1027,22 @@ function renderSettingsView(result, view = "home") {
 /* -------------------- COMMAND DEFINITIONS -------------------- */
 
 const commands = [
+
+  new SlashCommandBuilder()
+  .setName("set-banter-spice")
+  .setDescription("Set how spicy R.A.C.H.I.E banter is")
+  .addStringOption(option =>
+    option
+      .setName("level")
+      .setDescription("Spice level")
+      .setRequired(true)
+      .addChoices(
+        { name: "Mild", value: "mild" },
+        { name: "Standard", value: "standard" },
+        { name: "Spicy", value: "spicy" }
+      )
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
     .setName("set-banter-channel")
@@ -2396,7 +2402,33 @@ if (interaction.commandName === "clear-banter-channel") {
 
   await interaction.editReply("✅ R.A.C.H.I.E banter channel cleared.")
   return
-}  
+}
+
+if (interaction.commandName === "set-banter-spice") {
+  await interaction.deferReply({ flags: 64 })
+
+  if (!(await userCanManageServer(interaction))) {
+    await interaction.editReply("❌ You do not have permission to use this command.")
+    return
+  }
+
+  const level = interaction.options.getString("level")
+
+  const result = await postToAppsScript({
+    action: "set_banter_spice_for_server",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId,
+    spiceLevel: level
+  })
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error || "Could not update spice level."}`)
+    return
+  }
+
+  await interaction.editReply(`🔥 Banter spice level set to ${level}.`)
+  return
+}
 
   if (interaction.commandName === "set-bot-admin-role") {
   await interaction.deferReply({ flags: 64 })
@@ -2698,7 +2730,8 @@ If a slot is taken, run /book again and choose another time.`
 
     await interaction.editReply("⏳ Generating banter...")
 
-    await triggerBanter(interaction.channel, messages)
+    const banterConfig = await getBanterConfigForGuild(interaction.guildId)
+    await triggerBanter(interaction.channel, messages, banterConfig.spiceLevel)
 
     await interaction.editReply("✅ Banter test sent.")
     return
@@ -3424,21 +3457,15 @@ client.on("messageCreate", async message => {
     if (!message.guild) return
     if (!message.content || message.content.trim().length < 4) return
 
-    const banterChannelResult = await postToAppsScript({
-  action: "get_banter_channel_for_server",
-  adminKey: process.env.ADMIN_API_KEY,
-  discordServerId: message.guildId
-})
+    const banterConfig = await getBanterConfigForGuild(message.guildId)
 
-const allowedBanterChannelId = String(banterChannelResult.banter_channel_id || "").trim()
+    if (!banterConfig.banterChannelId) {
+      return
+    }
 
-if (!allowedBanterChannelId) {
-  return
-}
-
-if (message.channel.id !== allowedBanterChannelId) {
-  return
-}
+    if (message.channel.id !== banterConfig.banterChannelId) {
+      return
+    }
 
     const channelId = message.channel.id
 
@@ -3465,11 +3492,10 @@ if (message.channel.id !== allowedBanterChannelId) {
 
     if (buffer.length < MESSAGE_LIMIT) return
 
-    await triggerBanter(message.channel, [...buffer])
+    await triggerBanter(message.channel, [...buffer], banterConfig.spiceLevel)
 
     messageBuffers.set(channelId, [])
     channelCooldowns.set(channelId, Date.now())
-
   } catch (err) {
     console.error("Message handler error:", err)
   }
