@@ -828,7 +828,7 @@ ${textBlock}
       model: "gpt-5.4",
       messages: [{ role: "user", content: prompt }],
       temperature: 0.65,
-      max_tokens: 40
+      max_completion_tokens: 40
     })
 
     const reply = response.choices[0]?.message?.content?.trim()
