@@ -722,39 +722,27 @@ async function getBanterConfigForGuild(guildId) {
 }
 
 async function triggerBanter(channel, messages, spiceLevel = "standard") {
-  if (!openai) return
+  if (!openai) {
+    return { sent: false, reason: "OpenAI client not available" }
+  }
 
   try {
     const combinedLength = messages.reduce((total, m) => total + m.content.length, 0)
-    if (combinedLength < 120) return
+    if (combinedLength < 120) {
+      return { sent: false, reason: "Message batch too short" }
+    }
 
     const textBlock = messages
       .map(m => `${m.author}: ${m.content}`)
       .join("\n")
 
-    let spiceInstruction = `
-Keep it playful, dry and sharp.
-Use light mockery.
-Avoid strong vulgarity.
-`
+    let spiceInstruction = "Keep it playful, dry and sharp."
 
-if (spiceLevel === "mild") {
-  spiceInstruction = `
-Keep it light, teasing and observational.
-Prioritise bemused or deadpan reactions over insults.
-Avoid vulgarity.
-Avoid calling people embarrassing, weird, pathetic, or similar.
-Sound more amused than savage.
-`
-} else if (spiceLevel === "spicy") {
-  spiceInstruction = `
-Be noticeably sharper, cheekier and more cutting.
-Mild vulgarity is allowed if it fits naturally.
-You can sound more dismissive, more fed up, and more personally mocking.
-Lean more towards a roast than a light tease.
-Do not become abusive, hateful, or bullying.
-`
-}
+    if (spiceLevel === "mild") {
+      spiceInstruction = "Keep it light, teasing and observational. Avoid harsh insults."
+    } else if (spiceLevel === "spicy") {
+      spiceInstruction = "Be noticeably sharper, cheekier and more cutting. Mild vulgarity is allowed if it fits naturally. Do not become abusive, hateful, or bullying."
+    }
 
     let prompt = `
 You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
@@ -783,7 +771,7 @@ Rules:
 - no generic filler
 - no forced British phrases
 - do not sound like a stereotype
-- only use words like muppet, sausage, or absolute salad occasionally and only if they fit naturally
+- only use words like muppet, sausage, or you salad occasionally and only if they fit naturally
 - avoid repeating stock phrases like "not you", "state of this", or "you lot" too often
 - make the tone clearly match the requested spice level
 
@@ -832,22 +820,39 @@ ${textBlock}
       prompt += `\nIf it genuinely fits, you may naturally use a playful insult like "${slang}", but do not force it.`
     }
 
+    console.log("---- BANTER REQUEST ----")
+    console.log("Spice:", spiceLevel)
+    console.log("Prompt:\n", prompt)
+
     const response = await openai.chat.completions.create({
       model: "gpt-5.4",
       messages: [{ role: "user", content: prompt }],
-      temperature: 0.75,
+      temperature: 0.65,
       max_tokens: 40
     })
 
     const reply = response.choices[0]?.message?.content?.trim()
 
-    if (!reply || reply === "NO_REPLY") return
-    if (isTooAggressive(reply)) return
-    if (soundsTooForcedBritish(reply)) return
+    console.log("---- BANTER RESPONSE ----")
+    console.log("Reply:", reply)
+
+    if (!reply || reply === "NO_REPLY") {
+      return { sent: false, reason: "Model returned no reply" }
+    }
+
+    if (isTooAggressive(reply)) {
+      return { sent: false, reason: "Filtered as too aggressive" }
+    }
+
+    if (soundsTooForcedBritish(reply)) {
+      return { sent: false, reason: "Filtered as too forced British" }
+    }
 
     await channel.send(reply)
+    return { sent: true, reply }
   } catch (err) {
     console.error("Banter error:", err)
+    return { sent: false, reason: err.message || "Unknown error" }
   }
 }
 
@@ -2761,9 +2766,21 @@ If a slot is taken, run /book again and choose another time.`
     await interaction.editReply("⏳ Generating banter...")
 
     const banterConfig = await getBanterConfigForGuild(interaction.guildId)
-    await triggerBanter(interaction.channel, messages, banterConfig.spiceLevel)
 
-    await interaction.editReply("✅ Banter test sent.")
+await interaction.editReply(`⏳ Generating ${banterConfig.spiceLevel} banter...`)
+
+const banterResult = await triggerBanter(
+  interaction.channel,
+  messages,
+  banterConfig.spiceLevel
+)
+
+if (!banterResult.sent) {
+  await interaction.editReply(`⚠️ No banter sent. Reason: ${banterResult.reason}`)
+  return
+}
+
+await interaction.editReply("✅ Banter test sent.")
     return
   } catch (error) {
     console.error("banter-test failed:", error)
