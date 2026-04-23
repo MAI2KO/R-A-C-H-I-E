@@ -702,15 +702,22 @@ async function getBanterConfigForGuild(guildId) {
     return cached.data
   }
 
-  const result = await postToAppsScript({
-    action: "get_banter_config_for_server",
-    adminKey: process.env.ADMIN_API_KEY,
-    discordServerId: guildId
-  })
+  const [channelResult, spiceResult] = await Promise.all([
+    postToAppsScript({
+      action: "get_banter_channel_for_server",
+      adminKey: process.env.ADMIN_API_KEY,
+      discordServerId: guildId
+    }),
+    postToAppsScript({
+      action: "get_banter_spice_for_server",
+      adminKey: process.env.ADMIN_API_KEY,
+      discordServerId: guildId
+    })
+  ])
 
   const data = {
-    banterChannelId: String(result.banter_channel_id || "").trim(),
-    spiceLevel: result.spice_level || "standard"
+    banterChannelId: String(channelResult.banter_channel_id || "").trim(),
+    spiceLevel: String(spiceResult.banter_spice_level || "standard").trim().toLowerCase()
   }
 
   banterConfigCache.set(guildId, {
@@ -3504,13 +3511,24 @@ client.on("messageCreate", async message => {
     if (!message.guild) return
     if (!message.content || message.content.trim().length < 4) return
 
+    console.log("---- MESSAGE RECEIVED ----")
+    console.log("Guild:", message.guildId)
+    console.log("Channel:", message.channel.id)
+    console.log("Content:", message.content)
+
     const banterConfig = await getBanterConfigForGuild(message.guildId)
 
+    console.log("---- BANTER CONFIG ----")
+    console.log("Configured channel:", banterConfig.banterChannelId)
+    console.log("Spice:", banterConfig.spiceLevel)
+
     if (!banterConfig.banterChannelId) {
+      console.log("No banter channel configured")
       return
     }
 
     if (message.channel.id !== banterConfig.banterChannelId) {
+      console.log("Message not in banter channel")
       return
     }
 
@@ -3518,6 +3536,7 @@ client.on("messageCreate", async message => {
 
     const lastTime = channelCooldowns.get(channelId) || 0
     if (Date.now() - lastTime < COOLDOWN_MS) {
+      console.log("Still on cooldown")
       return
     }
 
@@ -3533,13 +3552,17 @@ client.on("messageCreate", async message => {
       sourceMessage: message
     })
 
+    console.log("Buffer length:", buffer.length)
+
     if (buffer.length > MESSAGE_LIMIT) {
       buffer.shift()
     }
 
     if (buffer.length < MESSAGE_LIMIT) return
 
-    await triggerBanter(message.channel, [...buffer], banterConfig.spiceLevel)
+    const result = await triggerBanter(message.channel, [...buffer], banterConfig.spiceLevel)
+
+    console.log("Natural banter result:", result)
 
     messageBuffers.set(channelId, [])
     channelCooldowns.set(channelId, Date.now())
