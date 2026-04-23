@@ -695,6 +695,50 @@ async function fetchSettingsForServer(interaction) {
   })
 }
 
+async function sendAnnouncementToLinkedServers(interaction, announcement) {
+  const result = await postToAppsScript({
+    action: "get_linked_servers_for_current_state",
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: interaction.guildId
+  })
+
+  if (!result.ok) {
+    throw new Error(result.error || "Could not load linked servers.")
+  }
+
+  const links = Array.isArray(result.links) ? result.links : []
+  let sentCount = 0
+
+  for (const link of links) {
+    const channelId = String(link.announcement_channel_id || "").trim()
+    if (!channelId) {
+      continue
+    }
+
+    try {
+      const channel = await client.channels.fetch(channelId)
+
+      if (!channel || typeof channel.send !== "function") {
+        continue
+      }
+
+      await channel.send(announcement)
+      sentCount++
+    } catch (error) {
+      console.log(
+        `Could not send announcement to server ${link.discord_server_id}:`,
+        error?.message || error
+      )
+    }
+  }
+
+  return {
+    state_code: result.state_code,
+    total_links: links.length,
+    sent_count: sentCount
+  }
+}
+
 async function getBanterConfigForGuild(guildId) {
   const cached = banterConfigCache.get(guildId)
 
