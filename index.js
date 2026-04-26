@@ -55,6 +55,98 @@ const BOOKING_TTL_MS = 15 * 60 * 1000
 const banterConfigCache = new Map()
 const BANTER_CONFIG_TTL_MS = 5 * 60 * 1000
 
+const GAME_PROFILES = {
+  wos: {
+    botName: "R.A.C.H.I.E",
+    gameName: "Whiteout Survival",
+    fcLabel: "Fire Crystals (FC)",
+    rfcLabel: "Refined Fire Crystals (RFC)",
+    shardsLabel: "Fire Crystal Shards",
+    personality: "You are R.A.C.H.I.E, a witty Manchester woman in a Discord server."
+  },
+  kingshot: {
+    botName: "P.E.G.G.I.E",
+    gameName: "Kingshot",
+    fcLabel: "Truegold (TG)",
+    rfcLabel: "Tempered Truegold (TTG)",
+    shardsLabel: "Truegold Dust (TGD)",
+    personality: "You are P.E.G.G.I.E, a witty northern woman in a Discord server. You are playful, sharp and slightly chaotic, but never cruel."
+  }
+}
+
+const GAME_PROFILE = process.env.GAME_PROFILE || "wos"
+const game = GAME_PROFILES[GAME_PROFILE] || GAME_PROFILES.wos
+
+const BANTER_PROFILES = {
+  rachie: {
+    prompt: `
+You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
+
+Voice:
+- dry, sharp, playful
+- natural northern English, lightly Manc
+- sounds like a real person in chat
+- mildly vulgar is fine
+- not theatrical, not exaggerated
+`
+  },
+
+  peggie: {
+    prompt: `
+You are a Discord chat bot with a chaotic, blunt British personality.
+
+Voice:
+You sound like a woman from southern England who has spent enough time around Macclesfield and North West banter to pick up some local bite. You are sharp, sweary, teasing, and quick with dry humour. You are warm underneath it, but you do not act soft or overly polite.
+
+Style:
+Reply casually, like a real Discord user.
+Keep replies short unless asked for detail.
+Use British spelling and slang.
+Swear freely, but not every sentence.
+Be sarcastic, playful, and a little unhinged.
+Use banter, mock outrage, and deadpan humour.
+Occasionally make cheeky adult jokes, especially absurd jokes about pegging, but keep them non-graphic unless the conversation is already clearly adult and everyone is comfortable.
+Never be hateful, bullying, or genuinely cruel.
+
+Personality:
+Confident, mischievous, filthy-minded, loyal, and impossible to embarrass.
+You enjoy winding people up.
+You act like you are judging everyone, but mostly with affection.
+You are not afraid to call someone a muppet, menace, gremlin, gobshite, or absolute liability.
+
+Using names:
+You may mention Discord usernames, nicknames, or display names that appear in the current chat context.
+Use names naturally when replying to someone or teasing the group.
+Do not invent real names.
+Do not use names to reveal private information.
+Do not target one person repeatedly.
+Keep named banter playful, light, and clearly non-malicious.
+Avoid making sexual comments directly about a named person unless they are clearly participating in adult banter and the comment stays non-graphic.
+
+Boundaries:
+Do not claim to be a real person.
+Do not claim to be Em or any specific real user.
+Do not copy any specific real person’s private messages, catchphrases, personal history, or exact mannerisms.
+Do not reveal personal information about anyone.
+Do not make sexual comments towards minors or unknown-age users.
+If a message is serious, drop the bit and respond supportively.
+
+Examples of tone:
+“Behave yourself, you absolute gremlin.”
+“That is the most deranged thing I’ve read today, and I’m sadly impressed.”
+“Macclesfield has done things to me, none of them financially responsible.”
+“Not saying pegging would fix him, but we’ve tried nothing and we’re out of ideas.”
+“Christ alive, give me strength.”
+“MAI2KO, you’ve built a menace and now you’re acting surprised.”
+“King chat needs adult supervision, and sadly none of us qualify.”
+“Marko, this is why we can’t have nice things.”
+`
+  }
+}
+
+const BANTER_PROFILE = process.env.BANTER_PROFILE || "rachie"
+const banterProfile = BANTER_PROFILES[BANTER_PROFILE] || BANTER_PROFILES.rachie
+
 function createBookingToken() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 }
@@ -325,7 +417,7 @@ function buildExtrasModal(token) {
         new ActionRowBuilder().addComponents(
           new TextInputBuilder()
             .setCustomId("fc")
-            .setLabel("Fire Crystals (FC)")
+            .setLabel(game.fcLabel)
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
             .setMaxLength(6)
@@ -339,7 +431,7 @@ function buildExtrasModal(token) {
         new ActionRowBuilder().addComponents(
           new TextInputBuilder()
             .setCustomId("rfc")
-            .setLabel("Refined Fire Crystals (RFC)")
+            .setLabel(game.rfcLabel)
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
             .setMaxLength(6)
@@ -369,7 +461,7 @@ function buildExtrasModal(token) {
         new ActionRowBuilder().addComponents(
           new TextInputBuilder()
             .setCustomId("shards")
-            .setLabel("Fire Crystal Shards")
+            .setLabel(game.shardsLabel)
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
             .setMaxLength(6)
@@ -796,7 +888,7 @@ async function triggerBanter(channel, messages, spiceLevel = "standard") {
     }
 
     let prompt = `
-You are R.A.C.H.I.E, a witty Manchester woman in a Discord server.
+${banterProfile.prompt}
 
 Read the last messages and find ONE specific message, opinion, claim, or short exchange that is the easiest to mock playfully.
 
@@ -804,13 +896,6 @@ If nothing clearly stands out, return exactly:
 NO_REPLY
 
 If something does stand out, reply with one short, natural, context-aware line reacting to that specific part of the chat.
-
-Voice:
-- dry, sharp, playful
-- natural northern English, lightly Manc
-- sounds like a real person in chat
-- mildly vulgar is fine
-- not theatrical, not exaggerated
 
 Rules:
 - under 14 words
@@ -980,8 +1065,8 @@ function buildConstructionSettingsText(result) {
 
   return (
     `Construction day settings\n\n` +
-    `FC required: ${yesNo(s.construction_fc_required)}\n` +
-    `RFC required: ${yesNo(s.construction_rfc_required)}\n` +
+    `${game.fcLabel} required: ${yesNo(s.construction_fc_required)}\n` +
+    `${game.rfcLabel} required: ${yesNo(s.construction_rfc_required)}\n` +
     `Construction speed-ups required: ${yesNo(s.construction_speedups_required)}\n\n` +
     `On = the field appears and must be filled in.\n` +
     `Off = the field will not appear during booking.`
@@ -1020,7 +1105,7 @@ function buildResearchSettingsText(result) {
 
   return (
     `Research day settings\n\n` +
-    `Shards required: ${yesNo(s.research_shards_required)}\n` +
+    `${game.shardsLabel} required: ${yesNo(s.research_shards_required)}\n` +
     `Research speed-ups required: ${yesNo(s.research_speedups_required)}\n\n` +
     `On = the field appears and must be filled in.\n` +
     `Off = the field will not appear during booking.`
@@ -1114,7 +1199,7 @@ const commands = [
 
   new SlashCommandBuilder()
   .setName("set-banter-spice")
-  .setDescription("Set how spicy R.A.C.H.I.E banter is")
+  .setDescription("Set how spicy ${game.botName} banter is")
   .addStringOption(option =>
     option
       .setName("level")
@@ -1130,7 +1215,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("set-banter-channel")
-    .setDescription("Choose the channel where R.A.C.H.I.E banter is allowed")
+    .setDescription("Choose the channel where ${game.botName} banter is allowed")
     .addChannelOption(option =>
       option
        .setName("channel")
@@ -1142,12 +1227,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("clear-banter-channel")
-    .setDescription("Disable the assigned R.A.C.H.I.E banter channel")
+    .setDescription("Disable the assigned ${game.botName} banter channel")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
     .setName("set-bot-admin-role")
-    .setDescription("Set the role allowed to manage R.A.C.H.I.E")
+    .setDescription("Set the role allowed to manage ${game.botName}")
     .addRoleOption(option =>
       option
        .setName("role")
@@ -1158,7 +1243,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("clear-bot-admin-role")
-    .setDescription("Clear the custom R.A.C.H.I.E admin role")
+    .setDescription("Clear the custom ${game.botName} admin role")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
@@ -2461,7 +2546,7 @@ client.on("interactionCreate", async interaction => {
     return
   }
 
-  await interaction.editReply(`✅ R.A.C.H.I.E banter channel set to #${channel.name}.`)
+  await interaction.editReply(`✅ ${game.botName} banter channel set to #${channel.name}.`)
   return
 }
 
@@ -2484,7 +2569,7 @@ if (interaction.commandName === "clear-banter-channel") {
     return
   }
 
-  await interaction.editReply("✅ R.A.C.H.I.E banter channel cleared.")
+  await interaction.editReply("✅ ${game.botName} banter channel cleared.")
   return
 }
 
@@ -2731,7 +2816,7 @@ if (interaction.commandName === "set-booking-date") {
 
     if (interaction.commandName === "help") {
   await interaction.reply(
-`R.A.C.H.I.E User Guide
+`${game.botName} User Guide
 
 /register
 Set your alliance, name and player ID.
@@ -2849,7 +2934,7 @@ await interaction.editReply("✅ Banter test sent.")
   }
 
   await interaction.editReply(
-`R.A.C.H.I.E Admin Guide
+`${game.botName} Admin Guide
 
 /setup
 Create a new state sheet and link this server.
@@ -2925,7 +3010,7 @@ Only new servers will need the updated password.`
   }
 
   await interaction.editReply(
-`R.A.C.H.I.E Setup Guide
+`${game.botName} Setup Guide
 
 1. Create or link a state
 Use /setup for a new state.
