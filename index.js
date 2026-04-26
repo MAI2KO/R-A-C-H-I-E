@@ -1207,8 +1207,7 @@ const commands = [
         { name: "Standard", value: "standard" },
         { name: "Spicy", value: "spicy" }
       )
-  )
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  ),
 
   new SlashCommandBuilder()
     .setName("set-banter-channel")
@@ -1219,13 +1218,12 @@ const commands = [
        .setDescription("Channel for banter")
        .addChannelTypes(0)
        .setRequired(true)
-      )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+      ),
 
   new SlashCommandBuilder()
     .setName("clear-banter-channel")
-    .setDescription(`Disable the assigned ${game.botName} banter channel`)
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription(`Disable the assigned ${game.botName} banter channel`),
+    
 
   new SlashCommandBuilder()
     .setName("set-bot-admin-role")
@@ -1262,13 +1260,13 @@ const commands = [
           { name: "Troop", value: "Troop" },
           { name: "All days", value: "ALL" }
         )
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    ),
+    
   
   new SlashCommandBuilder()
     .setName("setup-help")
-    .setDescription("Show setup instructions for admins")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),  
+    .setDescription("Show setup instructions for admins"),
+      
 
   new SlashCommandBuilder()
     .setName("set-announcements")
@@ -1279,18 +1277,18 @@ const commands = [
         .setDescription("Channel to send announcements in")
         .addChannelTypes(0)
         .setRequired(true)
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    ),
+    
 
   new SlashCommandBuilder()
     .setName("admin-help")
-    .setDescription("Show admin help for managing the booking system")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Show admin help for managing the booking system"),
+    
 
   new SlashCommandBuilder()
     .setName("linked-servers")
-    .setDescription("Show all linked Discord servers for this state")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Show all linked Discord servers for this state"),
+    
 
   new SlashCommandBuilder()
     .setName("help")
@@ -1298,43 +1296,43 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("unlink-state")
-    .setDescription("Remove a linked Discord server from this state")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Remove a linked Discord server from this state"),
+    
 
   new SlashCommandBuilder()
     .setName("setup")
-    .setDescription("Create a new state and link this Discord")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Create a new state and link this Discord"),
+    
 
   new SlashCommandBuilder()
     .setName("link-state")
-    .setDescription("Link this Discord to an existing state")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Link this Discord to an existing state"),
+    
 
   new SlashCommandBuilder()
     .setName("settings")
-    .setDescription("Open the admin settings panel")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Open the admin settings panel"),
+    
 
   new SlashCommandBuilder()
     .setName("sheet-link")
-    .setDescription("Get the booking sheet link for this server")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Get the booking sheet link for this server"),
+    
 
   new SlashCommandBuilder()
     .setName("open-bookings")
-    .setDescription("Open bookings for this server")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Open bookings for this server"),
+    
 
   new SlashCommandBuilder()
     .setName("close-bookings")
-    .setDescription("Close bookings for this server")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Close bookings for this server"),
+    
 
   new SlashCommandBuilder()
     .setName("clear-bookings")
-    .setDescription("Clear all booking entries from the booking sheet")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Clear all booking entries from the booking sheet"),
+    
 
   new SlashCommandBuilder()
     .setName("my-bookings")
@@ -1399,8 +1397,8 @@ const commands = [
           { name: "Research", value: "Research" },
           { name: "Troop", value: "Troop" }
         )
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    ),
+    
 
   new SlashCommandBuilder()
     .setName("admin-remove-reserved")
@@ -1415,18 +1413,17 @@ const commands = [
           { name: "Research", value: "Research" },
           { name: "Troop", value: "Troop" }
         )
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-
+    ),
+    
   new SlashCommandBuilder()
     .setName("reset-state-password")
-    .setDescription("Generate a new join password for a state")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Generate a new join password for a state"),
+   
 
   new SlashCommandBuilder()
     .setName("grant-access")
-    .setDescription("Give a user edit access to the booking sheet")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Give a user edit access to the booking sheet"),
+    
 
   new SlashCommandBuilder()
     .setName("admin-add-booking")
@@ -1441,8 +1438,8 @@ const commands = [
           { name: "Research", value: "Research" },
           { name: "Troop", value: "Troop" }
         )
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    ),
+    
 
     new SlashCommandBuilder()
      .setName("set-booking-date")
@@ -1481,8 +1478,8 @@ const commands = [
          .setRequired(true)
          .setMinValue(1)
          .setMaxValue(31)
-      )
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+      ),
+      
   
   new SlashCommandBuilder()
     .setName("remove-booking")
@@ -1497,7 +1494,7 @@ const commands = [
           { name: "Research", value: "Research" },
           { name: "Troop", value: "Troop" }
         )
-    )
+    ),
 ].map(command => command.toJSON())
 
 /* -------------------- COMMAND REGISTRATION -------------------- */
