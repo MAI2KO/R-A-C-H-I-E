@@ -956,9 +956,7 @@ ${textBlock}
       prompt += `\nIf it genuinely fits, you may naturally use a playful insult like "${slang}", but do not force it.`
     }
 
-    console.log("---- BANTER REQUEST ----")
-    console.log("Spice:", spiceLevel)
-    console.log("Prompt:\n", prompt)
+    
 
     const response = await openai.chat.completions.create({
       model: "gpt-5.4",
@@ -969,8 +967,7 @@ ${textBlock}
 
     const reply = response.choices[0]?.message?.content?.trim()
 
-    console.log("---- BANTER RESPONSE ----")
-    console.log("Reply:", reply)
+    
 
     if (!reply || reply === "NO_REPLY") {
       return { sent: false, reason: "Model returned no reply" }
@@ -3640,24 +3637,18 @@ client.on("messageCreate", async message => {
     if (!message.guild) return
     if (!message.content || message.content.trim().length < 4) return
 
-    console.log("---- MESSAGE RECEIVED ----")
-    console.log("Guild:", message.guildId)
-    console.log("Channel:", message.channel.id)
-    console.log("Content:", message.content)
-
+    
     const banterConfig = await getBanterConfigForGuild(message.guildId)
 
-    console.log("---- BANTER CONFIG ----")
-    console.log("Configured channel:", banterConfig.banterChannelId)
-    console.log("Spice:", banterConfig.spiceLevel)
+    
 
     if (!banterConfig.banterChannelId) {
-      console.log("No banter channel configured")
+      
       return
     }
 
     if (message.channel.id !== banterConfig.banterChannelId) {
-      console.log("Message not in banter channel")
+      
       return
     }
 
@@ -3665,7 +3656,7 @@ client.on("messageCreate", async message => {
 
     const lastTime = channelCooldowns.get(channelId) || 0
     if (Date.now() - lastTime < COOLDOWN_MS) {
-      console.log("Still on cooldown")
+      
       return
     }
 
@@ -3681,7 +3672,7 @@ client.on("messageCreate", async message => {
       sourceMessage: message
     })
 
-    console.log("Buffer length:", buffer.length)
+    
 
     if (buffer.length > MESSAGE_LIMIT) {
       buffer.shift()
@@ -3691,7 +3682,7 @@ client.on("messageCreate", async message => {
 
     const result = await triggerBanter(message.channel, [...buffer], banterConfig.spiceLevel)
 
-    console.log("Natural banter result:", result)
+    
 
     messageBuffers.set(channelId, [])
     channelCooldowns.set(channelId, Date.now())
