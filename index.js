@@ -1196,7 +1196,7 @@ const commands = [
 
   new SlashCommandBuilder()
   .setName("set-banter-spice")
-  .setDescription("Set how spicy ${game.botName} banter is")
+  .setDescription(`Set how spicy ${game.botName} banter is`)
   .addStringOption(option =>
     option
       .setName("level")
@@ -1212,7 +1212,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("set-banter-channel")
-    .setDescription("Choose the channel where ${game.botName} banter is allowed")
+    .setDescription(`Choose the channel where ${game.botName} banter is allowed`)
     .addChannelOption(option =>
       option
        .setName("channel")
@@ -1224,12 +1224,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("clear-banter-channel")
-    .setDescription("Disable the assigned ${game.botName} banter channel")
+    .setDescription(`Disable the assigned ${game.botName} banter channel`)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
     .setName("set-bot-admin-role")
-    .setDescription("Set the role allowed to manage ${game.botName}")
+    .setDescription(`Set the role allowed to manage ${game.botName}`)
     .addRoleOption(option =>
       option
        .setName("role")
@@ -1240,7 +1240,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("clear-bot-admin-role")
-    .setDescription("Clear the custom ${game.botName} admin role")
+    .setDescription(`Clear the custom ${game.botName} admin role`)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
@@ -2566,7 +2566,7 @@ if (interaction.commandName === "clear-banter-channel") {
     return
   }
 
-  await interaction.editReply("✅ ${game.botName} banter channel cleared.")
+  await interaction.editReply(`✅ ${game.botName} banter channel cleared.`)
   return
 }
 
