@@ -46,14 +46,27 @@ const pendingAdminRemoveReserved = new Map()
 const messageBuffers = new Map()
 const channelCooldowns = new Map()
 
-const MESSAGE_LIMIT = 10
-const COOLDOWN_MS = 30 * 60 * 1000
+const channelMessageThresholds = new Map()
+const recentBanterReplies = new Map()
+
+const MIN_BANTER_MESSAGES = 5
+const MAX_BANTER_MESSAGES = 10
+const COOLDOWN_MS = 0
+
+const NAME_TRIGGER_CHANCE = 0.35
+const NAME_REPLY_CHANCE = 0.15
+const NAME_TRIGGER_COOLDOWN_MS = 2 * 60 * 1000
+
+const nameTriggerCooldowns = new Map()
 
 const BOOKING_PAGE_SIZE = 25
 const BOOKING_TTL_MS = 15 * 60 * 1000
 
 const banterConfigCache = new Map()
 const BANTER_CONFIG_TTL_MS = 5 * 60 * 1000
+
+
+
 
 const GAME_PROFILES = {
   wos: {
@@ -93,7 +106,7 @@ Voice:
 
   peggie: {
     prompt: `
-You are a Discord chat bot with a chaotic, blunt British personality.
+You are Peggie a Discord chat bot with a chaotic, blunt British personality.
 
 Voice:
 You sound like a woman from southern England who has spent enough time around Macclesfield and North West banter to pick up some local bite. You are sharp, sweary, teasing, and quick with dry humour. You are warm underneath it, but you do not act soft or overly polite.
@@ -771,6 +784,16 @@ function soundsTooForcedBritish(text) {
   return bannedPhrases.some(phrase => lower.includes(phrase))
 }
 
+function messageMentionsBotName(messageContent) {
+  const botNames = {
+    rachie: /\b(rachie|r\.a\.c\.h\.i\.e)\b/i,
+    peggie: /\b(peggie|p\.e\.g\.g\.i\.e)\b/i
+  }
+
+  const matcher = botNames[BANTER_PROFILE] || botNames.rachie
+  return matcher.test(messageContent)
+}
+
 async function sendBookingDm(user, message) {
   try {
     await user.send(message)
@@ -864,7 +887,7 @@ async function getBanterConfigForGuild(guildId) {
   return data
 }
 
-async function triggerBanter(channel, messages, spiceLevel = "standard") {
+async function triggerBanter(channel, messages, spiceLevel = "standard", channelId = null) {
   if (!openai) {
     return { sent: false, reason: "OpenAI client not available" }
   }
@@ -881,16 +904,24 @@ async function triggerBanter(channel, messages, spiceLevel = "standard") {
 
     let spiceInstruction = "Keep it playful, dry and sharp."
 
+    const recentReplies = channelId
+  ? recentBanterReplies.get(channelId) || []
+  : []
+
+const recentReplyText = recentReplies.length
+  ? recentReplies.map(reply => `- ${reply}`).join("\n")
+  : "None"
+
     if (spiceLevel === "mild") {
       spiceInstruction = "Keep it light, teasing and observational. Avoid harsh insults."
     } else if (spiceLevel === "spicy") {
-      spiceInstruction = "Be noticeably sharper, cheekier and more cutting. Mild vulgarity is allowed if it fits naturally. Do not become abusive, hateful, or bullying."
+      spiceInstruction = "Be noticeably sharper, cheekier and more cutting. vulgarity is allowed if it fits naturally. Do not become abusive, hateful, or bullying."
     }
 
     let prompt = `
 ${banterProfile.prompt}
 
-Read the last messages and find ONE specific message, opinion, claim, or short exchange that is the easiest to mock playfully.
+Read the last messages as a group chat between different people. Notice who said what. Find ONE specific message, opinion, claim, or short exchange that is the easiest to mock playfully.
 
 If nothing clearly stands out, return exactly:
 NO_REPLY
@@ -898,7 +929,7 @@ NO_REPLY
 If something does stand out, reply with one short, natural, context-aware line reacting to that specific part of the chat.
 
 Rules:
-- under 14 words
+- under 22 words
 - 1 sentence only
 - react to one specific moment, not the whole chat in general
 - do not explain what you are doing
@@ -910,6 +941,11 @@ Rules:
 - only use words like muppet, sausage, or you salad occasionally and only if they fit naturally
 - avoid repeating stock phrases like "not you", "state of this", or "you lot" too often
 - make the tone clearly match the requested spice level
+- do not treat the conversation as one person talking
+- pay attention to usernames and who said each message
+- if teasing someone, aim it at the person who actually said the thing
+- vary sentence structure and avoid reusing the same rhythm
+- do not start every reply with the same phrase or format
 
 Good examples for mild:
 - that is a proper odd thing to say
@@ -937,6 +973,9 @@ Bad examples:
 
 Spice:
 ${spiceInstruction}
+
+Recent replies to avoid sounding like:
+${recentReplyText}
 
 Conversation:
 ${textBlock}
@@ -982,11 +1021,29 @@ ${textBlock}
     }
 
     await channel.send(reply)
-    return { sent: true, reply }
+
+if (channelId) {
+  const recent = recentBanterReplies.get(channelId) || []
+  recent.push(reply)
+
+  while (recent.length > 8) {
+    recent.shift()
+  }
+
+  recentBanterReplies.set(channelId, recent)
+}
+
+return { sent: true, reply }
   } catch (err) {
     console.error("Banter error:", err)
     return { sent: false, reason: err.message || "Unknown error" }
   }
+}
+
+function getRandomBanterThreshold() {
+  return Math.floor(
+    Math.random() * (MAX_BANTER_MESSAGES - MIN_BANTER_MESSAGES + 1)
+  ) + MIN_BANTER_MESSAGES
 }
 
 function buildSettingsHomeText(result) {
@@ -2902,7 +2959,8 @@ await interaction.editReply(`⏳ Generating ${banterConfig.spiceLevel} banter...
 const banterResult = await triggerBanter(
   interaction.channel,
   messages,
-  banterConfig.spiceLevel
+  banterConfig.spiceLevel,
+  interaction.channel.id
 )
 
 if (!banterResult.sent) {
@@ -3651,38 +3709,72 @@ client.on("messageCreate", async message => {
 
     const channelId = message.channel.id
 
-    const lastTime = channelCooldowns.get(channelId) || 0
-    if (Date.now() - lastTime < COOLDOWN_MS) {
-      
+    if (messageMentionsBotName(message.content)) {
+  const lastNameTrigger = nameTriggerCooldowns.get(channelId) || 0
+
+  if (Date.now() - lastNameTrigger > NAME_TRIGGER_COOLDOWN_MS) {
+    nameTriggerCooldowns.set(channelId, Date.now())
+
+    if (Math.random() < NAME_REPLY_CHANCE) {
+      const nameReplies = [
+        "I heard that. Behave yourself.",
+        "Careful, I appear when summoned.",
+        "Say my name three times and I start invoicing.",
+        "I was minding my business, suspiciously."
+      ]
+
+      await message.channel.send(
+        nameReplies[Math.floor(Math.random() * nameReplies.length)]
+      )
       return
     }
 
-    if (!messageBuffers.has(channelId)) {
-      messageBuffers.set(channelId, [])
+    if (Math.random() < NAME_TRIGGER_CHANCE) {
+      await message.react("👀")
+      return
     }
+  }
+}
 
-    const buffer = messageBuffers.get(channelId)
+    const lastTime = channelCooldowns.get(channelId) || 0
+if (COOLDOWN_MS > 0 && Date.now() - lastTime < COOLDOWN_MS) {
+  return
+}
 
-    buffer.push({
-      author: message.member?.displayName || message.author.username,
-      content: message.content.trim(),
-      sourceMessage: message
-    })
+if (!messageBuffers.has(channelId)) {
+  messageBuffers.set(channelId, [])
+}
 
-    
+if (!channelMessageThresholds.has(channelId)) {
+  channelMessageThresholds.set(channelId, getRandomBanterThreshold())
+}
 
-    if (buffer.length > MESSAGE_LIMIT) {
-      buffer.shift()
-    }
+const buffer = messageBuffers.get(channelId)
+const threshold = channelMessageThresholds.get(channelId)
 
-    if (buffer.length < MESSAGE_LIMIT) return
+buffer.push({
+  author: message.member?.displayName || message.author.username,
+  content: message.content.trim()
+})
 
-    const result = await triggerBanter(message.channel, [...buffer], banterConfig.spiceLevel)
+if (buffer.length > MAX_BANTER_MESSAGES) {
+  buffer.shift()
+}
 
-    
+if (buffer.length < threshold) return
 
-    messageBuffers.set(channelId, [])
-    channelCooldowns.set(channelId, Date.now())
+const result = await triggerBanter(
+  message.channel,
+  [...buffer],
+  banterConfig.spiceLevel,
+  channelId
+)
+
+console.log("Natural banter result:", result)
+
+messageBuffers.set(channelId, [])
+channelCooldowns.set(channelId, Date.now())
+channelMessageThresholds.set(channelId, getRandomBanterThreshold())
   } catch (err) {
     console.error("Message handler error:", err)
   }
