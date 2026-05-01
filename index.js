@@ -3794,9 +3794,9 @@ if (mentionsName || tagsBot) {
           ? [
               "I heard that. Behave yourself.",
               "Careful, I appear when summoned.",
-              "You rang, you absolute liability?",
+              "Eww, no thanks.",
               "Say my name three times and I start invoicing.",
-              "I was minding my business, suspiciously."
+              "WTF do you want?"
             ]
           : [
               "I heard that.",
