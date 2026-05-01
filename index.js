@@ -54,7 +54,7 @@ const MAX_BANTER_MESSAGES = 10
 const COOLDOWN_MS = 0
 
 const NAME_TRIGGER_CHANCE = 0.85
-const NAME_REPLY_CHANCE = 0.35
+const NAME_REPLY_CHANCE = 0.15
 const NAME_TRIGGER_COOLDOWN_MS = 45 * 1000
 
 const nameTriggerCooldowns = new Map()
