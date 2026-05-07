@@ -1108,6 +1108,82 @@ return { sent: true, reply }
   }
 }
 
+async function triggerNameMentionReply(message, spiceLevel = "standard", channelId = null) {
+  try {
+    const recent = messageBuffers.get(channelId) || []
+
+    const recentContext = recent.length
+      ? recent.map(m => `${m.author}: ${m.content}`).join("\n")
+      : "No recent context."
+
+    const prompt = `
+${banterProfile.prompt}
+
+Someone has mentioned or tagged you in Discord.
+
+Reply directly to this message with one short natural line.
+
+Rules:
+- reply as the bot personality
+- react to the actual message, not generically
+- keep it under 18 words
+- playful and sharp is fine
+- if tagged directly, act like you have been summoned
+- no slurs
+- do not be genuinely cruel
+- do not explain yourself
+
+Spice level:
+${spiceLevel}
+
+Recent chat context:
+${recentContext}
+
+Message that summoned you:
+${message.member?.displayName || message.author.username}: ${message.content}
+`
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.75,
+      max_completion_tokens: 50
+    })
+
+    const reply = response.choices[0]?.message?.content?.trim()
+
+    if (!reply || reply === "NO_REPLY") {
+      return { sent: false, reason: "No reply generated" }
+    }
+
+    if (isTooAggressive(reply)) {
+      return { sent: false, reason: "Filtered as too aggressive" }
+    }
+
+    if (soundsTooForcedBritish(reply)) {
+      return { sent: false, reason: "Filtered as forced British" }
+    }
+
+    await message.reply(reply)
+
+    if (channelId) {
+      const recentReplies = recentBanterReplies.get(channelId) || []
+      recentReplies.push(reply)
+
+      while (recentReplies.length > 8) {
+        recentReplies.shift()
+      }
+
+      recentBanterReplies.set(channelId, recentReplies)
+    }
+
+    return { sent: true, reply }
+  } catch (err) {
+    console.error("Name mention reply error:", err)
+    return { sent: false, reason: err.message || "Unknown error" }
+  }
+}
+
 function getRandomBanterThreshold() {
   return Math.floor(
     Math.random() * (MAX_BANTER_MESSAGES - MIN_BANTER_MESSAGES + 1)
@@ -3777,7 +3853,7 @@ client.on("messageCreate", async message => {
 
     const channelId = message.channel.id
 
-    const mentionsName = messageMentionsBotName(message.content)
+const mentionsName = messageMentionsBotName(message.content)
 const tagsBot = messageTagsBot(message)
 
 if (mentionsName || tagsBot) {
@@ -3789,26 +3865,16 @@ if (mentionsName || tagsBot) {
     const shouldReply = tagsBot || Math.random() < NAME_REPLY_CHANCE
 
     if (shouldReply) {
-      const nameReplies =
-        BANTER_PROFILE === "peggie"
-          ? [
-              "I heard that. Behave yourself.",
-              "Careful, I appear when summoned.",
-              "Eww, no thanks.",
-              "Say my name three times and I start invoicing.",
-              "WTF do you want?"
-            ]
-          : [
-              "I heard that.",
-              "You rang?",
-              "I’m watching.",
-              "Careful, I’ve got opinions.",
-              "Go on then, what have you lot done now?"
-            ]
-
-      await message.channel.send(
-        nameReplies[Math.floor(Math.random() * nameReplies.length)]
+      const result = await triggerNameMentionReply(
+        message,
+        banterConfig.spiceLevel,
+        channelId
       )
+
+      if (!result?.sent && Math.random() < NAME_TRIGGER_CHANCE) {
+        await message.react("👀")
+      }
+
       return
     }
 
