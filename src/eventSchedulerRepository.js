@@ -197,7 +197,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
 
       const eventIds = events.map(event => event.id)
       const groupsResult = await pool.query(
-        `SELECT g.event_id, g.group_name, g.event_time_utc, g.sort_order
+        `SELECT g.id AS group_id, g.event_id, g.group_name, g.event_time_utc, g.sort_order
            FROM scheduled_event_groups g
            JOIN scheduled_events e
              ON e.id = g.event_id AND e.game_profile = g.game_profile
@@ -233,14 +233,15 @@ function createEventSchedulerRepository(pool, gameProfile) {
            FROM scheduled_events e
            LEFT JOIN scheduled_event_images i
              ON i.event_id = e.id AND i.game_profile = e.game_profile
-          WHERE e.id = $1 AND e.guild_id = $2 AND e.game_profile = $3`,
+          WHERE e.id = $1 AND e.guild_id = $2 AND e.game_profile = $3
+            AND e.status IN ('active', 'paused')`,
         [eventId, guildId, gameProfile]
       )
       const event = result.rows[0]
       if (!event) return null
 
       const groupsResult = await pool.query(
-        `SELECT g.group_name, g.event_time_utc, g.sort_order
+        `SELECT g.id AS group_id, g.group_name, g.event_time_utc, g.sort_order
            FROM scheduled_event_groups g
            JOIN scheduled_events e
              ON e.id = g.event_id AND e.game_profile = g.game_profile

@@ -1,4 +1,8 @@
 const EVENTS_PER_PAGE = 3
+const {
+  getOccurrenceAtIndex,
+  getNextOccurrence
+} = require("./occurrenceCalculation")
 
 function displayDate(value) {
   if (value instanceof Date) return value.toISOString().slice(0, 10)
@@ -39,18 +43,38 @@ function groupLines(groups, maximum = 12) {
   return visible
 }
 
-function formatEventPreview(event, { image = event.image } = {}) {
+function occurrenceLine(occurrence, { numbered = false, index = 0 } = {}) {
+  const timestamp = Math.floor(occurrence.occurrenceAt.getTime() / 1000)
+  const utc = occurrence.occurrenceAt.toISOString().slice(0, 16).replace("T", " ")
+  const group = occurrence.groupName ? ` - ${occurrence.groupName}` : ""
+  return `${numbered ? `${index + 1}. ` : ""}<t:${timestamp}:F> - ${utc} UTC${group}`
+}
+
+function formatEventPreview(event, { image = event.image, now = new Date() } = {}) {
   const groups = event.groups || []
   const timeBlock = groups.length
     ? groupLines(groups).join("\n")
     : `${displayTime(event.eventTimeUtc)} UTC`
   const pastNote = event.firstDateIsPast ? " (historical anchor)" : ""
+  const anchorOccurrences = getOccurrenceAtIndex(event, 0)
+  const anchorLines = anchorOccurrences.slice(0, 12).map(occurrence => occurrenceLine(occurrence))
+  if (anchorOccurrences.length > 12) {
+    anchorLines.push(`...and ${anchorOccurrences.length - 12} more group anchors`)
+  }
+  const nextOccurrence = event.firstDateIsPast
+    ? getNextOccurrence(event, now)
+    : null
+  const nextLine = nextOccurrence
+    ? `\nNext upcoming: ${occurrenceLine(nextOccurrence)}`
+    : ""
 
   return (
     `Create event preview\n\n` +
     `Alliance: ${event.allianceName}\n` +
     `Event: ${event.eventName}\n` +
     `First date: ${displayDate(event.firstOccurrenceDate)}${pastNote}\n` +
+    `Calculated first occurrence${anchorOccurrences.length === 1 ? "" : "s"}:\n` +
+    `${anchorLines.join("\n")}${nextLine}\n` +
     `Time${groups.length ? "s" : ""}:\n${timeBlock}\n` +
     `Recurrence: ${recurrenceLabel(event.recurrenceDays)}\n` +
     `Advance reminder: ${reminderLabel(event.advanceReminderMinutes)}\n` +
@@ -58,6 +82,20 @@ function formatEventPreview(event, { image = event.image } = {}) {
     `Publish to: ${publishingLabel(event)}\n` +
     `Monday roundup: ${event.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
     `Image: ${image ? `${image.originalFilename} (${image.byteSize} bytes)` : "None"}`
+  ).slice(0, 1950)
+}
+
+function formatUpcomingOccurrencePreview(event, occurrences) {
+  const status = event.status === "paused" ? " [paused]" : ""
+  const lines = occurrences.map((occurrence, index) =>
+    occurrenceLine(occurrence, { numbered: true, index })
+  )
+  return (
+    `Upcoming occurrences - next ${occurrences.length}\n\n` +
+    `Alliance: ${event.alliance_name}\n` +
+    `Event: ${event.event_name}${status}\n` +
+    `Recurrence: ${recurrenceLabel(event.recurrence_days)}\n\n` +
+    `${lines.join("\n")}`
   ).slice(0, 1950)
 }
 
@@ -93,7 +131,9 @@ module.exports = {
   recurrenceLabel,
   reminderLabel,
   publishingLabel,
+  occurrenceLine,
   formatEventPreview,
+  formatUpcomingOccurrencePreview,
   formatEventEntry,
   formatEventListPage
 }

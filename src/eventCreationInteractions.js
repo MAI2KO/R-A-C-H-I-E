@@ -18,10 +18,13 @@ const { InteractionSessionStore } = require("./interactionSessions")
 const {
   EVENTS_PER_PAGE,
   formatEventPreview,
-  formatEventListPage
+  formatEventListPage,
+  formatUpcomingOccurrencePreview
 } = require("./eventSchedulerFormatting")
+const { getNextOccurrences } = require("./occurrenceCalculation")
 
 const creationSessions = new InteractionSessionStore()
+const OCCURRENCES_PER_PREVIEW = 5
 
 const CREATION_IDS = Object.freeze({
   newEvent: "ec:new",
@@ -37,7 +40,8 @@ const CREATION_IDS = Object.freeze({
   createPrefix: "ec:ok:",
   editPrefix: "ec:e:",
   cancelPrefix: "ec:x:",
-  listPrefix: "el:"
+  listPrefix: "el:",
+  occurrencePreviewPrefix: "ep:"
 })
 
 function sessionContext(interaction, health) {
@@ -212,23 +216,51 @@ function buildPreviewView(sessionId, data) {
 
 function buildListView(events, page, total) {
   const totalPages = Math.max(1, Math.ceil(total / EVENTS_PER_PAGE))
+  const components = []
+  if (events.length > 0) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        ...events.map((event, index) =>
+          new ButtonBuilder()
+            .setCustomId(`${CREATION_IDS.occurrencePreviewPrefix}${event.id}:${page}`)
+            .setLabel(`Preview ${index + 1}`)
+            .setStyle(ButtonStyle.Primary)
+        )
+      )
+    )
+  }
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${CREATION_IDS.listPrefix}${Math.max(0, page - 1)}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page === 0),
+      new ButtonBuilder()
+        .setCustomId(`${CREATION_IDS.listPrefix}${page + 1}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages - 1),
+      new ButtonBuilder()
+        .setCustomId("es:home")
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary)
+    )
+  )
   return {
     content: formatEventListPage(events, page, total),
+    components
+  }
+}
+
+function buildOccurrencePreviewView(event, occurrences, page) {
+  return {
+    content: formatUpcomingOccurrencePreview(event, occurrences),
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`${CREATION_IDS.listPrefix}${Math.max(0, page - 1)}`)
-          .setLabel("Previous")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page === 0),
-        new ButtonBuilder()
-          .setCustomId(`${CREATION_IDS.listPrefix}${page + 1}`)
-          .setLabel("Next")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page >= totalPages - 1),
-        new ButtonBuilder()
-          .setCustomId("es:home")
-          .setLabel("Back")
+          .setCustomId(`${CREATION_IDS.listPrefix}${page}`)
+          .setLabel("Back to events")
           .setStyle(ButtonStyle.Secondary)
       )
     ]
@@ -256,7 +288,9 @@ async function handleEventCreationInteraction(
   { repository, health, loadHome, sessionStore = creationSessions }
 ) {
   const customId = String(interaction.customId || "")
-  const relevant = customId.startsWith("ec:") || customId.startsWith("el:")
+  const relevant = customId.startsWith("ec:")
+    || customId.startsWith("el:")
+    || customId.startsWith("ep:")
   if (!relevant) return false
 
   const context = sessionContext(interaction, health)
@@ -288,6 +322,29 @@ async function handleEventCreationInteraction(
     await interaction.deferUpdate()
     const page = Number(idSuffix(customId, CREATION_IDS.listPrefix))
     await showList(interaction, repository, page)
+    return true
+  }
+
+  if (
+    interaction.isButton?.()
+    && customId.startsWith(CREATION_IDS.occurrencePreviewPrefix)
+  ) {
+    await interaction.deferUpdate()
+    const [eventId, pageValue] = idSuffix(
+      customId,
+      CREATION_IDS.occurrencePreviewPrefix
+    ).split(":")
+    const page = Math.max(0, Number(pageValue) || 0)
+    const event = await repository.getEvent(interaction.guildId, eventId)
+    if (!event) {
+      await interaction.editReply({
+        content: "That event is no longer available for preview.",
+        components: []
+      })
+      return true
+    }
+    const occurrences = getNextOccurrences(event, new Date(), OCCURRENCES_PER_PREVIEW)
+    await interaction.editReply(buildOccurrencePreviewView(event, occurrences, page))
     return true
   }
 
@@ -446,5 +503,6 @@ module.exports = {
   buildPublishingView,
   buildPreviewView,
   buildListView,
+  buildOccurrencePreviewView,
   handleEventCreationInteraction
 }

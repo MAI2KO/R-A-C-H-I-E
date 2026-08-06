@@ -33,6 +33,7 @@ function isSchedulerInteraction(interaction) {
     || String(interaction.customId || "").startsWith(IDS.prefix)
     || String(interaction.customId || "").startsWith("ec:")
     || String(interaction.customId || "").startsWith("el:")
+    || String(interaction.customId || "").startsWith("ep:")
 }
 
 function buildHomeView(settings, stateLink) {
@@ -260,7 +261,8 @@ async function handleEventSchedulerInteraction(
       "DateTimeValidationError",
       "EventValidationError",
       "EventImageError",
-      "InteractionSessionError"
+      "InteractionSessionError",
+      "OccurrenceValidationError"
     ])
     const message = error instanceof SchedulerValidationError || userFacingErrors.has(error.name)
       ? error.message
