@@ -16,6 +16,7 @@ const {
   normalizeAllianceName,
   resolveSendableChannel
 } = require("./eventSchedulerService")
+const { handleEventCreationInteraction } = require("./eventCreationInteractions")
 
 const IDS = Object.freeze({
   prefix: "es:",
@@ -30,6 +31,8 @@ const IDS = Object.freeze({
 function isSchedulerInteraction(interaction) {
   return interaction.commandName === "event-scheduler"
     || String(interaction.customId || "").startsWith(IDS.prefix)
+    || String(interaction.customId || "").startsWith("ec:")
+    || String(interaction.customId || "").startsWith("el:")
 }
 
 function buildHomeView(settings, stateLink) {
@@ -45,6 +48,16 @@ function buildHomeView(settings, stateLink) {
       `Alliance event channel: ${allianceChannel}\n` +
       `State event channel: ${stateChannel}`,
     components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("ec:new")
+          .setLabel("Create event")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId("el:0")
+          .setLabel("View events")
+          .setStyle(ButtonStyle.Primary)
+      ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(IDS.configure)
@@ -160,6 +173,12 @@ async function handleEventSchedulerInteraction(
   const guildId = interaction.guildId
 
   try {
+    if (await handleEventCreationInteraction(interaction, {
+      repository,
+      health,
+      loadHome
+    })) return true
+
     if (interaction.isChatInputCommand?.() && interaction.commandName === "event-scheduler") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral })
       await interaction.editReply(await loadHome(repository, guildId))
@@ -236,7 +255,14 @@ async function handleEventSchedulerInteraction(
       return true
     }
   } catch (error) {
-    const message = error instanceof SchedulerValidationError
+    const userFacingErrors = new Set([
+      "SchedulerValidationError",
+      "DateTimeValidationError",
+      "EventValidationError",
+      "EventImageError",
+      "InteractionSessionError"
+    ])
+    const message = error instanceof SchedulerValidationError || userFacingErrors.has(error.name)
       ? error.message
       : "The event scheduler could not complete that action."
 
