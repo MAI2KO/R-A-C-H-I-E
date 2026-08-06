@@ -1,5 +1,6 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const { ChannelType, PermissionFlagsBits } = require("discord.js")
 
 const {
   getEventSchedulerCommandData
@@ -72,7 +73,9 @@ test("Discord target validation requires an accessible sendable channel", async 
   const permissions = { has: () => true }
   const channel = {
     guildId: "1234567890123456",
+    type: ChannelType.GuildText,
     isTextBased: () => true,
+    isSendable: () => true,
     permissionsFor: () => permissions
   }
   const guild = {
@@ -92,5 +95,19 @@ test("Discord target validation requires an accessible sendable channel", async 
   await assert.rejects(
     resolveSendableChannel(client, "1234567890123456", "2345678901234567"),
     SchedulerValidationError
+  )
+
+  channel.isTextBased = () => true
+  channel.type = ChannelType.GuildForum
+  await assert.rejects(
+    resolveSendableChannel(client, "1234567890123456", "2345678901234567"),
+    SchedulerValidationError
+  )
+
+  channel.type = ChannelType.GuildText
+  permissions.has = permission => permission !== PermissionFlagsBits.EmbedLinks
+  await assert.rejects(
+    resolveSendableChannel(client, "1234567890123456", "2345678901234567"),
+    /Embed Links/
   )
 })

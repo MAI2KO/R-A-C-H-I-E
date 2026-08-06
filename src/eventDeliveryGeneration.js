@@ -18,7 +18,7 @@ function deliveryWindow(now, { lookaheadMinutes, graceMinutes }) {
   }
 }
 
-function claimFor(event, occurrence, deliveryKind, deliverAt) {
+function claimFor(event, occurrence, deliveryKind, deliverAt, target) {
   return {
     eventId: event.id,
     groupId: occurrence.groupId,
@@ -26,10 +26,34 @@ function claimFor(event, occurrence, deliveryKind, deliverAt) {
     occurrenceAt: occurrence.occurrenceAt,
     deliverAt,
     deliveryKind,
-    targetKind: "alliance",
-    targetGuildId: event.guild_id,
-    targetChannelId: event.event_channel_id
+    targetKind: target.kind,
+    targetGuildId: target.guildId,
+    targetChannelId: target.channelId
   }
+}
+
+function deliveryTargets(event) {
+  const targets = []
+  if (event.publish_to_alliance === true && String(event.event_channel_id || "").trim()) {
+    targets.push({
+      kind: "alliance",
+      guildId: event.guild_id,
+      channelId: event.event_channel_id
+    })
+  }
+  if (
+    event.publish_to_state === true
+    && event.sharing_enabled === true
+    && String(event.state_guild_id || "").trim()
+    && String(event.state_event_channel_id || "").trim()
+  ) {
+    targets.push({
+      kind: "state",
+      guildId: event.state_guild_id,
+      channelId: event.state_event_channel_id
+    })
+  }
+  return targets
 }
 
 function buildDeliveryClaims(events, { gameProfile, windowStart, windowEnd }) {
@@ -44,32 +68,41 @@ function buildDeliveryClaims(events, { gameProfile, windowStart, windowEnd }) {
     if (
       event.game_profile !== gameProfile
       || event.status !== "active"
-      || event.publish_to_alliance !== true
-      || !String(event.event_channel_id || "").trim()
     ) continue
+    const targets = deliveryTargets(event)
+    if (targets.length === 0) continue
 
     const occurrences = getOccurrencesInRange(event, windowStart, occurrenceEnd)
     for (const occurrence of occurrences) {
-      const reminderMinutes = Number(event.advance_reminder_minutes)
-      if ([10, 30].includes(reminderMinutes)) {
-        const deliverAt = new Date(
-          occurrence.occurrenceAt.getTime() - reminderMinutes * MINUTE_MS
-        )
-        if (deliverAt.getTime() >= startMs && deliverAt.getTime() < endMs) {
-          claims.push(claimFor(event, occurrence, "advance_reminder", deliverAt))
+      for (const target of targets) {
+        const reminderMinutes = Number(event.advance_reminder_minutes)
+        if ([10, 30].includes(reminderMinutes)) {
+          const deliverAt = new Date(
+            occurrence.occurrenceAt.getTime() - reminderMinutes * MINUTE_MS
+          )
+          if (deliverAt.getTime() >= startMs && deliverAt.getTime() < endMs) {
+            claims.push(claimFor(
+              event,
+              occurrence,
+              "advance_reminder",
+              deliverAt,
+              target
+            ))
+          }
         }
-      }
-      if (
-        event.reminder_at_start === true
-        && occurrence.occurrenceAt.getTime() >= startMs
-        && occurrence.occurrenceAt.getTime() < endMs
-      ) {
-        claims.push(claimFor(
-          event,
-          occurrence,
-          "event_start",
-          new Date(occurrence.occurrenceAt)
-        ))
+        if (
+          event.reminder_at_start === true
+          && occurrence.occurrenceAt.getTime() >= startMs
+          && occurrence.occurrenceAt.getTime() < endMs
+        ) {
+          claims.push(claimFor(
+            event,
+            occurrence,
+            "event_start",
+            new Date(occurrence.occurrenceAt),
+            target
+          ))
+        }
       }
     }
   }
@@ -100,6 +133,7 @@ module.exports = {
   MINUTE_MS,
   MAX_ADVANCE_MINUTES,
   deliveryWindow,
+  deliveryTargets,
   buildDeliveryClaims,
   generateMissingDeliveryClaims
 }

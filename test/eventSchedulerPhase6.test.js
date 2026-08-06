@@ -512,7 +512,7 @@ test("runtime waits for client readiness and starts exactly once", async () => {
   fixture.setReady(true)
   assert.equal((await fixture.runtime.start()).started, true)
   assert.equal((await fixture.runtime.start()).started, true)
-  assert.ok(fixture.calls.includes("createRepository:alliance"))
+  assert.ok(fixture.calls.includes("createRepository:null"))
   assert.equal(fixture.calls.filter(call => call === "worker.start").length, 1)
 })
 

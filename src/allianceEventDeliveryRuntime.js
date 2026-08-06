@@ -42,7 +42,7 @@ function createAllianceEventDeliveryRuntime({
     const repository = createRepositoryFn(
       getPoolFn({ env, logger }),
       gameProfile,
-      { targetKind: "alliance" }
+      { targetKind: null }
     )
     const deliveryHandler = createHandlerFn({ client, gameProfile })
     worker = createWorkerFn({
@@ -56,9 +56,9 @@ function createAllianceEventDeliveryRuntime({
     })
     const result = worker.start()
     if (result.started) {
-      logger.log(`[Event scheduler] Alliance delivery worker started for ${gameProfile}`)
+      logger.log(`[Event scheduler] Event delivery worker started for ${gameProfile}`)
     } else {
-      logger.error(`[Event scheduler] Alliance delivery worker not started: ${result.reason}`)
+      logger.error(`[Event scheduler] Event delivery worker not started: ${result.reason}`)
     }
     return result
   }
@@ -71,7 +71,7 @@ function createAllianceEventDeliveryRuntime({
     if (startPromise) return startPromise
     startPromise = startOnce().catch(error => {
       logger.error(
-        `[Event scheduler] Alliance delivery startup failed: ${sanitizeDeliveryError(error)}`
+        `[Event scheduler] Event delivery startup failed: ${sanitizeDeliveryError(error)}`
       )
       return { started: false, reason: "startup failed" }
     })
@@ -84,7 +84,7 @@ function createAllianceEventDeliveryRuntime({
     shutdownPromise = shutdownFn({ worker, timeoutMs, logger })
       .catch(error => {
         logger.error(
-          `[Event scheduler] Alliance delivery shutdown failed: ${sanitizeDeliveryError(error)}`
+          `[Event scheduler] Event delivery shutdown failed: ${sanitizeDeliveryError(error)}`
         )
         return { workerDrained: false }
       })

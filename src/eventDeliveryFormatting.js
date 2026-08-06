@@ -100,6 +100,64 @@ function formatAllianceEventDelivery(payload, { imageFilename = null } = {}) {
   }
 }
 
+function formatStateEventDelivery(payload, { imageFilename = null } = {}) {
+  const timing = timingDetails(payload)
+  const allianceName = boundedText(payload?.alliance?.name, 110)
+  const eventName = boundedText(payload?.event?.eventName, 110)
+  const groupName = payload?.group?.name
+    ? boundedText(payload.group.name, EMBED_FIELD_VALUE_LIMIT)
+    : null
+  const stateLabel = payload.claim.deliveryKind === "event_start"
+    ? "State event starting now"
+    : "State event reminder"
+  const fields = [
+    {
+      name: "When",
+      value: boundedText(
+        `${timing.utc} UTC\n<t:${timing.timestamp}:F>`,
+        EMBED_FIELD_VALUE_LIMIT
+      ),
+      inline: false
+    },
+    {
+      name: "Status",
+      value: boundedText(timing.status, EMBED_FIELD_VALUE_LIMIT),
+      inline: true
+    },
+    {
+      name: "Recurrence",
+      value: boundedText(
+        recurrenceLabel(payload?.event?.recurrenceDays),
+        EMBED_FIELD_VALUE_LIMIT
+      ),
+      inline: true
+    }
+  ]
+  if (groupName) fields.splice(1, 0, { name: "Group", value: groupName, inline: false })
+
+  const embed = new EmbedBuilder()
+    .setColor(payload.claim.deliveryKind === "event_start" ? 0x3498db : 0xe67e22)
+    .setTitle(boundedText(`${allianceName} - ${eventName}`, EMBED_TITLE_LIMIT))
+    .setDescription(`**${stateLabel}**\nAlliance: **${allianceName}**`)
+    .addFields(fields)
+  if (imageFilename) embed.setImage(`attachment://${imageFilename}`)
+
+  return {
+    embeds: [embed],
+    allowedMentions: { parse: [], repliedUser: false }
+  }
+}
+
+function formatEventDelivery(payload, options) {
+  if (payload?.claim?.targetKind === "alliance") {
+    return formatAllianceEventDelivery(payload, options)
+  }
+  if (payload?.claim?.targetKind === "state") {
+    return formatStateEventDelivery(payload, options)
+  }
+  throw new PermanentDeliveryError("Delivery target type is unsupported.")
+}
+
 module.exports = {
   EMBED_TITLE_LIMIT,
   EMBED_DESCRIPTION_LIMIT,
@@ -108,5 +166,7 @@ module.exports = {
   neutralizeMentions,
   boundedText,
   timingDetails,
-  formatAllianceEventDelivery
+  formatAllianceEventDelivery,
+  formatStateEventDelivery,
+  formatEventDelivery
 }

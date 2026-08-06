@@ -14,7 +14,7 @@ const {
   RetryableDeliveryError,
   sanitizeDeliveryError
 } = require("./eventDeliveryWorker")
-const { formatAllianceEventDelivery } = require("./eventDeliveryFormatting")
+const { formatEventDelivery } = require("./eventDeliveryFormatting")
 
 const IMAGE_EXTENSIONS = Object.freeze({
   "image/png": "png",
@@ -112,26 +112,36 @@ function prepareStoredEventImage(image) {
   })
 }
 
-async function resolveAllianceTarget(client, payload, { hasImage }) {
-  if (payload?.claim?.targetKind !== "alliance") {
-    throw permanent("Delivery target is not an alliance channel.")
+async function resolveDeliveryTarget(client, payload, { hasImage }) {
+  const targetKind = payload?.claim?.targetKind
+  if (!["alliance", "state"].includes(targetKind)) {
+    throw permanent("Delivery target type is unsupported.")
   }
   const guildId = String(payload.claim.targetGuildId || "")
   const channelId = String(payload.claim.targetChannelId || "")
-  if (!guildId || payload?.alliance?.guildId !== guildId || payload?.event?.guildId !== guildId) {
+  if (!guildId || !channelId) {
+    throw permanent("Delivery target is incomplete.")
+  }
+  if (
+    targetKind === "alliance"
+    && (payload?.alliance?.guildId !== guildId || payload?.event?.guildId !== guildId)
+  ) {
     throw permanent("Delivery guild ownership is invalid.")
+  }
+  if (targetKind === "state" && payload.claim.targetIsCurrent !== true) {
+    throw permanent("State sharing disabled or target changed.")
   }
 
   let guild = client.guilds?.cache?.get?.(guildId)
   if (!guild) guild = await client.guilds?.fetch?.(guildId)
-  if (!guild) throw permanent("Configured alliance guild is unavailable.")
+  if (!guild) throw permanent(`Configured ${targetKind} guild is unavailable.`)
 
   const botMember = guild.members?.me || await guild.members?.fetchMe?.()
-  if (!botMember) throw permanent("Bot is not a member of the configured alliance guild.")
+  if (!botMember) throw permanent(`Bot is not a member of the configured ${targetKind} guild.`)
 
   let channel = guild.channels?.cache?.get?.(channelId)
   if (!channel) channel = await guild.channels?.fetch?.(channelId)
-  if (!channel) throw permanent("Configured alliance event channel is unavailable.")
+  if (!channel) throw permanent(`Configured ${targetKind} event channel is unavailable.`)
   if (channel.guildId !== guildId) {
     throw permanent("Configured event channel belongs to another guild.")
   }
@@ -161,6 +171,13 @@ async function resolveAllianceTarget(client, payload, { hasImage }) {
   return channel
 }
 
+async function resolveAllianceTarget(client, payload, options) {
+  if (payload?.claim?.targetKind !== "alliance") {
+    throw permanent("Delivery target is not an alliance channel.")
+  }
+  return resolveDeliveryTarget(client, payload, options)
+}
+
 function createDiscordEventDeliveryHandler({ client, gameProfile }) {
   if (!client) throw new Error("Discord client is required")
   const expectedProfile = String(gameProfile || "").trim()
@@ -173,8 +190,8 @@ function createDiscordEventDeliveryHandler({ client, gameProfile }) {
         throw permanent("Delivery game profile does not match this bot.")
       }
       const image = prepareStoredEventImage(payload.image)
-      const channel = await resolveAllianceTarget(client, payload, { hasImage: Boolean(image) })
-      const message = formatAllianceEventDelivery(payload, {
+      const channel = await resolveDeliveryTarget(client, payload, { hasImage: Boolean(image) })
+      const message = formatEventDelivery(payload, {
         imageFilename: image?.filename || null
       })
       if (image) message.files = [image.file]
@@ -197,6 +214,7 @@ module.exports = {
   DiscordRetryableDeliveryError,
   normalizeDiscordDeliveryError,
   prepareStoredEventImage,
+  resolveDeliveryTarget,
   resolveAllianceTarget,
   createDiscordEventDeliveryHandler
 }

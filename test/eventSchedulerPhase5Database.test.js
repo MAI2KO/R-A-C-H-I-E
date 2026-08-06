@@ -12,6 +12,7 @@ test("Phase 5 delivery claims are transactional, leased and profile isolated", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   const pool = new Pool({ connectionString: databaseUrl, max: 8 })
+  const isolationClient = await pool.connect()
   const guildId = "999999999999999951"
   const channelId = "999999999999999952"
   const now = new Date("2026-08-06T12:00:00Z")
@@ -69,6 +70,7 @@ test("Phase 5 delivery claims are transactional, leased and profile isolated", {
   }
 
   try {
+    await isolationClient.query("SELECT pg_advisory_lock(7000005)")
     await pool.query(
       "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile IN ('wos', 'kingshot')",
       [guildId]
@@ -263,6 +265,8 @@ test("Phase 5 delivery claims are transactional, leased and profile isolated", {
       "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile IN ('wos', 'kingshot')",
       [guildId]
     ).catch(() => {})
+    await isolationClient.query("SELECT pg_advisory_unlock(7000005)").catch(() => {})
+    isolationClient.release()
     await pool.end()
   }
 })

@@ -1,4 +1,4 @@
-const { PermissionFlagsBits } = require("discord.js")
+const { ChannelType, PermissionFlagsBits } = require("discord.js")
 
 class SchedulerValidationError extends Error {
   constructor(message) {
@@ -38,7 +38,13 @@ async function resolveSendableChannel(client, guildIdInput, channelIdInput) {
     )
   }
 
-  if (!channel || channel.guildId !== guildId || !channel.isTextBased?.()) {
+  if (
+    !channel
+    || channel.guildId !== guildId
+    || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)
+    || !channel.isTextBased?.()
+    || !channel.isSendable?.()
+  ) {
     throw new SchedulerValidationError("Select an accessible text channel in that guild.")
   }
 
@@ -47,12 +53,13 @@ async function resolveSendableChannel(client, guildIdInput, channelIdInput) {
   const required = [
     PermissionFlagsBits.ViewChannel,
     PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.EmbedLinks,
     PermissionFlagsBits.AttachFiles
   ]
 
   if (!permissions || !required.every(permission => permissions.has(permission))) {
     throw new SchedulerValidationError(
-      "The bot needs View Channel, Send Messages and Attach Files in that channel."
+      "The bot needs View Channel, Send Messages, Embed Links and Attach Files in that channel."
     )
   }
 
