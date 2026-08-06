@@ -64,12 +64,16 @@ function mapClaimPayload(row) {
   })
 }
 
-function createEventDeliveryRepository(pool, gameProfile) {
+function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } = {}) {
   requirePool(pool)
   assertProfile(gameProfile)
+  if (targetKind !== null && !["alliance", "state"].includes(targetKind)) {
+    throw new Error("Unsupported delivery target kind")
+  }
 
   const repository = {
     gameProfile,
+    targetKind,
 
     async listActiveEventDefinitions({ rangeEnd }) {
       const eventResult = await pool.query(
@@ -174,16 +178,18 @@ function createEventDeliveryRepository(pool, gameProfile) {
                   last_error = 'Claim lease expired after maximum attempts.',
                   updated_at = $2
             WHERE game_profile = $1
+              AND ($4::varchar IS NULL OR target_kind = $4)
               AND status = 'claimed'
               AND claimed_until <= $2
               AND attempt_count >= $3`,
-          [gameProfile, now, MAX_DELIVERY_ATTEMPTS]
+          [gameProfile, now, MAX_DELIVERY_ATTEMPTS, targetKind]
         )
         const result = await client.query(
           `WITH claimable AS (
              SELECT id
                FROM event_delivery_claims
               WHERE game_profile = $1
+                AND ($8::varchar IS NULL OR target_kind = $8)
                 AND attempt_count < $7
                 AND (
                   (status = 'pending' AND deliver_at <= $2)
@@ -214,7 +220,8 @@ function createEventDeliveryRepository(pool, gameProfile) {
             bot,
             worker,
             leaseSeconds,
-            MAX_DELIVERY_ATTEMPTS
+            MAX_DELIVERY_ATTEMPTS,
+            targetKind
           ]
         )
         await client.query("COMMIT")
@@ -252,8 +259,9 @@ function createEventDeliveryRepository(pool, gameProfile) {
           WHERE d.id = $1 AND d.game_profile = $2
             AND d.status = 'claimed'
             AND d.claimed_by_bot_instance = $3
-            AND d.claimed_by_worker = $4`,
-        [claimId, gameProfile, botInstanceName, workerId]
+            AND d.claimed_by_worker = $4
+            AND ($5::varchar IS NULL OR d.target_kind = $5)`,
+        [claimId, gameProfile, botInstanceName, workerId, targetKind]
       )
       return mapClaimPayload(result.rows[0])
     },
@@ -266,8 +274,9 @@ function createEventDeliveryRepository(pool, gameProfile) {
                 claimed_at = NULL, claimed_until = NULL,
                 last_error = NULL, next_attempt_at = NULL, updated_at = $5
           WHERE id = $1 AND game_profile = $2 AND status = 'claimed'
-            AND claimed_by_bot_instance = $3 AND claimed_by_worker = $4`,
-        [claimId, gameProfile, botInstanceName, workerId, sentAt, sentMessageId]
+            AND claimed_by_bot_instance = $3 AND claimed_by_worker = $4
+            AND ($7::varchar IS NULL OR target_kind = $7)`,
+        [claimId, gameProfile, botInstanceName, workerId, sentAt, sentMessageId, targetKind]
       )
       return result.rowCount === 1
     },
@@ -286,7 +295,8 @@ function createEventDeliveryRepository(pool, gameProfile) {
                 claimed_by_bot_instance = NULL, claimed_by_worker = NULL,
                 claimed_at = NULL, claimed_until = NULL, updated_at = $4
           WHERE id = $1 AND game_profile = $2 AND status = 'claimed'
-            AND claimed_by_bot_instance = $3 AND claimed_by_worker = $7`,
+            AND claimed_by_bot_instance = $3 AND claimed_by_worker = $7
+            AND ($8::varchar IS NULL OR target_kind = $8)`,
         [
           claimId,
           gameProfile,
@@ -294,7 +304,8 @@ function createEventDeliveryRepository(pool, gameProfile) {
           failedAt,
           lastError,
           nextAttemptAt,
-          workerId
+          workerId,
+          targetKind
         ]
       )
       return result.rowCount === 1

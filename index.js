@@ -38,6 +38,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent
   ]
 })
+let allianceEventDeliveryRuntime = null
 
 const pendingUnlinks = new Map()
 const pendingBookings = new Map()
@@ -1732,6 +1733,7 @@ async function postToAppsScript(payload) {
 
 client.once("clientReady", () => {
   console.log(`Bot ready: ${client.user.tag}`)
+  void allianceEventDeliveryRuntime?.start()
 })
 
 /* -------------------- COMMAND HANDLER -------------------- */
@@ -3941,13 +3943,20 @@ channelMessageThresholds.set(channelId, getRandomBanterThreshold())
 })
 
 const { initializeEventSchedulerSubsystem } = require("./src/eventSchedulerHealth")
+const { createAllianceEventDeliveryRuntime } = require("./src/allianceEventDeliveryRuntime")
 
 /* -------------------- START BOT -------------------- */
 
 async function main() {
-  initializeEventSchedulerSubsystem().catch(() => {
+  const schedulerInitialization = initializeEventSchedulerSubsystem().catch(() => {
     console.error("[Event scheduler] Initialization failed unexpectedly")
+    return null
   })
+  allianceEventDeliveryRuntime = createAllianceEventDeliveryRuntime({
+    client,
+    initializationPromise: schedulerInitialization
+  })
+  allianceEventDeliveryRuntime.installShutdownHandlers()
 
   try {
     console.log("Registering slash commands...")
