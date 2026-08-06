@@ -92,10 +92,28 @@ async function initializeEventSchedulerSubsystem({
   return getEventSchedulerHealth()
 }
 
+async function shutdownEventSchedulerSubsystem({
+  worker = null,
+  timeoutMs = 5000,
+  logger = console
+} = {}) {
+  let workerDrained = true
+  if (worker) {
+    const result = await worker.stop({ timeoutMs })
+    workerDrained = result.drained
+    if (!workerDrained) {
+      logger.error("[Event scheduler] Worker shutdown timed out")
+    }
+  }
+  await closePool()
+  return { workerDrained }
+}
+
 module.exports = {
   SUPPORTED_GAME_PROFILES,
   getEventSchedulerHealth,
   eventSchedulerIsAvailable,
   validateOwnershipConfiguration,
-  initializeEventSchedulerSubsystem
+  initializeEventSchedulerSubsystem,
+  shutdownEventSchedulerSubsystem
 }
