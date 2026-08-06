@@ -15,12 +15,19 @@ function createEventSchedulerRepository(pool, gameProfile) {
   return {
     async getGuildSettings(guildId) {
       const result = await pool.query(
-        `SELECT guild_id, game_profile, bot_instance_name, alliance_name,
-                event_channel_id, weekly_roundup_enabled, weekly_roundup_day,
-                weekly_roundup_time_utc, weekly_roundup_channel_id,
-                roundup_when_empty, created_at, updated_at
-           FROM event_guild_settings
-          WHERE guild_id = $1 AND game_profile = $2`,
+        `SELECT s.guild_id, s.game_profile, s.bot_instance_name,
+                COALESCE(a.alliance_name, s.alliance_name) AS alliance_name,
+                s.event_channel_id, s.weekly_roundup_enabled, s.weekly_roundup_day,
+                s.weekly_roundup_time_utc, s.weekly_roundup_channel_id,
+                s.roundup_when_empty, s.created_at, s.updated_at,
+                (SELECT COUNT(*)::integer FROM event_alliances total
+                  WHERE total.guild_id = s.guild_id
+                    AND total.game_profile = s.game_profile) AS alliance_count
+           FROM event_guild_settings s
+           LEFT JOIN event_alliances a
+             ON a.guild_id = s.guild_id AND a.game_profile = s.game_profile
+            AND a.is_default = true
+          WHERE s.guild_id = $1 AND s.game_profile = $2`,
         [guildId, gameProfile]
       )
       return result.rows[0] || null
@@ -33,19 +40,176 @@ function createEventSchedulerRepository(pool, gameProfile) {
       eventChannelId
     }) {
       const result = await pool.query(
-        `INSERT INTO event_guild_settings (
-           guild_id, game_profile, bot_instance_name, alliance_name,
-           event_channel_id
-         ) VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (guild_id, game_profile) DO UPDATE SET
-           bot_instance_name = EXCLUDED.bot_instance_name,
-           alliance_name = EXCLUDED.alliance_name,
-           event_channel_id = EXCLUDED.event_channel_id,
-           updated_at = now()
-         RETURNING *`,
+        `WITH upserted AS (
+           INSERT INTO event_guild_settings (
+             guild_id, game_profile, bot_instance_name, alliance_name, event_channel_id
+           ) VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (guild_id, game_profile) DO UPDATE SET
+             bot_instance_name = EXCLUDED.bot_instance_name,
+             event_channel_id = EXCLUDED.event_channel_id,
+             updated_at = now()
+           RETURNING *
+         ), default_insert AS (
+           INSERT INTO event_alliances (
+             guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+           )
+           SELECT guild_id, game_profile, alliance_name, true, bot_instance_name
+             FROM upserted
+           ON CONFLICT DO NOTHING
+           RETURNING id
+         )
+         SELECT upserted.*, (SELECT COUNT(*) FROM default_insert) AS defaults_created
+           FROM upserted`,
         [guildId, gameProfile, botInstanceName, allianceName, eventChannelId]
       )
       return result.rows[0]
+    },
+
+    async listAlliances(guildId, { limit = 25, offset = 0 } = {}) {
+      const result = await pool.query(
+        `SELECT a.id, a.guild_id, a.game_profile, a.alliance_name, a.is_default,
+                a.created_by_bot_instance, a.created_at, a.updated_at,
+                COUNT(*) OVER()::integer AS total_count,
+                COUNT(e.id) FILTER (WHERE e.status IN ('active', 'paused'))::integer
+                  AS managed_event_count,
+                COUNT(e.id)::integer AS total_event_count
+           FROM event_alliances a
+           LEFT JOIN scheduled_events e
+             ON e.alliance_id = a.id AND e.guild_id = a.guild_id
+            AND e.game_profile = a.game_profile
+          WHERE a.guild_id = $1 AND a.game_profile = $2
+          GROUP BY a.id
+          ORDER BY a.is_default DESC, lower(a.alliance_name), a.id
+          LIMIT $3 OFFSET $4`,
+        [guildId, gameProfile, limit, offset]
+      )
+      return {
+        alliances: result.rows,
+        total: result.rows[0]?.total_count || 0
+      }
+    },
+
+    async getAlliance(guildId, allianceId) {
+      const result = await pool.query(
+        `SELECT id, guild_id, game_profile, alliance_name, is_default,
+                created_by_bot_instance, created_at, updated_at
+           FROM event_alliances
+          WHERE id = $1 AND guild_id = $2 AND game_profile = $3`,
+        [allianceId, guildId, gameProfile]
+      )
+      return result.rows[0] || null
+    },
+
+    async createAlliance({ guildId, allianceName, createdByBotInstance }) {
+      const result = await pool.query(
+        `INSERT INTO event_alliances (
+           guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+         ) VALUES ($1, $2, $3, false, $4)
+         RETURNING *`,
+        [guildId, gameProfile, allianceName, createdByBotInstance]
+      )
+      return result.rows[0]
+    },
+
+    async renameAlliance({ guildId, allianceId, allianceName }) {
+      if (typeof pool.connect !== "function") throw new Error("Transactions are required")
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const allianceResult = await client.query(
+          `UPDATE event_alliances
+              SET alliance_name = $4, updated_at = now()
+            WHERE id = $1 AND guild_id = $2 AND game_profile = $3
+            RETURNING *`,
+          [allianceId, guildId, gameProfile, allianceName]
+        )
+        const alliance = allianceResult.rows[0]
+        if (!alliance) {
+          await client.query("ROLLBACK")
+          return null
+        }
+        if (alliance.is_default) {
+          await client.query(
+            `UPDATE event_guild_settings
+                SET alliance_name = $3, updated_at = now()
+              WHERE guild_id = $1 AND game_profile = $2`,
+            [guildId, gameProfile, allianceName]
+          )
+        }
+        const events = await client.query(
+          `UPDATE scheduled_events
+              SET alliance_name = $4, schedule_version = schedule_version + 1,
+                  updated_at = now()
+            WHERE alliance_id = $1 AND guild_id = $2 AND game_profile = $3
+            RETURNING id`,
+          [allianceId, guildId, gameProfile, allianceName]
+        )
+        if (events.rowCount) {
+          await client.query(
+            `UPDATE event_delivery_claims d
+                SET status = 'failed', next_attempt_at = NULL,
+                    claimed_by_bot_instance = NULL, claimed_by_worker = NULL,
+                    claimed_at = NULL, claimed_until = NULL,
+                    last_error = 'Event alliance changed.', updated_at = now()
+              FROM scheduled_events e
+             WHERE d.event_id = e.id AND d.game_profile = e.game_profile
+               AND e.alliance_id = $1 AND e.guild_id = $2 AND e.game_profile = $3
+               AND d.status <> 'sent'`,
+            [allianceId, guildId, gameProfile]
+          )
+        }
+        await client.query("COMMIT")
+        return alliance
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
+    },
+
+    async deleteAlliance({ guildId, allianceId }) {
+      if (typeof pool.connect !== "function") throw new Error("Transactions are required")
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const alliance = (await client.query(
+          `SELECT id, alliance_name, is_default
+             FROM event_alliances
+            WHERE id = $1 AND guild_id = $2 AND game_profile = $3
+            FOR UPDATE`,
+          [allianceId, guildId, gameProfile]
+        )).rows[0]
+        if (!alliance) {
+          await client.query("ROLLBACK")
+          return { deleted: false, reason: "missing" }
+        }
+        if (alliance.is_default) {
+          await client.query("ROLLBACK")
+          return { deleted: false, reason: "default", alliance }
+        }
+        const eventCount = Number((await client.query(
+          `SELECT COUNT(*)::integer AS count FROM scheduled_events
+            WHERE alliance_id = $1 AND guild_id = $2 AND game_profile = $3`,
+          [allianceId, guildId, gameProfile]
+        )).rows[0].count)
+        if (eventCount > 0) {
+          await client.query("ROLLBACK")
+          return { deleted: false, reason: "events", alliance, eventCount }
+        }
+        await client.query(
+          `DELETE FROM event_alliances
+            WHERE id = $1 AND guild_id = $2 AND game_profile = $3`,
+          [allianceId, guildId, gameProfile]
+        )
+        await client.query("COMMIT")
+        return { deleted: true, alliance }
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
     },
 
     async getStateLink(allianceGuildId) {
@@ -133,29 +297,41 @@ function createEventSchedulerRepository(pool, gameProfile) {
       const client = await pool.connect()
       try {
         await client.query("BEGIN")
+        const alliance = (await client.query(
+          `SELECT id, alliance_name
+             FROM event_alliances
+            WHERE id = $1 AND guild_id = $2 AND game_profile = $3
+            FOR SHARE`,
+          [event.allianceId, guildId, gameProfile]
+        )).rows[0]
+        if (!alliance) throw new Error("The selected alliance is no longer available")
         const eventResult = await client.query(
           `INSERT INTO scheduled_events (
-             guild_id, game_profile, created_by_bot_instance, alliance_name,
-             event_name, first_occurrence_date, event_time_utc,
+             guild_id, game_profile, created_by_bot_instance, alliance_id,
+             alliance_name, event_name, first_occurrence_date, event_time_utc,
              recurrence_days, image_url, advance_reminder_minutes,
-             reminder_at_start, publish_to_alliance, publish_to_state,
-             include_in_weekly_roundup, status, created_by_user_id
+             reminder_at_start, advance_reminder_message, final_reminder_message,
+             publish_to_alliance, publish_to_state, include_in_weekly_roundup,
+             status, created_by_user_id
            ) VALUES (
-             $1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, $10, $11, $12,
-             $13, 'active', $14
+             $1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, $10, $11, $12,
+             $13, $14, $15, $16, 'active', $17
            )
            RETURNING *`,
           [
             guildId,
             gameProfile,
             createdByBotInstance,
-            event.allianceName,
+            alliance.id,
+            alliance.alliance_name,
             event.eventName,
             event.firstOccurrenceDate,
             event.eventTimeUtc,
             event.recurrenceDays,
             event.advanceReminderMinutes,
             event.reminderAtStart,
+            event.advanceReminderMessage,
+            event.finalReminderMessage,
             event.publishToAlliance,
             event.publishToState,
             event.includeInWeeklyRoundup,
@@ -202,17 +378,21 @@ function createEventSchedulerRepository(pool, gameProfile) {
 
     async listEvents(guildId, { limit = 10, offset = 0 } = {}) {
       const result = await pool.query(
-        `SELECT e.*, e.first_occurrence_date::text AS first_occurrence_date,
+        `SELECT e.*, a.alliance_name AS alliance_name,
+                e.first_occurrence_date::text AS first_occurrence_date,
                 EXISTS (
                   SELECT 1 FROM scheduled_event_images i
                    WHERE i.event_id = e.id AND i.game_profile = e.game_profile
                 ) AS has_image,
                 COUNT(*) OVER()::integer AS total_count
            FROM scheduled_events e
+           JOIN event_alliances a
+             ON a.id = e.alliance_id AND a.guild_id = e.guild_id
+            AND a.game_profile = e.game_profile
           WHERE e.guild_id = $1
             AND e.game_profile = $2
             AND e.status IN ('active', 'paused')
-          ORDER BY e.first_occurrence_date, e.event_name, e.id
+          ORDER BY lower(a.alliance_name), e.first_occurrence_date, e.event_name, e.id
           LIMIT $3 OFFSET $4`,
         [guildId, gameProfile, limit, offset]
       )
@@ -251,12 +431,16 @@ function createEventSchedulerRepository(pool, gameProfile) {
 
     async getEvent(guildId, eventId) {
       const result = await pool.query(
-        `SELECT e.*, e.first_occurrence_date::text AS first_occurrence_date,
+        `SELECT e.*, a.alliance_name AS alliance_name,
+                e.first_occurrence_date::text AS first_occurrence_date,
                 i.original_filename AS image_filename,
                 i.content_type AS image_content_type,
                 i.byte_size AS image_byte_size,
                 i.image_data
            FROM scheduled_events e
+           JOIN event_alliances a
+             ON a.id = e.alliance_id AND a.guild_id = e.guild_id
+            AND a.game_profile = e.game_profile
            LEFT JOIN scheduled_event_images i
              ON i.event_id = e.id AND i.game_profile = e.game_profile
           WHERE e.id = $1 AND e.guild_id = $2 AND e.game_profile = $3
@@ -287,33 +471,55 @@ function createEventSchedulerRepository(pool, gameProfile) {
       try {
         await client.query("BEGIN")
         const existing = await client.query(
-          `SELECT id, schedule_version FROM scheduled_events
-            WHERE id = $1 AND guild_id = $2 AND game_profile = $3
-              AND status IN ('active', 'paused')
-            FOR UPDATE`,
-          [eventId, guildId, gameProfile]
+          `SELECT e.id, e.schedule_version, a.id AS selected_alliance_id,
+                  a.alliance_name AS selected_alliance_name
+             FROM scheduled_events e
+             JOIN event_alliances a
+               ON a.id = $4 AND a.guild_id = e.guild_id
+              AND a.game_profile = e.game_profile
+            WHERE e.id = $1 AND e.guild_id = $2 AND e.game_profile = $3
+              AND e.status IN ('active', 'paused')
+            FOR UPDATE OF e`,
+          [eventId, guildId, gameProfile, event.allianceId]
         )
         if (!existing.rowCount) {
           await client.query("ROLLBACK")
           return null
         }
+        const selectedAlliance = existing.rows[0]
         const updated = await client.query(
           `UPDATE scheduled_events
-              SET alliance_name = $4, event_name = $5,
-                  first_occurrence_date = $6, event_time_utc = $7,
-                  recurrence_days = $8, advance_reminder_minutes = $9,
-                  reminder_at_start = $10, publish_to_alliance = $11,
-                  publish_to_state = $12, include_in_weekly_roundup = $13,
+              SET alliance_id = $4, alliance_name = $5, event_name = $6,
+                  first_occurrence_date = $7, event_time_utc = $8,
+                  recurrence_days = $9, advance_reminder_minutes = $10,
+                  reminder_at_start = $11, advance_reminder_message = $12,
+                  final_reminder_message = $13, publish_to_alliance = $14,
+                  publish_to_state = $15, include_in_weekly_roundup = $16,
                   schedule_version = schedule_version + 1, updated_at = now()
             WHERE id = $1 AND guild_id = $2 AND game_profile = $3
             RETURNING *`,
           [
-            eventId, guildId, gameProfile, event.allianceName, event.eventName,
+            eventId, guildId, gameProfile,
+            selectedAlliance.selected_alliance_id,
+            selectedAlliance.selected_alliance_name,
+            event.eventName,
             event.firstOccurrenceDate, event.eventTimeUtc, event.recurrenceDays,
             event.advanceReminderMinutes, event.reminderAtStart,
+            event.advanceReminderMessage, event.finalReminderMessage,
             event.publishToAlliance, event.publishToState,
             event.includeInWeeklyRoundup
           ]
+        )
+        await client.query(
+          `UPDATE event_delivery_claims d
+              SET group_id_snapshot = COALESCE(d.group_id_snapshot, g.id),
+                  group_name_snapshot = COALESCE(d.group_name_snapshot, btrim(g.group_name)),
+                  group_id = NULL
+             FROM scheduled_event_groups g
+            WHERE d.group_id = g.id AND d.event_id = g.event_id
+              AND d.game_profile = g.game_profile
+              AND d.event_id = $1 AND d.game_profile = $2`,
+          [eventId, gameProfile]
         )
         await client.query(
           "DELETE FROM scheduled_event_groups WHERE event_id = $1 AND game_profile = $2",
@@ -351,7 +557,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
                   claimed_by_bot_instance = NULL, claimed_by_worker = NULL,
                   claimed_at = NULL, claimed_until = NULL,
                   last_error = 'Event schedule changed.', updated_at = now()
-            WHERE event_id = $1 AND game_profile = $2 AND status IN ('pending', 'failed')`,
+            WHERE event_id = $1 AND game_profile = $2 AND status <> 'sent'`,
           [eventId, gameProfile]
         )
         await client.query("COMMIT")
@@ -389,7 +595,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
                   claimed_by_bot_instance = NULL, claimed_by_worker = NULL,
                   claimed_at = NULL, claimed_until = NULL,
                   last_error = $3, updated_at = now()
-            WHERE event_id = $1 AND game_profile = $2 AND status IN ('pending', 'failed')`,
+            WHERE event_id = $1 AND game_profile = $2 AND status <> 'sent'`,
           [eventId, gameProfile, status === "deleted" ? "Event deleted." : "Event status changed."]
         )
         await client.query("COMMIT")

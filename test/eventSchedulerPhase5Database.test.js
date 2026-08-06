@@ -83,6 +83,14 @@ test("Phase 5 delivery claims are transactional, leased and profile isolated", {
          ($1, 'kingshot', 'peggie-kingshot', 'Kingshot', $2)`,
       [guildId, channelId]
     )
+    await pool.query(
+      `INSERT INTO event_alliances (
+         guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+       ) VALUES
+         ($1, 'wos', 'WOS', true, 'rachie-wos'),
+         ($1, 'kingshot', 'Kingshot', true, 'peggie-kingshot')`,
+      [guildId]
+    )
     const events = await pool.query(
       `INSERT INTO scheduled_events (
          guild_id, game_profile, created_by_bot_instance, alliance_name,

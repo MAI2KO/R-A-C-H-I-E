@@ -49,6 +49,7 @@ function occurrenceKey(item) {
 
 function compareRoundupOccurrences(left, right) {
   return left.occurrenceAt.getTime() - right.occurrenceAt.getTime()
+    || String(left.allianceName).localeCompare(String(right.allianceName))
     || String(left.eventName).localeCompare(String(right.eventName))
     || Number(left.groupSortOrder || 0) - Number(right.groupSortOrder || 0)
     || String(left.groupName || "").localeCompare(String(right.groupName || ""))

@@ -11,6 +11,7 @@ const databaseUrl = process.env.TEST_DATABASE_URL
 
 function draft(name, allianceName = "North") {
   return {
+    allianceId: null,
     allianceName,
     eventName: name,
     firstOccurrenceDate: "2028-02-28",
@@ -61,6 +62,28 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
          ($1, 'kingshot', 'peggie-kingshot', 'Kingshot North', $3, true, 1, '09:00', $3, false)`,
       [guildA, guildB, channelA, channelB]
     )
+    const alliances = await pool.query(
+      `INSERT INTO event_alliances (
+         guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+       ) VALUES
+         ($1, 'wos', 'North', true, 'rachie-wos'),
+         ($2, 'wos', 'South', true, 'rachie-wos'),
+         ($1, 'kingshot', 'Kingshot North', true, 'peggie-kingshot')
+       RETURNING id, guild_id, game_profile, alliance_name`,
+      [guildA, guildB]
+    )
+    const northAlliance = alliances.rows.find(row =>
+      row.guild_id === guildA && row.game_profile === "wos"
+    )
+    const southAlliance = alliances.rows.find(row =>
+      row.guild_id === guildB && row.game_profile === "wos"
+    )
+    const kingshotAlliance = alliances.rows.find(row => row.game_profile === "kingshot")
+    const northDraft = name => ({
+      ...draft(name),
+      allianceId: String(northAlliance.id),
+      allianceName: northAlliance.alliance_name
+    })
     await pool.query(
       `INSERT INTO event_state_links (
          alliance_guild_id, game_profile, configured_by_bot_instance,
@@ -85,25 +108,31 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
       guildId: guildA,
       createdByUserId: userId,
       createdByBotInstance: "rachie-wos",
-      event: { ...draft("Managed"), image }
+      event: { ...northDraft("Managed"), image }
     })
     const south = await wosB.createEvent({
       guildId: guildB,
       createdByUserId: userId,
       createdByBotInstance: "rachie-wos",
-      event: draft("South Event", "South")
+      event: {
+        ...draft("South Event", "South"),
+        allianceId: String(southAlliance.id)
+      }
     })
     const allianceOnly = await wosA.createEvent({
       guildId: guildA,
       createdByUserId: userId,
       createdByBotInstance: "rachie-wos",
-      event: { ...draft("Alliance Only"), publishToState: false }
+      event: { ...northDraft("Alliance Only"), publishToState: false }
     })
     await kingshot.createEvent({
       guildId: guildA,
       createdByUserId: userId,
       createdByBotInstance: "peggie-kingshot",
-      event: draft("Kingshot Event", "Kingshot North")
+      event: {
+        ...draft("Kingshot Event", "Kingshot North"),
+        allianceId: String(kingshotAlliance.id)
+      }
     })
 
     const deliveryRows = await pool.query(
@@ -130,7 +159,7 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     const activeClaim = deliveryRows.rows.find(row => row.status === "claimed")
 
     const groupedEdit = {
-      ...draft("Managed Edited"),
+      ...northDraft("Managed Edited"),
       eventTimeUtc: null,
       groups: [
         { groupName: "Alpha", eventTimeUtc: "10:00", sortOrder: 0 },
@@ -154,14 +183,13 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     )
     assert.equal(history.rows[0].status, "sent")
     assert.equal(history.rows[0].sent_message_id, "sent-history")
-    assert.ok(history.rows.slice(1, 3).every(row => row.status === "failed" && row.last_error))
-    assert.equal(history.rows[3].status, "claimed")
+    assert.ok(history.rows.slice(1).every(row => row.status === "failed" && row.last_error))
     const stalePayload = await createEventDeliveryRepository(pool, "wos").getClaimPayload({
       claimId: activeClaim.id,
       botInstanceName: "rachie-wos",
       workerId: "active-worker"
     })
-    assert.equal(stalePayload.claim.targetIsCurrent, false)
+    assert.equal(stalePayload, null)
 
     const newClaim = {
       eventId: managed.id,
@@ -184,7 +212,7 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     await wosA.updateEvent({
       guildId: guildA,
       eventId: managed.id,
-      event: { ...draft("Ungrouped Again"), image: replacement },
+      event: { ...northDraft("Ungrouped Again"), image: replacement },
       imageAction: "replace"
     })
     let current = await wosA.getEvent(guildA, managed.id)
@@ -193,7 +221,7 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     await assert.rejects(wosA.updateEvent({
       guildId: guildA,
       eventId: managed.id,
-      event: { ...draft("Must Roll Back"), image: { ...replacement, byteSize: 7 } },
+      event: { ...northDraft("Must Roll Back"), image: { ...replacement, byteSize: 7 } },
       imageAction: "replace"
     }))
     current = await wosA.getEvent(guildA, managed.id)
@@ -202,7 +230,7 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     await wosA.updateEvent({
       guildId: guildA,
       eventId: managed.id,
-      event: draft("No Image"),
+      event: northDraft("No Image"),
       imageAction: "remove"
     })
     current = await wosA.getEvent(guildA, managed.id)
@@ -210,13 +238,16 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     assert.equal(await wosA.updateEvent({
       guildId: guildB,
       eventId: managed.id,
-      event: draft("Wrong Guild"),
+      event: { ...draft("Wrong Guild", "South"), allianceId: String(southAlliance.id) },
       imageAction: "retain"
     }), null)
     assert.equal(await kingshot.updateEvent({
       guildId: guildA,
       eventId: managed.id,
-      event: draft("Wrong Profile"),
+      event: {
+        ...draft("Wrong Profile", "Kingshot North"),
+        allianceId: String(kingshotAlliance.id)
+      },
       imageAction: "retain"
     }), null)
 

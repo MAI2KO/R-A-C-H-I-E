@@ -55,9 +55,12 @@ function mapClaimPayload(row) {
       id: String(row.event_id),
       guildId: row.guild_id,
       eventName: row.event_name,
-      recurrenceDays: row.recurrence_days
+      recurrenceDays: row.recurrence_days,
+      advanceReminderMessage: row.advance_reminder_message,
+      finalReminderMessage: row.final_reminder_message
     }),
     alliance: Object.freeze({
+      id: row.alliance_id ? String(row.alliance_id) : null,
       name: row.alliance_name,
       guildId: row.guild_id
     }),
@@ -80,15 +83,14 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
     async listActiveEventDefinitions({ rangeEnd }) {
       const eventResult = await pool.query(
         `SELECT e.*, e.first_occurrence_date::text AS first_occurrence_date,
-                s.event_channel_id,
-                i.original_filename AS image_filename,
-                i.content_type AS image_content_type,
-                i.byte_size AS image_byte_size
+                a.alliance_name AS alliance_name,
+                s.event_channel_id
            FROM scheduled_events e
+           JOIN event_alliances a
+             ON a.id = e.alliance_id AND a.guild_id = e.guild_id
+            AND a.game_profile = e.game_profile
            JOIN event_guild_settings s
              ON s.guild_id = e.guild_id AND s.game_profile = e.game_profile
-           LEFT JOIN scheduled_event_images i
-             ON i.event_id = e.id AND i.game_profile = e.game_profile
           WHERE e.game_profile = $1
             AND e.status = 'active'
             AND e.publish_to_alliance = true
@@ -136,14 +138,16 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
           }
           const result = await client.query(
             `INSERT INTO event_delivery_claims (
-               event_id, group_id, game_profile, schedule_version, occurrence_at, deliver_at,
+               event_id, group_id, group_id_snapshot, group_name_snapshot,
+               game_profile, schedule_version, occurrence_at, deliver_at,
                delivery_kind, target_kind, target_guild_id, target_channel_id
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT DO NOTHING
              RETURNING id`,
             [
               claim.eventId,
               claim.groupId,
+              claim.groupName,
               gameProfile,
               claim.scheduleVersion || 1,
               claim.occurrenceAt,
@@ -274,9 +278,11 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
                   THEN true
                   ELSE false
                 END AS target_is_current,
-                e.id AS event_id, e.guild_id, e.alliance_name, e.event_name,
-                e.recurrence_days,
-                g.id AS group_id, g.group_name,
+                e.id AS event_id, e.guild_id, e.alliance_id,
+                a.alliance_name, e.event_name, e.recurrence_days,
+                e.advance_reminder_message, e.final_reminder_message,
+                g.id AS group_id,
+                COALESCE(g.group_name, d.group_name_snapshot) AS group_name,
                 g.event_time_utc AS group_event_time_utc,
                 g.sort_order AS group_sort_order,
                 i.original_filename AS image_filename,
@@ -285,6 +291,9 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
            FROM event_delivery_claims d
            JOIN scheduled_events e
              ON e.id = d.event_id AND e.game_profile = d.game_profile
+           JOIN event_alliances a
+             ON a.id = e.alliance_id AND a.guild_id = e.guild_id
+            AND a.game_profile = e.game_profile
            JOIN event_guild_settings s
              ON s.guild_id = e.guild_id AND s.game_profile = e.game_profile
            LEFT JOIN scheduled_event_groups g
@@ -293,6 +302,7 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
             AND g.game_profile = d.game_profile
            LEFT JOIN scheduled_event_images i
              ON i.event_id = d.event_id AND i.game_profile = d.game_profile
+            AND d.delivery_kind = 'advance_reminder'
           WHERE d.id = $1 AND d.game_profile = $2
             AND d.status = 'claimed'
             AND d.claimed_by_bot_instance = $3

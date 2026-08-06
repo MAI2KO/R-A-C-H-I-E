@@ -12,6 +12,7 @@ test("Phase 3 Postgres transactions and profile isolation", {
   const pool = new Pool({ connectionString: databaseUrl, max: 4 })
   const guildId = "999999999999999991"
   const baseEvent = {
+    allianceId: null,
     allianceName: "Integration Alliance",
     eventName: "Integration Event",
     firstOccurrenceDate: "2026-08-01",
@@ -39,6 +40,17 @@ test("Phase 3 Postgres transactions and profile isolation", {
          ($1, 'kingshot', 'peggie-kingshot', 'Kingshot Integration', '999999999999999993')`,
       [guildId]
     )
+    const alliances = await pool.query(
+      `INSERT INTO event_alliances (
+         guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+       ) VALUES
+         ($1, 'wos', 'WOS Integration', true, 'rachie-wos'),
+         ($1, 'kingshot', 'Kingshot Integration', true, 'peggie-kingshot')
+       RETURNING id, game_profile, alliance_name`,
+      [guildId]
+    )
+    const wosAlliance = alliances.rows.find(row => row.game_profile === "wos")
+    const kingshotAlliance = alliances.rows.find(row => row.game_profile === "kingshot")
 
     const wos = createEventSchedulerRepository(pool, "wos")
     const kingshot = createEventSchedulerRepository(pool, "kingshot")
@@ -46,13 +58,23 @@ test("Phase 3 Postgres transactions and profile isolation", {
       guildId,
       createdByUserId: "999999999999999994",
       createdByBotInstance: "rachie-wos",
-      event: { ...baseEvent, eventName: "WOS Event" }
+      event: {
+        ...baseEvent,
+        allianceId: String(wosAlliance.id),
+        allianceName: wosAlliance.alliance_name,
+        eventName: "WOS Event"
+      }
     })
     const kingshotEvent = await kingshot.createEvent({
       guildId,
       createdByUserId: "999999999999999994",
       createdByBotInstance: "peggie-kingshot",
-      event: { ...baseEvent, eventName: "Kingshot Event" }
+      event: {
+        ...baseEvent,
+        allianceId: String(kingshotAlliance.id),
+        allianceName: kingshotAlliance.alliance_name,
+        eventName: "Kingshot Event"
+      }
     })
 
     const wosList = await wos.listEvents(guildId)
@@ -69,6 +91,7 @@ test("Phase 3 Postgres transactions and profile isolation", {
         createdByBotInstance: "rachie-wos",
         event: {
           ...baseEvent,
+          allianceId: String(wosAlliance.id),
           eventName: "Duplicate Group Rollback",
           eventTimeUtc: null,
           groups: [
@@ -86,6 +109,7 @@ test("Phase 3 Postgres transactions and profile isolation", {
         createdByBotInstance: "rachie-wos",
         event: {
           ...baseEvent,
+          allianceId: String(wosAlliance.id),
           eventName: "Image Rollback",
           image: {
             originalFilename: "not-image.txt",

@@ -19,6 +19,7 @@ const {
 } = require("./eventSchedulerService")
 const { handleEventCreationInteraction } = require("./eventCreationInteractions")
 const { handleEventManagementInteraction } = require("./eventManagementInteractions")
+const { handleAllianceManagementInteraction } = require("./allianceManagementInteractions")
 const { parseUtcTime } = require("./timeParsing")
 
 const IDS = Object.freeze({
@@ -40,6 +41,7 @@ function isSchedulerInteraction(interaction) {
     || String(interaction.customId || "").startsWith("el:")
     || String(interaction.customId || "").startsWith("ep:")
     || String(interaction.customId || "").startsWith("mg:")
+    || String(interaction.customId || "").startsWith("am:")
 }
 
 function buildHomeView(settings, stateLink) {
@@ -54,7 +56,8 @@ function buildHomeView(settings, stateLink) {
   return {
     content:
       `Event scheduler\n\n` +
-      `Alliance: ${settings?.alliance_name || "Not configured"}\n` +
+      `Main alliance: ${settings?.alliance_name || "Not configured"}\n` +
+      `Alliances: ${settings?.alliance_count ?? 0}\n` +
       `Alliance event channel: ${allianceChannel}\n` +
       `State weekly roundup channel: ${stateChannel}\n` +
       `Weekly roundup: ${roundup}`,
@@ -63,11 +66,17 @@ function buildHomeView(settings, stateLink) {
         new ButtonBuilder()
           .setCustomId("ec:new")
           .setLabel("Create event")
-          .setStyle(ButtonStyle.Success),
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(!settings),
         new ButtonBuilder()
           .setCustomId("el:0")
           .setLabel("View events")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("am:open")
+          .setLabel("Alliances")
           .setStyle(ButtonStyle.Primary)
+          .setDisabled(!settings)
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -95,19 +104,22 @@ function buildHomeView(settings, stateLink) {
 }
 
 function buildAllianceModal(settings) {
-  return new ModalBuilder()
+  const modal = new ModalBuilder()
     .setCustomId(IDS.configureModal)
-    .setTitle("Alliance event channel")
-    .addComponents(
+    .setTitle("Alliance reminder channel")
+  if (!settings) {
+    modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("a")
-          .setLabel("Alliance name")
+          .setLabel("Main alliance name")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(100)
-          .setValue(settings?.alliance_name || "")
-      ),
+      )
+    )
+  }
+  return modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("c")
@@ -230,6 +242,8 @@ async function handleEventSchedulerInteraction(
   const guildId = interaction.guildId
 
   try {
+    if (await handleAllianceManagementInteraction(interaction, { repository, health })) return true
+
     if (await handleEventManagementInteraction(interaction, { repository, health })) return true
 
     if (await handleEventCreationInteraction(interaction, {
@@ -292,7 +306,10 @@ async function handleEventSchedulerInteraction(
 
     if (interaction.isModalSubmit?.() && interaction.customId === IDS.configureModal) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral })
-      const allianceName = normalizeAllianceName(interaction.fields.getTextInputValue("a"))
+      const existingSettings = await repository.getGuildSettings(guildId)
+      const allianceName = existingSettings?.alliance_name || normalizeAllianceName(
+        interaction.fields.getTextInputValue("a")
+      )
       const channelId = interaction.fields.getTextInputValue("c")
       const target = await resolveSendableChannel(interaction.client, guildId, channelId)
 

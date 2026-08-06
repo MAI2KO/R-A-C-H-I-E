@@ -344,13 +344,14 @@ test("Discord handler sends one mention-safe alliance embed and returns its mess
   assert.equal(sentOptions.embeds[0].toJSON().image.url, "attachment://event-image.png")
 })
 
-test("stored images are omitted from 10-minute and final reminders", async () => {
+test("stored images are attached to advance reminders and omitted from final announcements", async () => {
   const sent = []
   const fixture = discordFixture({
     permissions: [
       PermissionFlagsBits.ViewChannel,
       PermissionFlagsBits.SendMessages,
-      PermissionFlagsBits.EmbedLinks
+      PermissionFlagsBits.EmbedLinks,
+      PermissionFlagsBits.AttachFiles
     ],
     send: async options => {
       sent.push(options)
@@ -374,8 +375,10 @@ test("stored images are omitted from 10-minute and final reminders", async () =>
     image
   }))
   assert.equal(sent.length, 2)
-  assert.ok(sent.every(message => message.files === undefined))
-  assert.ok(sent.every(message => message.embeds[0].toJSON().image === undefined))
+  assert.equal(sent[0].files.length, 1)
+  assert.equal(sent[0].embeds[0].toJSON().image.url, "attachment://event-image.png")
+  assert.equal(sent[1].files, undefined)
+  assert.equal(sent[1].embeds[0].toJSON().image, undefined)
 })
 
 test("Discord handler sends text-only embeds without requiring attachments", async () => {

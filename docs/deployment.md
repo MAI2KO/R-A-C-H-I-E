@@ -1,0 +1,72 @@
+# Deployment
+
+## Service Variables
+
+Keep the two Railway services and Discord applications separate.
+
+R.A.C.H.I.E:
+
+```text
+GAME_PROFILE=wos
+BOT_INSTANCE_NAME=rachie-wos
+EVENT_SCHEDULER_ENABLED=true
+DATABASE_URL=<shared or dedicated Postgres URL>
+```
+
+P.E.G.G.I.E:
+
+```text
+GAME_PROFILE=kingshot
+BOT_INSTANCE_NAME=peggie-kingshot
+EVENT_SCHEDULER_ENABLED=true
+DATABASE_URL=<shared or dedicated Postgres URL>
+```
+
+Each service keeps its own `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and any `OPENAI_API_KEY`/`BANTER_PROFILE` configuration. Do not combine Apps Script deployments or booking sheets.
+
+Every variable read by the repository is listed in [`.env.example`](../.env.example). Scheduler tuning variables are optional; invalid or out-of-range values fall back to defaults.
+
+## Pre-Deployment Gate
+
+1. Back up the scheduler database.
+2. Run `npm install` from the committed lockfile.
+3. Run `npm run check` and `npm test`.
+4. Apply all migrations to a clean disposable PostgreSQL database.
+5. Run the migration command a second time and verify `applied 0`.
+6. Run the full suite with `TEST_DATABASE_URL` pointing only to that disposable database.
+7. Confirm `.env` is ignored, `.env.example` contains placeholders, and `git status --short` is clean.
+8. Confirm no test used live Discord, Railway, Apps Script, or production Postgres.
+
+## Startup And Degraded Mode
+
+`EVENT_SCHEDULER_ENABLED` is checked before `DATABASE_URL`. When it is not exactly `true`, the scheduler remains disabled and no Postgres pool is created.
+
+When enabled, scheduler initialization validates `GAME_PROFILE` and `BOT_INSTANCE_NAME`, checks Postgres, and runs migrations under an advisory lock. A failure marks only the scheduler unavailable and closes its pool. Discord login and existing bot behavior continue. Scheduler interactions return a private unavailable message; the polling worker does not start.
+
+## Safe Rollout
+
+1. Deploy the committed code without changing Apps Script or existing bot variables.
+2. Deploy one service first and inspect scheduler health/migration logs.
+3. Verify `/event-scheduler` privately in a test guild/channel for that profile.
+4. Deploy the second service and verify it sees only its own profile data.
+5. Configure main/sub-alliances, alliance reminder channel, weekly roundup, and optional state roundup link.
+6. Create a test event far enough ahead to observe the chosen advance reminder and one-minute final announcement.
+7. Verify no exact-start or individual state message appears.
+
+Migration 006 includes an old-writer compatibility trigger: an overlapping older process that omits `alliance_id` is assigned the profile's default alliance. New code always selects an explicit alliance.
+
+## Rollback
+
+Set `EVENT_SCHEDULER_ENABLED=false` on the affected service and redeploy/restart. This disables scheduler command registration and polling while preserving existing booking, state, administration, banter, and Apps Script-backed behavior.
+
+Leave additive migrations applied. Do not drop alliance or custom-message columns during an incident. Older code can continue default-alliance inserts because of the compatibility trigger, but it cannot manage sub-alliances or custom messages.
+
+If a release must be reverted, revert only application code, keep the database backup, and monitor scheduler logs. Re-enable the scheduler after the corrected application is deployed and migration state reports zero pending files.
+
+## Railway Checks
+
+- Confirm each service has the correct token/client pair and its own Apps Script URL.
+- Confirm `BOT_INSTANCE_NAME` values are distinct.
+- Confirm both services intentionally use the same or separate `DATABASE_URL`.
+- Never place `TEST_DATABASE_URL` in a production service.
+- Do not print tokens, URLs with credentials, or full environment dumps in logs.

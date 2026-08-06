@@ -14,9 +14,7 @@ function dateLabel(date) {
 function occurrenceLine(occurrence, targetKind) {
   const timestamp = Math.floor(occurrence.occurrenceAt.getTime() / 1000)
   const time = occurrence.occurrenceAt.toISOString().slice(11, 16)
-  const alliance = targetKind === "state"
-    ? `**${safeText(occurrence.allianceName)}** - `
-    : ""
+  const alliance = `**${safeText(occurrence.allianceName)}** - `
   const group = occurrence.groupName ? ` (${safeText(occurrence.groupName)})` : ""
   return `${time} UTC · <t:${timestamp}:t> · ${alliance}${safeText(occurrence.eventName)}${group}`
 }

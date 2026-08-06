@@ -26,6 +26,19 @@ function reminderLabel(minutes) {
     : `${minutes} minutes before`
 }
 
+function previewText(value) {
+  const normalized = String(value || "").trim()
+  return normalized ? normalized.replace(/@/g, "@\u200b") : "Default wording"
+}
+
+function imageBehaviour(event) {
+  const hasImage = Boolean(event.image || event.has_image || event.image_filename)
+  if (!hasImage) return "No image stored"
+  return event.advanceReminderMinutes ?? event.advance_reminder_minutes
+    ? "Stored; attached only to the alliance advance reminder"
+    : "Stored; not posted while the advance reminder is disabled"
+}
+
 function publishingLabel(event) {
   const targets = []
   if (event.publish_to_alliance ?? event.publishToAlliance) targets.push("alliance reminders")
@@ -78,9 +91,13 @@ function formatEventPreview(event, { now = new Date() } = {}) {
     `Time${groups.length ? "s" : ""}:\n${timeBlock}\n` +
     `Recurrence: ${recurrenceLabel(event.recurrenceDays)}\n` +
     `Advance reminder: ${reminderLabel(event.advanceReminderMinutes)}\n` +
-    `Final reminder (1 minute before): ${event.reminderAtStart ? "Yes" : "No"}\n` +
-    `Publish to: ${publishingLabel(event)}\n` +
-    `Weekly roundup: ${event.includeInWeeklyRoundup ? "Yes" : "No"}`
+    `Advance message: ${previewText(event.advanceReminderMessage)}\n` +
+    `Final announcement (1 minute before): ${event.reminderAtStart ? "Yes" : "No"}\n` +
+    `Final message: ${previewText(event.finalReminderMessage)}\n` +
+    `Image delivery: ${imageBehaviour(event)}\n` +
+    `Alliance reminders: ${event.publishToAlliance ? "Yes" : "No"}\n` +
+    `Alliance weekly roundup: ${event.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
+    `State weekly roundup: ${event.includeInWeeklyRoundup && event.publishToState ? "Yes" : "No"}`
   ).slice(0, 1950)
 }
 
@@ -93,7 +110,12 @@ function formatUpcomingOccurrencePreview(event, occurrences) {
     `Upcoming occurrences - next ${occurrences.length}\n\n` +
     `Alliance: ${event.alliance_name}\n` +
     `Event: ${event.event_name}${status}\n` +
-    `Recurrence: ${recurrenceLabel(event.recurrence_days)}\n\n` +
+    `Recurrence: ${recurrenceLabel(event.recurrence_days)}\n` +
+    `Advance: ${reminderLabel(event.advance_reminder_minutes)}\n` +
+    `Advance message: ${previewText(event.advance_reminder_message)}\n` +
+    `Final announcement: ${event.reminder_at_start ? "1 minute before" : "Disabled"}\n` +
+    `Final message: ${previewText(event.final_reminder_message)}\n` +
+    `Image delivery: ${imageBehaviour(event)}\n\n` +
     `${lines.join("\n")}`
   ).slice(0, 1950)
 }
@@ -111,6 +133,7 @@ function formatEventEntry(event) {
     `Time${groups.length ? "s" : ""}:\n${timeBlock}\n` +
     `Recurrence: ${recurrenceLabel(event.recurrence_days)}\n` +
     `Advance: ${reminderLabel(event.advance_reminder_minutes)}; final: ${event.reminder_at_start ? "Yes" : "No"}\n` +
+    `Custom messages: advance ${event.advance_reminder_message ? "Yes" : "No"}; final ${event.final_reminder_message ? "Yes" : "No"}\n` +
     `Publish: ${publishingLabel(event)}; roundup: ${event.include_in_weekly_roundup ? "Yes" : "No"}`
   )
 }
@@ -129,6 +152,8 @@ module.exports = {
   displayTime,
   recurrenceLabel,
   reminderLabel,
+  previewText,
+  imageBehaviour,
   publishingLabel,
   occurrenceLine,
   formatEventPreview,

@@ -22,6 +22,7 @@ function claimFor(event, occurrence, deliveryKind, deliverAt, target) {
   return {
     eventId: event.id,
     groupId: occurrence.groupId,
+    groupName: occurrence.groupName,
     gameProfile: event.game_profile,
     scheduleVersion: event.schedule_version || 1,
     occurrenceAt: occurrence.occurrenceAt,
@@ -65,7 +66,7 @@ function buildDeliveryClaims(events, { gameProfile, windowStart, windowEnd }) {
     for (const occurrence of occurrences) {
       for (const target of targets) {
         const reminderMinutes = Number(event.advance_reminder_minutes)
-        if ([10, 30].includes(reminderMinutes)) {
+        if ([5, 10, 15, 20, 30].includes(reminderMinutes)) {
           const deliverAt = new Date(
             occurrence.occurrenceAt.getTime() - reminderMinutes * MINUTE_MS
           )

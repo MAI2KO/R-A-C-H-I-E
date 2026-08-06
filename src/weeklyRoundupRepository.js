@@ -206,8 +206,12 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
       if (!row) return null
 
       const eventResult = await pool.query(
-        `SELECT DISTINCT e.*, e.first_occurrence_date::text AS first_occurrence_date
+        `SELECT DISTINCT e.*, a.alliance_name AS alliance_name,
+                e.first_occurrence_date::text AS first_occurrence_date
            FROM scheduled_events e
+           JOIN event_alliances a
+             ON a.id = e.alliance_id AND a.guild_id = e.guild_id
+            AND a.game_profile = e.game_profile
            ${row.target_kind === "state" ? `JOIN event_state_links l
              ON l.alliance_guild_id = e.guild_id AND l.game_profile = e.game_profile` : ""}
           WHERE e.game_profile = $1 AND e.status = 'active'

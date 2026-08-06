@@ -1,3 +1,4 @@
+const crypto = require("crypto")
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -12,7 +13,11 @@ const {
 } = require("discord.js")
 
 const { parseIsoDate, parseTimeOrGroups } = require("./timeParsing")
-const { EventValidationError, validateEventDraft } = require("./eventValidation")
+const {
+  EventValidationError,
+  normalizeCustomMessage,
+  validateEventDraft
+} = require("./eventValidation")
 const { downloadEventImage } = require("./eventImage")
 const { InteractionSessionStore } = require("./interactionSessions")
 const {
@@ -25,13 +30,19 @@ const { getNextOccurrences } = require("./occurrenceCalculation")
 
 const creationSessions = new InteractionSessionStore()
 const OCCURRENCES_PER_PREVIEW = 5
+const ALLIANCES_PER_PAGE = 25
 
 const CREATION_IDS = Object.freeze({
   newEvent: "ec:new",
   corePrefix: "ec:m:",
+  allianceSelectPrefix: "ec:as:",
+  alliancePagePrefix: "ec:ap:",
+  allianceChangePrefix: "ec:ac:",
   recurrencePrefix: "ec:r:",
   advancePrefix: "ec:a:",
   startPrefix: "ec:s:",
+  messagesPrefix: "ec:cm:",
+  messagesModalPrefix: "ec:cmm:",
   optionsPrefix: "ec:n:",
   alliancePrefix: "ec:pa:",
   statePrefix: "ec:ps:",
@@ -56,12 +67,17 @@ function idSuffix(customId, prefix) {
   return String(customId).slice(prefix.length)
 }
 
-function textInput(customId, label, value, { paragraph = false, maximum = 100 } = {}) {
+function textInput(
+  customId,
+  label,
+  value,
+  { paragraph = false, maximum = 100, required = true } = {}
+) {
   const input = new TextInputBuilder()
     .setCustomId(customId)
     .setLabel(label)
     .setStyle(paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short)
-    .setRequired(true)
+    .setRequired(required)
     .setMaxLength(maximum)
   if (value) input.setValue(value)
   return new ActionRowBuilder().addComponents(input)
@@ -79,7 +95,6 @@ function buildCoreModal(sessionId, data = {}) {
     .setCustomId(`${CREATION_IDS.corePrefix}${sessionId}`)
     .setTitle(data.mode === "edit" ? "Edit scheduled event" : "Create scheduled event")
     .addComponents(
-      textInput("a", "Alliance name", data.allianceName),
       textInput("e", "Event name", data.eventName),
       textInput("d", "First date (YYYY-MM-DD)", data.firstOccurrenceDate),
       textInput(
@@ -105,6 +120,105 @@ function buildCoreModal(sessionId, data = {}) {
   return modal
 }
 
+function buildMessagesModal(sessionId, data = {}) {
+  return new ModalBuilder()
+    .setCustomId(`${CREATION_IDS.messagesModalPrefix}${sessionId}`)
+    .setTitle("Custom reminder messages")
+    .addComponents(
+      textInput("advance", "Advance message (optional)", data.advanceReminderMessage, {
+        paragraph: true,
+        maximum: 500,
+        required: false
+      }),
+      textInput("final", "Final message (optional)", data.finalReminderMessage, {
+        paragraph: true,
+        maximum: 500,
+        required: false
+      })
+    )
+}
+
+function opaqueToken() {
+  return crypto.randomBytes(6).toString("base64url")
+}
+
+function buildAllianceSelectionView(sessionId, alliances, page, total, selectedAllianceId) {
+  const totalPages = Math.max(1, Math.ceil(total / ALLIANCES_PER_PAGE))
+  const tokenMap = {}
+  const options = alliances.map(alliance => {
+    const token = opaqueToken()
+    tokenMap[token] = String(alliance.id)
+    return {
+      label: alliance.alliance_name.slice(0, 100),
+      value: token,
+      description: alliance.is_default ? "Main alliance" : "Sub-alliance",
+      default: String(alliance.id) === String(selectedAllianceId || "")
+    }
+  })
+  return {
+    view: {
+      content: `Select alliance or sub-alliance - page ${page + 1} of ${totalPages}`,
+      components: [
+        new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId(`${CREATION_IDS.allianceSelectPrefix}${sessionId}`)
+            .setPlaceholder("Alliance or sub-alliance")
+            .addOptions(options)
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`${CREATION_IDS.alliancePagePrefix}${sessionId}:${Math.max(0, page - 1)}`)
+            .setLabel("Previous")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page === 0),
+          new ButtonBuilder()
+            .setCustomId(`${CREATION_IDS.alliancePagePrefix}${sessionId}:${page + 1}`)
+            .setLabel("Next")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page >= totalPages - 1),
+          new ButtonBuilder()
+            .setCustomId(`${CREATION_IDS.cancelPrefix}${sessionId}`)
+            .setLabel("Cancel")
+            .setStyle(ButtonStyle.Secondary)
+        )
+      ]
+    },
+    tokenMap
+  }
+}
+
+async function renderAllianceSelection(
+  interaction,
+  repository,
+  sessionStore,
+  sessionId,
+  context,
+  page = 0
+) {
+  const safePage = Math.max(0, Number(page) || 0)
+  const result = await repository.listAlliances(interaction.guildId, {
+    limit: ALLIANCES_PER_PAGE,
+    offset: safePage * ALLIANCES_PER_PAGE
+  })
+  if (!result.alliances.length) {
+    throw new EventValidationError("Add an alliance before creating an event.")
+  }
+  const session = sessionStore.get(sessionId, context)
+  const built = buildAllianceSelectionView(
+    sessionId,
+    result.alliances,
+    safePage,
+    result.total,
+    session.data.allianceId
+  )
+  sessionStore.update(sessionId, context, {
+    allianceSelectionPage: safePage,
+    allianceTokenMap: built.tokenMap
+  })
+  if (interaction.deferred || interaction.replied) await interaction.editReply(built.view)
+  else await interaction.reply({ ...built.view, flags: MessageFlags.Ephemeral })
+}
+
 function selectOption(label, value, selected) {
   return { label, value, default: String(selected) === value }
 }
@@ -115,7 +229,9 @@ function buildTimingView(sessionId, data) {
       `Event options\n\n` +
       `Recurrence: every ${data.recurrenceDays} days\n` +
       `Advance reminder: ${data.advanceReminderMinutes ?? "none"}\n` +
-      `Final reminder (1 minute before): ${data.reminderAtStart ? "Yes" : "No"}`,
+      `Advance custom message: ${data.advanceReminderMessage ? "Yes" : "No"}\n` +
+      `Final announcement (1 minute before): ${data.reminderAtStart ? "Yes" : "No"}\n` +
+      `Final custom message: ${data.finalReminderMessage ? "Yes" : "No"}`,
     components: [
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -134,15 +250,22 @@ function buildTimingView(sessionId, data) {
           .setPlaceholder("Advance reminder")
           .addOptions(
             selectOption("No advance reminder", "none", data.advanceReminderMinutes ?? "none"),
+            selectOption("5 minutes before", "5", data.advanceReminderMinutes),
             selectOption("10 minutes before", "10", data.advanceReminderMinutes),
+            selectOption("15 minutes before", "15", data.advanceReminderMinutes),
+            selectOption("20 minutes before", "20", data.advanceReminderMinutes),
             selectOption("30 minutes before", "30", data.advanceReminderMinutes)
           )
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.startPrefix}${sessionId}`)
-          .setLabel(data.reminderAtStart ? "Final reminder: On" : "Final reminder: Off")
+          .setLabel(data.reminderAtStart ? "Final: On" : "Final: Off")
           .setStyle(data.reminderAtStart ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`${CREATION_IDS.messagesPrefix}${sessionId}`)
+          .setLabel("Messages")
+          .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.optionsPrefix}${sessionId}`)
           .setLabel("Publishing options")
@@ -161,8 +284,9 @@ function buildPublishingView(sessionId, data) {
     content:
       `Publishing options\n\n` +
       `Alliance reminders: ${data.publishToAlliance ? "Yes" : "No"}\n` +
-      `State weekly roundup: ${data.publishToState ? "Yes" : "No"}\n` +
-      `Weekly roundup: ${data.includeInWeeklyRoundup ? "Yes" : "No"}`,
+      `Alliance weekly roundup: ${data.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
+      `State-roundup eligibility: ${data.publishToState ? "Yes" : "No"}\n` +
+      `State weekly roundup: ${data.includeInWeeklyRoundup && data.publishToState ? "Yes" : "No"}`,
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -171,7 +295,7 @@ function buildPublishingView(sessionId, data) {
           .setStyle(data.publishToAlliance ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.statePrefix}${sessionId}`)
-          .setLabel(data.publishToState ? "State roundup: On" : "State roundup: Off")
+          .setLabel(data.publishToState ? "State eligible: On" : "State eligible: Off")
           .setStyle(data.publishToState ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.roundupPrefix}${sessionId}`)
@@ -195,6 +319,7 @@ function buildPublishingView(sessionId, data) {
 function buildPreviewView(sessionId, data) {
   return {
     content: formatEventPreview(data),
+    allowedMentions: { parse: [], repliedUser: false },
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -203,7 +328,11 @@ function buildPreviewView(sessionId, data) {
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.editPrefix}${sessionId}`)
-          .setLabel("Edit")
+          .setLabel("Edit details")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`${CREATION_IDS.allianceChangePrefix}${sessionId}`)
+          .setLabel("Change alliance")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.cancelPrefix}${sessionId}`)
@@ -256,6 +385,7 @@ function buildListView(events, page, total) {
 function buildOccurrencePreviewView(event, occurrences, page) {
   return {
     content: formatUpcomingOccurrencePreview(event, occurrences),
+    allowedMentions: { parse: [], repliedUser: false },
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -270,6 +400,18 @@ function buildOccurrencePreviewView(event, occurrences, page) {
 async function stateLinkIsEnabled(repository, guildId) {
   const link = await repository.getStateLink(guildId)
   return Boolean(link?.sharing_enabled)
+}
+
+async function validateSessionEvent(repository, guildId, draft) {
+  const alliance = await repository.getAlliance(guildId, draft.allianceId)
+  if (!alliance) throw new EventValidationError("Select a valid alliance or sub-alliance.")
+  return validateEventDraft({
+    ...draft,
+    allianceId: String(alliance.id),
+    allianceName: alliance.alliance_name
+  }, {
+    stateLinkEnabled: await stateLinkIsEnabled(repository, guildId)
+  })
 }
 
 async function showList(interaction, repository, page) {
@@ -305,16 +447,26 @@ async function handleEventCreationInteraction(
       return true
     }
     const sessionId = sessionStore.create(context, {
-      allianceName: settings.alliance_name,
+      allianceId: null,
+      allianceName: null,
       recurrenceDays: 7,
       advanceReminderMinutes: null,
+      advanceReminderMessage: null,
       reminderAtStart: false,
+      finalReminderMessage: null,
       publishToAlliance: true,
       publishToState: false,
       includeInWeeklyRoundup: false,
       groups: []
     })
-    await interaction.showModal(buildCoreModal(sessionId, sessionStore.get(sessionId, context).data))
+    await renderAllianceSelection(
+      interaction,
+      repository,
+      sessionStore,
+      sessionId,
+      context,
+      0
+    )
     return true
   }
 
@@ -348,6 +500,64 @@ async function handleEventCreationInteraction(
     return true
   }
 
+  if (interaction.isButton?.() && customId.startsWith(CREATION_IDS.alliancePagePrefix)) {
+    const [sessionId, pageValue] = idSuffix(
+      customId,
+      CREATION_IDS.alliancePagePrefix
+    ).split(":")
+    sessionStore.get(sessionId, context)
+    await interaction.deferUpdate()
+    await renderAllianceSelection(
+      interaction,
+      repository,
+      sessionStore,
+      sessionId,
+      context,
+      Number(pageValue)
+    )
+    return true
+  }
+
+  if (
+    interaction.isStringSelectMenu?.()
+    && customId.startsWith(CREATION_IDS.allianceSelectPrefix)
+  ) {
+    const sessionId = idSuffix(customId, CREATION_IDS.allianceSelectPrefix)
+    const session = sessionStore.get(sessionId, context)
+    const allianceId = session.data.allianceTokenMap?.[interaction.values[0]]
+    if (!allianceId) throw new EventValidationError("That alliance selection has expired.")
+    const alliance = await repository.getAlliance(interaction.guildId, allianceId)
+    if (!alliance) throw new EventValidationError("That alliance is no longer available.")
+    const updated = sessionStore.update(sessionId, context, {
+      allianceId: String(alliance.id),
+      allianceName: alliance.alliance_name,
+      allianceTokenMap: null
+    })
+    await interaction.showModal(buildCoreModal(sessionId, updated.data))
+    return true
+  }
+
+  if (
+    interaction.isModalSubmit?.()
+    && customId.startsWith(CREATION_IDS.messagesModalPrefix)
+  ) {
+    const sessionId = idSuffix(customId, CREATION_IDS.messagesModalPrefix)
+    sessionStore.get(sessionId, context)
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    const session = sessionStore.update(sessionId, context, {
+      advanceReminderMessage: normalizeCustomMessage(
+        interaction.fields.getTextInputValue("advance"),
+        "Advance reminder message"
+      ),
+      finalReminderMessage: normalizeCustomMessage(
+        interaction.fields.getTextInputValue("final"),
+        "Final announcement message"
+      )
+    })
+    await interaction.editReply(buildTimingView(sessionId, session.data))
+    return true
+  }
+
   if (interaction.isModalSubmit?.() && customId.startsWith(CREATION_IDS.corePrefix)) {
     const sessionId = idSuffix(customId, CREATION_IDS.corePrefix)
     sessionStore.get(sessionId, context)
@@ -368,7 +578,6 @@ async function handleEventCreationInteraction(
       ? (previous.imageAction === "replace" ? image : previous.imageAction === "remove" ? null : previous.image)
       : (image || previous.image || null)
     const session = sessionStore.update(sessionId, context, {
-      allianceName: interaction.fields.getTextInputValue("a").trim(),
       eventName: interaction.fields.getTextInputValue("e").trim(),
       firstOccurrenceDate: parsedDate.value,
       firstDateIsPast: parsedDate.isPast,
@@ -410,6 +619,10 @@ async function handleEventCreationInteraction(
     await interaction.editReply(buildTimingView(sessionId, session.data))
     return true
   }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.messagesPrefix) {
+    await interaction.showModal(buildMessagesModal(sessionId, session.data))
+    return true
+  }
   if (interaction.isButton?.() && prefix === CREATION_IDS.optionsPrefix) {
     await interaction.deferUpdate()
     await interaction.editReply(buildPublishingView(sessionId, session.data))
@@ -443,9 +656,7 @@ async function handleEventCreationInteraction(
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.previewPrefix) {
-    const event = validateEventDraft(session.data, {
-      stateLinkEnabled: await stateLinkIsEnabled(repository, interaction.guildId)
-    })
+    const event = await validateSessionEvent(repository, interaction.guildId, session.data)
     sessionStore.update(sessionId, context, event)
     await interaction.deferUpdate()
     await interaction.editReply(buildPreviewView(sessionId, event))
@@ -453,6 +664,18 @@ async function handleEventCreationInteraction(
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.editPrefix) {
     await interaction.showModal(buildCoreModal(sessionId, session.data))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.allianceChangePrefix) {
+    await interaction.deferUpdate()
+    await renderAllianceSelection(
+      interaction,
+      repository,
+      sessionStore,
+      sessionId,
+      context,
+      0
+    )
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.cancelPrefix) {
@@ -472,9 +695,11 @@ async function handleEventCreationInteraction(
     }
     sessionStore.update(sessionId, context, { creationInProgress: true })
     try {
-      const event = validateEventDraft(session.data, {
-        stateLinkEnabled: await stateLinkIsEnabled(repository, interaction.guildId)
-      })
+      const event = await validateSessionEvent(
+        repository,
+        interaction.guildId,
+        session.data
+      )
       if (session.data.mode === "edit") {
         const updated = await repository.updateEvent({
           guildId: interaction.guildId,
@@ -512,9 +737,13 @@ async function handleEventCreationInteraction(
 
 module.exports = {
   CREATION_IDS,
+  ALLIANCES_PER_PAGE,
   creationSessions,
   sessionContext,
   buildCoreModal,
+  buildMessagesModal,
+  buildAllianceSelectionView,
+  renderAllianceSelection,
   buildTimingView,
   buildPublishingView,
   buildPreviewView,

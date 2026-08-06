@@ -57,7 +57,7 @@ function timingDetails(payload) {
   }
   const differenceMs = occurrence.getTime() - deliverAt.getTime()
   const minutes = differenceMs / 60000
-  if (!Number.isInteger(minutes) || ![10, 30].includes(minutes)) {
+  if (!Number.isInteger(minutes) || ![5, 10, 15, 20, 30].includes(minutes)) {
     throw new PermanentDeliveryError("Advance reminder interval is invalid.")
   }
   return { status: `Starts in ${minutes} minutes`, timestamp, utc }
@@ -72,6 +72,9 @@ function formatAllianceEventDelivery(payload, { imageFilename = null } = {}) {
     : null
   const descriptionParts = [`Alliance: **${allianceName}**`]
   if (groupName) descriptionParts.push(`Group: **${groupName}**`)
+  const customMessage = payload.claim.deliveryKind === "final_reminder"
+    ? payload?.event?.finalReminderMessage
+    : payload?.event?.advanceReminderMessage
 
   const titlePrefix = payload.claim.deliveryKind === "final_reminder"
     ? "About to start: "
@@ -106,6 +109,14 @@ function formatAllianceEventDelivery(payload, { imageFilename = null } = {}) {
         inline: true
       }
     )
+
+  if (String(customMessage || "").trim()) {
+    embed.addFields({
+      name: "Alliance message",
+      value: boundedText(customMessage, 500),
+      inline: false
+    })
+  }
 
   if (imageFilename) embed.setImage(`attachment://${imageFilename}`)
 

@@ -119,9 +119,9 @@ function deliveryUsesImage(payload) {
   ) return false
   const occurrence = payload.claim.occurrenceAt
   const deliverAt = payload.claim.deliverAt
-  return occurrence instanceof Date
-    && deliverAt instanceof Date
-    && occurrence.getTime() - deliverAt.getTime() === 30 * 60000
+  if (!(occurrence instanceof Date) || !(deliverAt instanceof Date)) return false
+  const minutes = (occurrence.getTime() - deliverAt.getTime()) / 60000
+  return [5, 10, 15, 20, 30].includes(minutes)
 }
 
 async function resolveDeliveryTarget(client, payload, { hasImage }) {

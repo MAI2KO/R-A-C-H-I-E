@@ -31,6 +31,7 @@ const {
 } = require("../src/eventSchedulerFormatting")
 
 const validDraft = Object.freeze({
+  allianceId: "1",
   allianceName: "North",
   eventName: "Bear Hunt",
   firstOccurrenceDate: "2026-08-01",
@@ -40,7 +41,9 @@ const validDraft = Object.freeze({
   grouped: false,
   recurrenceDays: 7,
   advanceReminderMinutes: 10,
+  advanceReminderMessage: null,
   reminderAtStart: true,
+  finalReminderMessage: null,
   publishToAlliance: true,
   publishToState: false,
   includeInWeeklyRoundup: true,
@@ -120,7 +123,7 @@ test("event validation rejects structural and option errors", () => {
       ]
     },
     { ...validDraft, recurrenceDays: 5 },
-    { ...validDraft, advanceReminderMinutes: 15 },
+    { ...validDraft, advanceReminderMinutes: 25 },
     { ...validDraft, publishToState: true }
   ]
   for (const draft of invalidDrafts) {
@@ -230,6 +233,9 @@ function makeTransactionPool({ failOn } = {}) {
     async query(text, values) {
       calls.push({ text, values })
       if (failOn && text.includes(failOn)) throw new Error("injected failure")
+      if (text.includes("FROM event_alliances")) {
+        return { rows: [{ id: "1", alliance_name: "North" }] }
+      }
       if (text.includes("INSERT INTO scheduled_events")) return { rows: [{ id: "41" }] }
       return { rows: [] }
     },

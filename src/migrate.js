@@ -20,8 +20,23 @@ async function listMigrationFiles(migrationsDir) {
     .sort((left, right) => left.localeCompare(right))
 }
 
+function withoutDollarQuotedBodies(sql) {
+  let result = ""
+  let position = 0
+  const openerPattern = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/g
+  while (true) {
+    openerPattern.lastIndex = position
+    const opener = openerPattern.exec(sql)
+    if (!opener) return result + sql.slice(position)
+    const bodyEnd = sql.indexOf(opener[0], opener.index + opener[0].length)
+    if (bodyEnd === -1) return result + sql.slice(position)
+    result += sql.slice(position, opener.index)
+    position = bodyEnd + opener[0].length
+  }
+}
+
 function assertMigrationHasNoTransactionControl(fileName, sql) {
-  if (/^\s*(BEGIN|COMMIT|ROLLBACK)\b/im.test(sql)) {
+  if (/^\s*(BEGIN|COMMIT|ROLLBACK)\b/im.test(withoutDollarQuotedBodies(sql))) {
     throw new Error(`${fileName} must not contain transaction control statements`)
   }
 }
@@ -124,6 +139,7 @@ module.exports = {
   MIGRATION_LOCK_ID,
   DEFAULT_MIGRATIONS_DIR,
   listMigrationFiles,
+  withoutDollarQuotedBodies,
   assertMigrationHasNoTransactionControl,
   runMigrations
 }

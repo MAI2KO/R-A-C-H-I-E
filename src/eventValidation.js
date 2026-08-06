@@ -1,5 +1,6 @@
 const ALLOWED_RECURRENCES = new Set([3, 7, 14, 28])
-const ALLOWED_ADVANCE_REMINDERS = new Set([null, 10, 30])
+const ALLOWED_ADVANCE_REMINDERS = new Set([null, 5, 10, 15, 20, 30])
+const CUSTOM_MESSAGE_MAX_LENGTH = 500
 
 class EventValidationError extends Error {
   constructor(message) {
@@ -16,7 +17,26 @@ function validateText(value, label, maximum = 100) {
   return normalized
 }
 
+function normalizeCustomMessage(value, label) {
+  const normalized = String(value || "").trim()
+  if (!normalized) return null
+  if (normalized.length > CUSTOM_MESSAGE_MAX_LENGTH) {
+    throw new EventValidationError(`${label} must be 500 characters or fewer.`)
+  }
+  if (
+    /\b(?:javascript|data|vbscript|file):/i.test(normalized)
+    || /\]\(\s*(?!https?:\/\/)[a-z][a-z0-9+.-]*:/i.test(normalized)
+  ) {
+    throw new EventValidationError(`${label} contains an unsupported URL scheme.`)
+  }
+  return normalized
+}
+
 function validateEventDraft(draft, { stateLinkEnabled = false } = {}) {
+  const allianceId = String(draft.allianceId || "").trim()
+  if (!/^\d+$/.test(allianceId) || allianceId === "0") {
+    throw new EventValidationError("Select a valid alliance or sub-alliance.")
+  }
   const allianceName = validateText(draft.allianceName, "Alliance name")
   const eventName = validateText(draft.eventName, "Event name")
   const groups = Array.isArray(draft.groups) ? draft.groups : []
@@ -32,7 +52,7 @@ function validateEventDraft(draft, { stateLinkEnabled = false } = {}) {
     throw new EventValidationError("Recurrence must be 3, 7, 14 or 28 days.")
   }
   if (!ALLOWED_ADVANCE_REMINDERS.has(advanceReminderMinutes)) {
-    throw new EventValidationError("Advance reminder must be none, 10 or 30 minutes.")
+    throw new EventValidationError("Advance reminder must be none, 5, 10, 15, 20 or 30 minutes.")
   }
 
   if (groups.length === 0 && !draft.eventTimeUtc) {
@@ -63,10 +83,19 @@ function validateEventDraft(draft, { stateLinkEnabled = false } = {}) {
 
   return {
     ...draft,
+    allianceId,
     allianceName,
     eventName,
     recurrenceDays,
     advanceReminderMinutes,
+    advanceReminderMessage: normalizeCustomMessage(
+      draft.advanceReminderMessage,
+      "Advance reminder message"
+    ),
+    finalReminderMessage: normalizeCustomMessage(
+      draft.finalReminderMessage,
+      "Final announcement message"
+    ),
     groups: normalizedGroups,
     reminderAtStart: Boolean(draft.reminderAtStart),
     publishToAlliance: Boolean(draft.publishToAlliance),
@@ -78,6 +107,8 @@ function validateEventDraft(draft, { stateLinkEnabled = false } = {}) {
 module.exports = {
   ALLOWED_RECURRENCES,
   ALLOWED_ADVANCE_REMINDERS,
+  CUSTOM_MESSAGE_MAX_LENGTH,
   EventValidationError,
+  normalizeCustomMessage,
   validateEventDraft
 }

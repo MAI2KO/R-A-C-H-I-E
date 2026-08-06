@@ -8,7 +8,11 @@ const {
 } = require("discord.js")
 
 const { InteractionSessionError, InteractionSessionStore } = require("./interactionSessions")
-const { creationSessions, sessionContext, buildCoreModal } = require("./eventCreationInteractions")
+const {
+  creationSessions,
+  sessionContext,
+  renderAllianceSelection
+} = require("./eventCreationInteractions")
 const {
   EVENTS_PER_PAGE,
   formatEventListPage,
@@ -27,6 +31,7 @@ function eventDraft(event) {
   return {
     mode: "edit",
     eventId: String(event.id),
+    allianceId: String(event.alliance_id),
     allianceName: event.alliance_name,
     eventName: event.event_name,
     firstOccurrenceDate: String(event.first_occurrence_date).slice(0, 10),
@@ -40,7 +45,9 @@ function eventDraft(event) {
     grouped: Boolean(event.groups?.length),
     recurrenceDays: event.recurrence_days,
     advanceReminderMinutes: event.advance_reminder_minutes,
+    advanceReminderMessage: event.advance_reminder_message,
     reminderAtStart: event.reminder_at_start,
+    finalReminderMessage: event.final_reminder_message,
     publishToAlliance: event.publish_to_alliance,
     publishToState: event.publish_to_state,
     includeInWeeklyRoundup: event.include_in_weekly_roundup,
@@ -173,6 +180,7 @@ async function handleEventManagementInteraction(
       const occurrences = getNextOccurrences(event, new Date(), 5)
       await interaction.editReply({
         content: formatUpcomingOccurrencePreview(event, occurrences),
+        allowedMentions: { parse: [], repliedUser: false },
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`${MANAGEMENT_PREFIX}l:${sessionId}:${session.data.page}`)
             .setLabel("Back to events").setStyle(ButtonStyle.Secondary)
@@ -199,8 +207,16 @@ async function handleEventManagementInteraction(
     if (!["retain", "replace", "remove"].includes(imageAction)) {
       throw new InteractionSessionError("That image action is invalid.")
     }
-    const session = creationSessions.update(editSessionId, context, { imageAction })
-    await interaction.showModal(buildCoreModal(editSessionId, session.data))
+    creationSessions.update(editSessionId, context, { imageAction })
+    await interaction.deferUpdate()
+    await renderAllianceSelection(
+      interaction,
+      repository,
+      creationSessions,
+      editSessionId,
+      context,
+      0
+    )
     return true
   }
 

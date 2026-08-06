@@ -148,6 +148,14 @@ test("the alliance worker expires final reminders and preserves profile isolatio
       [guildId, allianceChannel]
     )
     await pool.query(
+      `INSERT INTO event_alliances (
+         guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+       ) VALUES
+         ($1, 'wos', 'WOS North', true, 'rachie-wos'),
+         ($1, 'kingshot', 'Kingshot North', true, 'peggie-kingshot')`,
+      [guildId]
+    )
+    await pool.query(
       `INSERT INTO event_state_links
          (alliance_guild_id, game_profile, configured_by_bot_instance,
           state_guild_id, state_event_channel_id, sharing_enabled)
