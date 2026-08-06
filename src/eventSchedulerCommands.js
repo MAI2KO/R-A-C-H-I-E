@@ -4,7 +4,7 @@ const { schedulerIsEnabled } = require("./db")
 function buildEventSchedulerCommand() {
   return new SlashCommandBuilder()
     .setName("event-scheduler")
-    .setDescription("Manage alliance and state event schedules")
+    .setDescription("Manage alliance events and weekly roundups")
 }
 
 function getEventSchedulerCommandData(env = process.env) {

@@ -92,25 +92,25 @@ test("delivery configuration validates values and falls back safely", () => {
   }), getEventDeliveryConfig({}))
 })
 
-test("generation creates advance and start claims for ungrouped events", () => {
+test("generation creates advance and one-minute final claims for ungrouped events", () => {
   const window = deliveryWindow(NOW, { lookaheadMinutes: 1440, graceMinutes: 60 })
   const both = buildDeliveryClaims([event()], {
     gameProfile: "wos",
     windowStart: window.start,
     windowEnd: window.end
   })
-  assert.deepEqual(both.map(item => item.deliveryKind), ["advance_reminder", "event_start"])
+  assert.deepEqual(both.map(item => item.deliveryKind), ["advance_reminder", "final_reminder"])
   assert.equal(both[0].deliverAt.toISOString(), "2026-08-06T12:00:00.000Z")
-  assert.equal(both[1].deliverAt.toISOString(), "2026-08-06T12:10:00.000Z")
+  assert.equal(both[1].deliverAt.toISOString(), "2026-08-06T12:09:00.000Z")
 
   const advanceOnly = buildDeliveryClaims([event({ reminder_at_start: false })], {
     gameProfile: "wos", windowStart: window.start, windowEnd: window.end
   })
   assert.deepEqual(advanceOnly.map(item => item.deliveryKind), ["advance_reminder"])
-  const startOnly = buildDeliveryClaims([event({ advance_reminder_minutes: null })], {
+  const finalOnly = buildDeliveryClaims([event({ advance_reminder_minutes: null })], {
     gameProfile: "wos", windowStart: window.start, windowEnd: window.end
   })
-  assert.deepEqual(startOnly.map(item => item.deliveryKind), ["event_start"])
+  assert.deepEqual(finalOnly.map(item => item.deliveryKind), ["final_reminder"])
   const none = buildDeliveryClaims([event({
     advance_reminder_minutes: null,
     reminder_at_start: false
@@ -133,7 +133,7 @@ test("grouped generation creates separate deterministic claims per group", () =>
   })
   assert.deepEqual(
     claims.map(item => `${item.groupId}:${item.deliveryKind}`),
-    ["1:advance_reminder", "1:event_start", "2:advance_reminder", "2:event_start"]
+    ["1:advance_reminder", "1:final_reminder", "2:advance_reminder", "2:final_reminder"]
   )
 })
 
@@ -162,8 +162,8 @@ test("generation applies grace and lookahead as a half-open delivery window", ()
   const events = [
     event({ id: "grace", event_time_utc: "11:30:00", advance_reminder_minutes: null }),
     event({ id: "old", event_time_utc: "10:59:00", advance_reminder_minutes: null }),
-    event({ id: "inside", event_time_utc: "11:00:00", advance_reminder_minutes: null }),
-    event({ id: "future", first_occurrence_date: "2026-08-07", event_time_utc: "12:00:00", advance_reminder_minutes: null })
+    event({ id: "inside", event_time_utc: "11:01:00", advance_reminder_minutes: null }),
+    event({ id: "future", first_occurrence_date: "2026-08-07", event_time_utc: "12:01:00", advance_reminder_minutes: null })
   ]
   const window = deliveryWindow(NOW, { lookaheadMinutes: 1440, graceMinutes: 60 })
   const claims = buildDeliveryClaims(events, {
@@ -208,7 +208,7 @@ test("claim payload is structured, copied and does not expose image URLs", () =>
     claim_id: "5",
     game_profile: "wos",
     attempt_count: 1,
-    delivery_kind: "event_start",
+    delivery_kind: "advance_reminder",
     target_kind: "alliance",
     target_guild_id: "guild",
     target_channel_id: "channel",

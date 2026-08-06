@@ -58,7 +58,7 @@ function validateEventDraft(draft, { stateLinkEnabled = false } = {}) {
   })
 
   if (draft.publishToState && !stateLinkEnabled) {
-    throw new EventValidationError("State publishing requires an enabled state event link.")
+    throw new EventValidationError("State roundup inclusion requires an enabled state link.")
   }
 
   return {

@@ -16,7 +16,9 @@ function createEventSchedulerRepository(pool, gameProfile) {
     async getGuildSettings(guildId) {
       const result = await pool.query(
         `SELECT guild_id, game_profile, bot_instance_name, alliance_name,
-                event_channel_id, created_at, updated_at
+                event_channel_id, weekly_roundup_enabled, weekly_roundup_day,
+                weekly_roundup_time_utc, weekly_roundup_channel_id,
+                roundup_when_empty, created_at, updated_at
            FROM event_guild_settings
           WHERE guild_id = $1 AND game_profile = $2`,
         [guildId, gameProfile]
@@ -100,6 +102,29 @@ function createEventSchedulerRepository(pool, gameProfile) {
       return result.rows[0] || null
     },
 
+    async configureWeeklyRoundup({
+      guildId,
+      enabled,
+      weekday,
+      timeUtc,
+      channelId,
+      postWhenEmpty
+    }) {
+      const result = await pool.query(
+        `UPDATE event_guild_settings
+            SET weekly_roundup_enabled = $3,
+                weekly_roundup_day = $4,
+                weekly_roundup_time_utc = $5,
+                weekly_roundup_channel_id = $6,
+                roundup_when_empty = $7,
+                updated_at = now()
+          WHERE guild_id = $1 AND game_profile = $2
+          RETURNING *`,
+        [guildId, gameProfile, enabled, weekday, timeUtc, channelId, postWhenEmpty]
+      )
+      return result.rows[0] || null
+    },
+
     async createEvent({ guildId, createdByUserId, createdByBotInstance, event }) {
       if (typeof pool.connect !== "function") {
         throw new Error("The Postgres pool does not support transactions")
@@ -177,7 +202,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
 
     async listEvents(guildId, { limit = 10, offset = 0 } = {}) {
       const result = await pool.query(
-        `SELECT e.*,
+        `SELECT e.*, e.first_occurrence_date::text AS first_occurrence_date,
                 EXISTS (
                   SELECT 1 FROM scheduled_event_images i
                    WHERE i.event_id = e.id AND i.game_profile = e.game_profile
@@ -226,10 +251,11 @@ function createEventSchedulerRepository(pool, gameProfile) {
 
     async getEvent(guildId, eventId) {
       const result = await pool.query(
-        `SELECT e.*,
+        `SELECT e.*, e.first_occurrence_date::text AS first_occurrence_date,
                 i.original_filename AS image_filename,
                 i.content_type AS image_content_type,
-                i.byte_size AS image_byte_size
+                i.byte_size AS image_byte_size,
+                i.image_data
            FROM scheduled_events e
            LEFT JOIN scheduled_event_images i
              ON i.event_id = e.id AND i.game_profile = e.game_profile
@@ -250,6 +276,130 @@ function createEventSchedulerRepository(pool, gameProfile) {
         [eventId, guildId, gameProfile]
       )
       return { ...event, groups: groupsResult.rows }
+    },
+
+    async updateEvent({ guildId, eventId, event, imageAction = "retain" }) {
+      if (typeof pool.connect !== "function") throw new Error("Transactions are required")
+      if (!["retain", "replace", "remove"].includes(imageAction)) {
+        throw new Error("Unsupported image action")
+      }
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const existing = await client.query(
+          `SELECT id, schedule_version FROM scheduled_events
+            WHERE id = $1 AND guild_id = $2 AND game_profile = $3
+              AND status IN ('active', 'paused')
+            FOR UPDATE`,
+          [eventId, guildId, gameProfile]
+        )
+        if (!existing.rowCount) {
+          await client.query("ROLLBACK")
+          return null
+        }
+        const updated = await client.query(
+          `UPDATE scheduled_events
+              SET alliance_name = $4, event_name = $5,
+                  first_occurrence_date = $6, event_time_utc = $7,
+                  recurrence_days = $8, advance_reminder_minutes = $9,
+                  reminder_at_start = $10, publish_to_alliance = $11,
+                  publish_to_state = $12, include_in_weekly_roundup = $13,
+                  schedule_version = schedule_version + 1, updated_at = now()
+            WHERE id = $1 AND guild_id = $2 AND game_profile = $3
+            RETURNING *`,
+          [
+            eventId, guildId, gameProfile, event.allianceName, event.eventName,
+            event.firstOccurrenceDate, event.eventTimeUtc, event.recurrenceDays,
+            event.advanceReminderMinutes, event.reminderAtStart,
+            event.publishToAlliance, event.publishToState,
+            event.includeInWeeklyRoundup
+          ]
+        )
+        await client.query(
+          "DELETE FROM scheduled_event_groups WHERE event_id = $1 AND game_profile = $2",
+          [eventId, gameProfile]
+        )
+        for (const group of event.groups) {
+          await client.query(
+            `INSERT INTO scheduled_event_groups
+               (event_id, game_profile, group_name, event_time_utc, sort_order)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [eventId, gameProfile, group.groupName, group.eventTimeUtc, group.sortOrder]
+          )
+        }
+        if (imageAction === "remove" || imageAction === "replace") {
+          await client.query(
+            "DELETE FROM scheduled_event_images WHERE event_id = $1 AND game_profile = $2",
+            [eventId, gameProfile]
+          )
+        }
+        if (imageAction === "replace") {
+          if (!event.image) throw new Error("Replacement image is required")
+          await client.query(
+            `INSERT INTO scheduled_event_images
+               (event_id, game_profile, original_filename, content_type, byte_size, image_data)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              eventId, gameProfile, event.image.originalFilename, event.image.contentType,
+              event.image.byteSize, event.image.imageData
+            ]
+          )
+        }
+        await client.query(
+          `UPDATE event_delivery_claims
+              SET status = 'failed', next_attempt_at = NULL,
+                  claimed_by_bot_instance = NULL, claimed_by_worker = NULL,
+                  claimed_at = NULL, claimed_until = NULL,
+                  last_error = 'Event schedule changed.', updated_at = now()
+            WHERE event_id = $1 AND game_profile = $2 AND status IN ('pending', 'failed')`,
+          [eventId, gameProfile]
+        )
+        await client.query("COMMIT")
+        return updated.rows[0]
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
+    },
+
+    async setEventStatus({ guildId, eventId, status }) {
+      if (!["active", "paused", "deleted"].includes(status)) {
+        throw new Error("Unsupported event status")
+      }
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const result = await client.query(
+          `UPDATE scheduled_events
+              SET status = $4, schedule_version = schedule_version + 1, updated_at = now()
+            WHERE id = $1 AND guild_id = $2 AND game_profile = $3
+              AND status IN ('active', 'paused')
+            RETURNING *`,
+          [eventId, guildId, gameProfile, status]
+        )
+        if (!result.rowCount) {
+          await client.query("ROLLBACK")
+          return null
+        }
+        await client.query(
+          `UPDATE event_delivery_claims
+              SET status = 'failed', next_attempt_at = NULL,
+                  claimed_by_bot_instance = NULL, claimed_by_worker = NULL,
+                  claimed_at = NULL, claimed_until = NULL,
+                  last_error = $3, updated_at = now()
+            WHERE event_id = $1 AND game_profile = $2 AND status IN ('pending', 'failed')`,
+          [eventId, gameProfile, status === "deleted" ? "Event deleted." : "Event status changed."]
+        )
+        await client.query("COMMIT")
+        return result.rows[0]
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
     }
   }
 }

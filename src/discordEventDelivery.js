@@ -112,6 +112,18 @@ function prepareStoredEventImage(image) {
   })
 }
 
+function deliveryUsesImage(payload) {
+  if (
+    payload?.claim?.targetKind !== "alliance"
+    || payload?.claim?.deliveryKind !== "advance_reminder"
+  ) return false
+  const occurrence = payload.claim.occurrenceAt
+  const deliverAt = payload.claim.deliverAt
+  return occurrence instanceof Date
+    && deliverAt instanceof Date
+    && occurrence.getTime() - deliverAt.getTime() === 30 * 60000
+}
+
 async function resolveDeliveryTarget(client, payload, { hasImage }) {
   const targetKind = payload?.claim?.targetKind
   if (!["alliance", "state"].includes(targetKind)) {
@@ -130,6 +142,9 @@ async function resolveDeliveryTarget(client, payload, { hasImage }) {
   }
   if (targetKind === "state" && payload.claim.targetIsCurrent !== true) {
     throw permanent("State sharing disabled or target changed.")
+  }
+  if (targetKind === "alliance" && payload.claim.targetIsCurrent === false) {
+    throw permanent("Event schedule or alliance target changed.")
   }
 
   let guild = client.guilds?.cache?.get?.(guildId)
@@ -189,7 +204,10 @@ function createDiscordEventDeliveryHandler({ client, gameProfile }) {
       if (payload?.claim?.gameProfile !== expectedProfile) {
         throw permanent("Delivery game profile does not match this bot.")
       }
-      const image = prepareStoredEventImage(payload.image)
+      if (payload?.claim?.targetKind !== "alliance") {
+        throw permanent("Individual state reminders are disabled.")
+      }
+      const image = deliveryUsesImage(payload) ? prepareStoredEventImage(payload.image) : null
       const channel = await resolveDeliveryTarget(client, payload, { hasImage: Boolean(image) })
       const message = formatEventDelivery(payload, {
         imageFilename: image?.filename || null
@@ -214,6 +232,7 @@ module.exports = {
   DiscordRetryableDeliveryError,
   normalizeDiscordDeliveryError,
   prepareStoredEventImage,
+  deliveryUsesImage,
   resolveDeliveryTarget,
   resolveAllianceTarget,
   createDiscordEventDeliveryHandler

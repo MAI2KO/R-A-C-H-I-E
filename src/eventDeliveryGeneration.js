@@ -23,6 +23,7 @@ function claimFor(event, occurrence, deliveryKind, deliverAt, target) {
     eventId: event.id,
     groupId: occurrence.groupId,
     gameProfile: event.game_profile,
+    scheduleVersion: event.schedule_version || 1,
     occurrenceAt: occurrence.occurrenceAt,
     deliverAt,
     deliveryKind,
@@ -39,18 +40,6 @@ function deliveryTargets(event) {
       kind: "alliance",
       guildId: event.guild_id,
       channelId: event.event_channel_id
-    })
-  }
-  if (
-    event.publish_to_state === true
-    && event.sharing_enabled === true
-    && String(event.state_guild_id || "").trim()
-    && String(event.state_event_channel_id || "").trim()
-  ) {
-    targets.push({
-      kind: "state",
-      guildId: event.state_guild_id,
-      channelId: event.state_event_channel_id
     })
   }
   return targets
@@ -92,14 +81,14 @@ function buildDeliveryClaims(events, { gameProfile, windowStart, windowEnd }) {
         }
         if (
           event.reminder_at_start === true
-          && occurrence.occurrenceAt.getTime() >= startMs
-          && occurrence.occurrenceAt.getTime() < endMs
         ) {
+          const deliverAt = new Date(occurrence.occurrenceAt.getTime() - MINUTE_MS)
+          if (deliverAt.getTime() < startMs || deliverAt.getTime() >= endMs) continue
           claims.push(claimFor(
             event,
             occurrence,
-            "event_start",
-            new Date(occurrence.occurrenceAt),
+            "final_reminder",
+            deliverAt,
             target
           ))
         }

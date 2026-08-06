@@ -12,6 +12,9 @@ const {
 const {
   createDiscordEventDeliveryHandler
 } = require("./discordEventDelivery")
+const { createWeeklyRoundupRepository } = require("./weeklyRoundupRepository")
+const { createDiscordWeeklyRoundupDelivery } = require("./discordWeeklyRoundup")
+const { createWeeklyRoundupProcessor } = require("./weeklyRoundupProcessor")
 
 function createAllianceEventDeliveryRuntime({
   client,
@@ -21,6 +24,9 @@ function createAllianceEventDeliveryRuntime({
   getPoolFn = getPool,
   createRepositoryFn = createEventDeliveryRepository,
   createHandlerFn = createDiscordEventDeliveryHandler,
+  createRoundupRepositoryFn = createWeeklyRoundupRepository,
+  createRoundupDeliveryFn = createDiscordWeeklyRoundupDelivery,
+  createRoundupProcessorFn = createWeeklyRoundupProcessor,
   createWorkerFn = createEventDeliveryWorker,
   shutdownFn = shutdownEventSchedulerSubsystem
 }) {
@@ -42,9 +48,22 @@ function createAllianceEventDeliveryRuntime({
     const repository = createRepositoryFn(
       getPoolFn({ env, logger }),
       gameProfile,
-      { targetKind: null }
+      { targetKind: "alliance" }
     )
     const deliveryHandler = createHandlerFn({ client, gameProfile })
+    const roundupRepository = createRoundupRepositoryFn(
+      getPoolFn({ env, logger }),
+      gameProfile
+    )
+    const roundupDelivery = createRoundupDeliveryFn({ client, gameProfile })
+    const roundupProcessor = createRoundupProcessorFn({
+      repository: roundupRepository,
+      gameProfile,
+      botInstanceName,
+      delivery: roundupDelivery,
+      config: require("./eventDeliveryConfig").getEventDeliveryConfig(env),
+      logger
+    })
     worker = createWorkerFn({
       env,
       health,
@@ -52,6 +71,7 @@ function createAllianceEventDeliveryRuntime({
       gameProfile,
       botInstanceName,
       deliveryHandler,
+      additionalTick: roundupProcessor.tick,
       logger
     })
     const result = worker.start()

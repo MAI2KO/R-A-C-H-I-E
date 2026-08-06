@@ -30,8 +30,23 @@ function timingDetails(payload) {
   const occurrence = requireOccurrence(payload?.claim?.occurrenceAt)
   const timestamp = Math.floor(occurrence.getTime() / 1000)
   const utc = occurrence.toISOString().slice(0, 16).replace("T", " ")
+  if (payload.claim.deliveryKind === "final_reminder") {
+    const deliverAt = payload.claim.deliverAt
+    if (
+      !(deliverAt instanceof Date)
+      || !Number.isFinite(deliverAt.getTime())
+      || occurrence.getTime() - deliverAt.getTime() !== 60000
+    ) {
+      throw new PermanentDeliveryError("Final reminder time is invalid.")
+    }
+    return {
+      status: "About to start\nStarts in approximately 1 minute",
+      timestamp,
+      utc
+    }
+  }
   if (payload.claim.deliveryKind === "event_start") {
-    return { status: "Starting now", timestamp, utc }
+    throw new PermanentDeliveryError("Exact-start reminders are disabled.")
   }
   if (payload.claim.deliveryKind !== "advance_reminder") {
     throw new PermanentDeliveryError("Delivery type is unsupported.")
@@ -58,11 +73,11 @@ function formatAllianceEventDelivery(payload, { imageFilename = null } = {}) {
   const descriptionParts = [`Alliance: **${allianceName}**`]
   if (groupName) descriptionParts.push(`Group: **${groupName}**`)
 
-  const titlePrefix = payload.claim.deliveryKind === "event_start"
-    ? "Starting now: "
+  const titlePrefix = payload.claim.deliveryKind === "final_reminder"
+    ? "About to start: "
     : "Event reminder: "
   const embed = new EmbedBuilder()
-    .setColor(payload.claim.deliveryKind === "event_start" ? 0x2ecc71 : 0xf1c40f)
+    .setColor(payload.claim.deliveryKind === "final_reminder" ? 0x2ecc71 : 0xf1c40f)
     .setTitle(boundedText(`${titlePrefix}${eventName}`, EMBED_TITLE_LIMIT))
     .setDescription(boundedText(
       descriptionParts.join("\n"),
@@ -100,62 +115,11 @@ function formatAllianceEventDelivery(payload, { imageFilename = null } = {}) {
   }
 }
 
-function formatStateEventDelivery(payload, { imageFilename = null } = {}) {
-  const timing = timingDetails(payload)
-  const allianceName = boundedText(payload?.alliance?.name, 110)
-  const eventName = boundedText(payload?.event?.eventName, 110)
-  const groupName = payload?.group?.name
-    ? boundedText(payload.group.name, EMBED_FIELD_VALUE_LIMIT)
-    : null
-  const stateLabel = payload.claim.deliveryKind === "event_start"
-    ? "State event starting now"
-    : "State event reminder"
-  const fields = [
-    {
-      name: "When",
-      value: boundedText(
-        `${timing.utc} UTC\n<t:${timing.timestamp}:F>`,
-        EMBED_FIELD_VALUE_LIMIT
-      ),
-      inline: false
-    },
-    {
-      name: "Status",
-      value: boundedText(timing.status, EMBED_FIELD_VALUE_LIMIT),
-      inline: true
-    },
-    {
-      name: "Recurrence",
-      value: boundedText(
-        recurrenceLabel(payload?.event?.recurrenceDays),
-        EMBED_FIELD_VALUE_LIMIT
-      ),
-      inline: true
-    }
-  ]
-  if (groupName) fields.splice(1, 0, { name: "Group", value: groupName, inline: false })
-
-  const embed = new EmbedBuilder()
-    .setColor(payload.claim.deliveryKind === "event_start" ? 0x3498db : 0xe67e22)
-    .setTitle(boundedText(`${allianceName} - ${eventName}`, EMBED_TITLE_LIMIT))
-    .setDescription(`**${stateLabel}**\nAlliance: **${allianceName}**`)
-    .addFields(fields)
-  if (imageFilename) embed.setImage(`attachment://${imageFilename}`)
-
-  return {
-    embeds: [embed],
-    allowedMentions: { parse: [], repliedUser: false }
-  }
-}
-
 function formatEventDelivery(payload, options) {
   if (payload?.claim?.targetKind === "alliance") {
     return formatAllianceEventDelivery(payload, options)
   }
-  if (payload?.claim?.targetKind === "state") {
-    return formatStateEventDelivery(payload, options)
-  }
-  throw new PermanentDeliveryError("Delivery target type is unsupported.")
+  throw new PermanentDeliveryError("Individual state reminders are disabled.")
 }
 
 module.exports = {
@@ -167,6 +131,5 @@ module.exports = {
   boundedText,
   timingDetails,
   formatAllianceEventDelivery,
-  formatStateEventDelivery,
   formatEventDelivery
 }

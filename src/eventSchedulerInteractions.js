@@ -13,10 +13,13 @@ const { getEventSchedulerHealth } = require("./eventSchedulerHealth")
 const { createEventSchedulerRepository } = require("./eventSchedulerRepository")
 const {
   SchedulerValidationError,
+  normalizeSnowflake,
   normalizeAllianceName,
   resolveSendableChannel
 } = require("./eventSchedulerService")
 const { handleEventCreationInteraction } = require("./eventCreationInteractions")
+const { handleEventManagementInteraction } = require("./eventManagementInteractions")
+const { parseUtcTime } = require("./timeParsing")
 
 const IDS = Object.freeze({
   prefix: "es:",
@@ -25,7 +28,9 @@ const IDS = Object.freeze({
   configureModal: "es:cfgm",
   state: "es:state",
   stateModal: "es:stm",
-  stateOff: "es:stoff"
+  stateOff: "es:stoff",
+  roundup: "es:round",
+  roundupModal: "es:roundm"
 })
 
 function isSchedulerInteraction(interaction) {
@@ -34,6 +39,7 @@ function isSchedulerInteraction(interaction) {
     || String(interaction.customId || "").startsWith("ec:")
     || String(interaction.customId || "").startsWith("el:")
     || String(interaction.customId || "").startsWith("ep:")
+    || String(interaction.customId || "").startsWith("mg:")
 }
 
 function buildHomeView(settings, stateLink) {
@@ -41,13 +47,17 @@ function buildHomeView(settings, stateLink) {
   const stateChannel = stateLink
     ? `<#${stateLink.state_event_channel_id}> (${stateLink.sharing_enabled ? "enabled" : "disabled"})`
     : "Not configured"
+  const roundup = settings?.weekly_roundup_enabled
+    ? `<#${settings.weekly_roundup_channel_id}> on weekday ${settings.weekly_roundup_day} at ${String(settings.weekly_roundup_time_utc).slice(0, 5)} UTC`
+    : "Disabled"
 
   return {
     content:
       `Event scheduler\n\n` +
       `Alliance: ${settings?.alliance_name || "Not configured"}\n` +
       `Alliance event channel: ${allianceChannel}\n` +
-      `State event channel: ${stateChannel}`,
+      `State weekly roundup channel: ${stateChannel}\n` +
+      `Weekly roundup: ${roundup}`,
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -66,13 +76,19 @@ function buildHomeView(settings, stateLink) {
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
           .setCustomId(IDS.state)
-          .setLabel("State sharing")
+          .setLabel("State roundup")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(IDS.stateOff)
-          .setLabel("Disable state")
+          .setLabel("Disable state roundup")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(!stateLink?.sharing_enabled)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(IDS.roundup)
+          .setLabel("Weekly roundup")
+          .setStyle(ButtonStyle.Primary)
       )
     ]
   }
@@ -107,7 +123,7 @@ function buildAllianceModal(settings) {
 function buildStateModal(stateLink) {
   return new ModalBuilder()
     .setCustomId(IDS.stateModal)
-    .setTitle("State event sharing")
+    .setTitle("State weekly roundup")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
@@ -121,13 +137,53 @@ function buildStateModal(stateLink) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("c")
-          .setLabel("State event channel ID")
+          .setLabel("State roundup channel ID")
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(22)
           .setValue(stateLink?.state_event_channel_id || "")
       )
     )
+}
+
+function buildRoundupModal(settings) {
+  return new ModalBuilder()
+    .setCustomId(IDS.roundupModal)
+    .setTitle("Weekly roundup settings")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("e").setLabel("Enabled? yes or no")
+          .setStyle(TextInputStyle.Short).setRequired(true)
+          .setValue(settings?.weekly_roundup_enabled ? "yes" : "no")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("d").setLabel("Weekday (0 Sunday to 6 Saturday)")
+          .setStyle(TextInputStyle.Short).setRequired(true)
+          .setValue(String(settings?.weekly_roundup_day ?? 1))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("t").setLabel("UTC time")
+          .setStyle(TextInputStyle.Short).setRequired(true)
+          .setValue(String(settings?.weekly_roundup_time_utc || "09:00").slice(0, 5))
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("c").setLabel("Alliance roundup channel ID")
+          .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(22)
+          .setValue(settings?.weekly_roundup_channel_id || settings?.event_channel_id || "")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("x").setLabel("Post when no events? yes or no")
+          .setStyle(TextInputStyle.Short).setRequired(true)
+          .setValue(settings?.roundup_when_empty ? "yes" : "no")
+      )
+    )
+}
+
+function parseYesNo(value, label) {
+  const normalized = String(value || "").trim().toLowerCase()
+  if (normalized === "yes") return true
+  if (normalized === "no") return false
+  throw new SchedulerValidationError(`${label} must be yes or no.`)
 }
 
 async function loadHome(repository, guildId) {
@@ -174,6 +230,8 @@ async function handleEventSchedulerInteraction(
   const guildId = interaction.guildId
 
   try {
+    if (await handleEventManagementInteraction(interaction, { repository, health })) return true
+
     if (await handleEventCreationInteraction(interaction, {
       repository,
       health,
@@ -219,6 +277,19 @@ async function handleEventSchedulerInteraction(
       return true
     }
 
+    if (interaction.isButton?.() && interaction.customId === IDS.roundup) {
+      const settings = await repository.getGuildSettings(guildId)
+      if (!settings) {
+        await interaction.reply({
+          content: "Configure the alliance event channel first.",
+          flags: MessageFlags.Ephemeral
+        })
+        return true
+      }
+      await interaction.showModal(buildRoundupModal(settings))
+      return true
+    }
+
     if (interaction.isModalSubmit?.() && interaction.customId === IDS.configureModal) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral })
       const allianceName = normalizeAllianceName(interaction.fields.getTextInputValue("a"))
@@ -255,6 +326,34 @@ async function handleEventSchedulerInteraction(
       await interaction.editReply(await loadHome(repository, guildId))
       return true
     }
+
+    if (interaction.isModalSubmit?.() && interaction.customId === IDS.roundupModal) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+      const enabled = parseYesNo(interaction.fields.getTextInputValue("e"), "Enabled")
+      const weekday = Number(interaction.fields.getTextInputValue("d"))
+      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+        throw new SchedulerValidationError("Weekday must be an integer from 0 to 6.")
+      }
+      const timeUtc = parseUtcTime(interaction.fields.getTextInputValue("t"))
+      const channelInput = interaction.fields.getTextInputValue("c")
+      const channelId = enabled
+        ? (await resolveSendableChannel(interaction.client, guildId, channelInput)).channelId
+        : normalizeSnowflake(channelInput, "Channel ID")
+      const postWhenEmpty = parseYesNo(
+        interaction.fields.getTextInputValue("x"),
+        "Post when empty"
+      )
+      await repository.configureWeeklyRoundup({
+        guildId,
+        enabled,
+        weekday,
+        timeUtc,
+        channelId,
+        postWhenEmpty
+      })
+      await interaction.editReply(await loadHome(repository, guildId))
+      return true
+    }
   } catch (error) {
     const userFacingErrors = new Set([
       "SchedulerValidationError",
@@ -285,5 +384,7 @@ module.exports = {
   buildHomeView,
   buildAllianceModal,
   buildStateModal,
+  buildRoundupModal,
+  parseYesNo,
   handleEventSchedulerInteraction
 }

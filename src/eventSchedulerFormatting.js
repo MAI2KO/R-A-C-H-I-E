@@ -28,8 +28,8 @@ function reminderLabel(minutes) {
 
 function publishingLabel(event) {
   const targets = []
-  if (event.publish_to_alliance ?? event.publishToAlliance) targets.push("alliance")
-  if (event.publish_to_state ?? event.publishToState) targets.push("state")
+  if (event.publish_to_alliance ?? event.publishToAlliance) targets.push("alliance reminders")
+  if (event.publish_to_state ?? event.publishToState) targets.push("state weekly roundup")
   return targets.length ? targets.join(" and ") : "none"
 }
 
@@ -50,7 +50,7 @@ function occurrenceLine(occurrence, { numbered = false, index = 0 } = {}) {
   return `${numbered ? `${index + 1}. ` : ""}<t:${timestamp}:F> - ${utc} UTC${group}`
 }
 
-function formatEventPreview(event, { image = event.image, now = new Date() } = {}) {
+function formatEventPreview(event, { now = new Date() } = {}) {
   const groups = event.groups || []
   const timeBlock = groups.length
     ? groupLines(groups).join("\n")
@@ -69,7 +69,7 @@ function formatEventPreview(event, { image = event.image, now = new Date() } = {
     : ""
 
   return (
-    `Create event preview\n\n` +
+    `${event.mode === "edit" ? "Edit" : "Create"} event preview\n\n` +
     `Alliance: ${event.allianceName}\n` +
     `Event: ${event.eventName}\n` +
     `First date: ${displayDate(event.firstOccurrenceDate)}${pastNote}\n` +
@@ -78,10 +78,9 @@ function formatEventPreview(event, { image = event.image, now = new Date() } = {
     `Time${groups.length ? "s" : ""}:\n${timeBlock}\n` +
     `Recurrence: ${recurrenceLabel(event.recurrenceDays)}\n` +
     `Advance reminder: ${reminderLabel(event.advanceReminderMinutes)}\n` +
-    `At event start: ${event.reminderAtStart ? "Yes" : "No"}\n` +
+    `Final reminder (1 minute before): ${event.reminderAtStart ? "Yes" : "No"}\n` +
     `Publish to: ${publishingLabel(event)}\n` +
-    `Monday roundup: ${event.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
-    `Image: ${image ? `${image.originalFilename} (${image.byteSize} bytes)` : "None"}`
+    `Weekly roundup: ${event.includeInWeeklyRoundup ? "Yes" : "No"}`
   ).slice(0, 1950)
 }
 
@@ -111,8 +110,8 @@ function formatEventEntry(event) {
     `First date: ${displayDate(event.first_occurrence_date)}\n` +
     `Time${groups.length ? "s" : ""}:\n${timeBlock}\n` +
     `Recurrence: ${recurrenceLabel(event.recurrence_days)}\n` +
-    `Advance: ${reminderLabel(event.advance_reminder_minutes)}; start: ${event.reminder_at_start ? "Yes" : "No"}\n` +
-    `Publish: ${publishingLabel(event)}; roundup: ${event.include_in_weekly_roundup ? "Yes" : "No"}; image: ${event.has_image ? "Yes" : "No"}`
+    `Advance: ${reminderLabel(event.advance_reminder_minutes)}; final: ${event.reminder_at_start ? "Yes" : "No"}\n` +
+    `Publish: ${publishingLabel(event)}; roundup: ${event.include_in_weekly_roundup ? "Yes" : "No"}`
   )
 }
 

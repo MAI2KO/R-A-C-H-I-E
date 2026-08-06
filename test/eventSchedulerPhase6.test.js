@@ -92,21 +92,26 @@ test("advance reminder embeds cover 10, 30 and grouped events", () => {
   assert.match(grouped.description, /Group: \*\*Alpha\*\*/)
 })
 
-test("event-start embeds cover grouped and ungrouped events", () => {
-  const start = embedJson(formatAllianceEventDelivery(payload({
-    claim: { deliveryKind: "event_start", deliverAt: new Date(OCCURRENCE) },
+test("final reminder embeds say about to start one minute before", () => {
+  const final = embedJson(formatAllianceEventDelivery(payload({
+    claim: { deliveryKind: "final_reminder", deliverAt: new Date("2026-08-10T18:29:00Z") },
     event: { recurrenceDays: 3 }
   })))
-  assert.match(start.title, /Starting now: Bear Hunt/)
-  assert.equal(start.fields[1].value, "Starting now")
-  assert.equal(start.fields[2].value, "Every 3 days")
-  assert.doesNotMatch(start.description, /Group:/)
+  assert.match(final.title, /About to start: Bear Hunt/)
+  assert.match(final.fields[1].value, /^About to start/)
+  assert.match(final.fields[1].value, /approximately 1 minute/)
+  assert.equal(final.fields[2].value, "Every 3 days")
+  assert.doesNotMatch(final.description, /Group:/)
+  assert.doesNotMatch(JSON.stringify(final), /Starting now|Has started|Event start/i)
 
   const grouped = embedJson(formatAllianceEventDelivery(payload({
-    claim: { deliveryKind: "event_start", deliverAt: new Date(OCCURRENCE) },
+    claim: { deliveryKind: "final_reminder", deliverAt: new Date("2026-08-10T18:29:00Z") },
     group: { id: "2", name: "Beta", eventTimeUtc: "18:30", sortOrder: 0 }
   })))
   assert.match(grouped.description, /Beta/)
+  assert.throws(() => formatAllianceEventDelivery(payload({
+    claim: { deliveryKind: "event_start", deliverAt: new Date(OCCURRENCE) }
+  })), PermanentDeliveryError)
 })
 
 test("formatting rejects malformed reminder intervals", () => {
@@ -325,6 +330,7 @@ test("Discord handler sends one mention-safe alliance embed and returns its mess
   const imageData = imageFixtures["image/png"]
   const handler = createDiscordEventDeliveryHandler({ client: fixture.client, gameProfile: "wos" })
   const result = await handler(payload({
+    claim: { deliverAt: new Date("2026-08-10T18:00:00Z") },
     image: {
       originalFilename: "unsafe.png",
       contentType: "image/png",
@@ -336,6 +342,40 @@ test("Discord handler sends one mention-safe alliance embed and returns its mess
   assert.deepEqual(sentOptions.allowedMentions, { parse: [], repliedUser: false })
   assert.equal(sentOptions.files[0].name, "event-image.png")
   assert.equal(sentOptions.embeds[0].toJSON().image.url, "attachment://event-image.png")
+})
+
+test("stored images are omitted from 10-minute and final reminders", async () => {
+  const sent = []
+  const fixture = discordFixture({
+    permissions: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks
+    ],
+    send: async options => {
+      sent.push(options)
+      return { id: `text-${sent.length}` }
+    }
+  })
+  const imageData = imageFixtures["image/png"]
+  const image = {
+    originalFilename: "event.png",
+    contentType: "image/png",
+    byteSize: imageData.length,
+    imageData
+  }
+  const handler = createDiscordEventDeliveryHandler({ client: fixture.client, gameProfile: "wos" })
+  await handler(payload({ image }))
+  await handler(payload({
+    claim: {
+      deliveryKind: "final_reminder",
+      deliverAt: new Date("2026-08-10T18:29:00Z")
+    },
+    image
+  }))
+  assert.equal(sent.length, 2)
+  assert.ok(sent.every(message => message.files === undefined))
+  assert.ok(sent.every(message => message.embeds[0].toJSON().image === undefined))
 })
 
 test("Discord handler sends text-only embeds without requiring attachments", async () => {
@@ -492,6 +532,12 @@ function runtimeFixture(overrides = {}) {
       return { gameProfile: "wos" }
     },
     createHandlerFn() { calls.push("createHandler"); return async () => ({}) },
+    createRoundupRepositoryFn() {
+      calls.push("createRoundupRepository")
+      return { gameProfile: "wos" }
+    },
+    createRoundupDeliveryFn() { calls.push("createRoundupDelivery"); return async () => ({}) },
+    createRoundupProcessorFn() { calls.push("createRoundupProcessor"); return { tick: async () => 0 } },
     createWorkerFn() { calls.push("createWorker"); return worker },
     async shutdownFn({ worker: activeWorker }) {
       calls.push("shutdown")
@@ -512,7 +558,7 @@ test("runtime waits for client readiness and starts exactly once", async () => {
   fixture.setReady(true)
   assert.equal((await fixture.runtime.start()).started, true)
   assert.equal((await fixture.runtime.start()).started, true)
-  assert.ok(fixture.calls.includes("createRepository:null"))
+  assert.ok(fixture.calls.includes("createRepository:alliance"))
   assert.equal(fixture.calls.filter(call => call === "worker.start").length, 1)
 })
 

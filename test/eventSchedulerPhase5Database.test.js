@@ -36,7 +36,7 @@ test("Phase 5 delivery claims are transactional, leased and profile isolated", {
          claimed_by_bot_instance, claimed_by_worker, claimed_at, claimed_until,
          attempt_count, next_attempt_at
        ) VALUES (
-         $1, $2, $3::timestamptz, $4, 'event_start', 'alliance', $5, $6, $7::varchar,
+         $1, $2, $3::timestamptz, $4, 'advance_reminder', 'alliance', $5, $6, $7::varchar,
          CASE WHEN $7::varchar = 'claimed' THEN 'old-instance' END,
          CASE WHEN $7::varchar = 'claimed' THEN 'old-worker' END,
          CASE WHEN $7::varchar = 'claimed' THEN $3::timestamptz END,

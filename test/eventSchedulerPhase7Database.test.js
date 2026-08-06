@@ -1,301 +1,261 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const fs = require("node:fs/promises")
+const path = require("node:path")
 const { Pool } = require("pg")
 
 const { buildDeliveryClaims } = require("../src/eventDeliveryGeneration")
 const { createEventDeliveryRepository } = require("../src/eventDeliveryRepository")
 
 const databaseUrl = process.env.TEST_DATABASE_URL
+const migrationsDirectory = path.join(__dirname, "..", "migrations")
 
-test("Phase 7 state claims remain link-aware, independent and profile isolated", {
+async function applyMigration(client, fileName) {
+  const sql = await fs.readFile(path.join(migrationsDirectory, fileName), "utf8")
+  await client.query(sql)
+}
+
+test("migration 005 preserves sent state history and terminally invalidates legacy claims", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 })
+  const client = await pool.connect()
+  const schema = `phase7_upgrade_${process.pid}`
+
+  try {
+    await client.query("SELECT pg_advisory_lock(7000006)")
+    await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
+    await client.query(`CREATE SCHEMA "${schema}"`)
+    await client.query(`SET search_path TO "${schema}"`)
+    for (const fileName of [
+      "001_event_scheduler.sql",
+      "002_event_images.sql",
+      "003_event_delivery_indexes.sql",
+      "004_state_delivery_reconciliation.sql"
+    ]) {
+      await applyMigration(client, fileName)
+    }
+
+    await client.query(
+      `INSERT INTO event_guild_settings
+         (guild_id, game_profile, bot_instance_name, alliance_name, event_channel_id)
+       VALUES ('legacy-alliance', 'wos', 'rachie-wos', 'Legacy', 'alliance-channel')`
+    )
+    const eventId = (await client.query(
+      `INSERT INTO scheduled_events (
+         guild_id, game_profile, created_by_bot_instance, alliance_name, event_name,
+         first_occurrence_date, event_time_utc, recurrence_days,
+         advance_reminder_minutes, reminder_at_start, publish_to_alliance,
+         publish_to_state, include_in_weekly_roundup, status, created_by_user_id
+       ) VALUES (
+         'legacy-alliance', 'wos', 'rachie-wos', 'Legacy', 'Legacy Event',
+         '2026-08-06', '12:30', 3, 30, true, true, true, true, 'active', 'legacy-user'
+       ) RETURNING id`
+    )).rows[0].id
+    await client.query(
+      `INSERT INTO event_delivery_claims (
+         event_id, game_profile, occurrence_at, deliver_at, delivery_kind,
+         target_kind, target_guild_id, target_channel_id, status,
+         claimed_by_bot_instance, claimed_by_worker, claimed_at, claimed_until,
+         sent_at, sent_message_id
+       ) VALUES
+         ($1, 'wos', '2026-08-06T12:30Z', '2026-08-06T12:00Z',
+          'advance_reminder', 'state', 'state-guild', 'state-channel', 'sent',
+          NULL, NULL, NULL, NULL, '2026-08-06T12:00Z', 'historical-state-message'),
+         ($1, 'wos', '2026-08-09T12:30Z', '2026-08-09T12:00Z',
+          'advance_reminder', 'state', 'state-guild', 'state-channel', 'pending',
+          NULL, NULL, NULL, NULL, NULL, NULL),
+         ($1, 'wos', '2026-08-12T12:30Z', '2026-08-12T12:30Z',
+          'event_start', 'state', 'state-guild', 'state-channel', 'claimed',
+          'rachie-wos', 'legacy-worker', '2026-08-06T11:59Z', '2026-08-06T12:30Z',
+          NULL, NULL),
+         ($1, 'wos', '2026-08-06T12:30Z', '2026-08-06T12:30Z',
+          'event_start', 'alliance', 'legacy-alliance', 'alliance-channel', 'pending',
+          NULL, NULL, NULL, NULL, NULL, NULL)`,
+      [eventId]
+    )
+
+    await applyMigration(client, "005_event_management_and_roundups.sql")
+
+    const rows = (await client.query(
+      `SELECT target_kind, delivery_kind, status, claimed_by_bot_instance,
+              claimed_by_worker, claimed_at, claimed_until, next_attempt_at,
+              sent_message_id, last_error
+         FROM event_delivery_claims ORDER BY id`
+    )).rows
+    assert.equal(rows[0].status, "sent")
+    assert.equal(rows[0].sent_message_id, "historical-state-message")
+    assert.equal(rows[0].last_error, null)
+    assert.ok(rows.slice(1).every(row =>
+      row.status === "failed"
+      && row.claimed_by_bot_instance === null
+      && row.claimed_by_worker === null
+      && row.claimed_at === null
+      && row.claimed_until === null
+      && row.next_attempt_at === null
+      && row.last_error
+    ))
+
+    const insertLegacyClaim = (deliveryKind, targetKind) => client.query(
+      `INSERT INTO event_delivery_claims (
+         event_id, game_profile, occurrence_at, deliver_at, delivery_kind,
+         target_kind, target_guild_id, target_channel_id
+       ) VALUES ($1, 'wos', '2026-08-15T12:30Z', '2026-08-15T12:00Z',
+                 $2, $3, 'legacy-alliance', 'alliance-channel')`,
+      [eventId, deliveryKind, targetKind]
+    )
+    await assert.rejects(insertLegacyClaim("advance_reminder", "state"), error =>
+      error.code === "23514"
+      && error.constraint === "event_delivery_claims_individual_policy_check"
+    )
+    await assert.rejects(insertLegacyClaim("event_start", "alliance"), error =>
+      error.code === "23514"
+      && error.constraint === "event_delivery_claims_individual_policy_check"
+    )
+  } finally {
+    await client.query("SET search_path TO public").catch(() => {})
+    await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
+    await client.query("SELECT pg_advisory_unlock(7000006)").catch(() => {})
+    client.release()
+    await pool.end()
+  }
+})
+
+test("the alliance worker expires final reminders and preserves profile isolation", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   const pool = new Pool({ connectionString: databaseUrl, max: 8 })
   const isolationClient = await pool.connect()
-  const allianceGuildId = "999999999999999921"
+  const guildId = "999999999999999921"
   const stateGuildId = "999999999999999922"
   const allianceChannel = "999999999999999923"
-  const wosStateChannel = "999999999999999924"
-  const kingshotStateChannel = "999999999999999925"
-  const changedStateChannel = "999999999999999926"
+  const stateChannel = "999999999999999924"
   const userId = "999999999999999927"
-  const generationStart = new Date("2026-08-06T11:00:00Z")
-  const generationEnd = new Date("2026-08-06T13:00:00Z")
-  const claimNow = new Date("2026-08-06T12:11:00Z")
-  let wosEventId
-  let kingshotEventId
-
-  function claimInput(botInstanceName, workerId, now = claimNow) {
-    return { now, batchSize: 20, leaseSeconds: 60, botInstanceName, workerId }
-  }
-
-  function manualStateClaim(eventId, occurrenceAt, channelId = wosStateChannel) {
-    return {
-      eventId,
-      groupId: null,
-      gameProfile: "wos",
-      occurrenceAt,
-      deliverAt: occurrenceAt,
-      deliveryKind: "event_start",
-      targetKind: "state",
-      targetGuildId: stateGuildId,
-      targetChannelId: channelId
-    }
-  }
+  const now = new Date("2026-08-06T12:00:00Z")
 
   try {
     await isolationClient.query("SELECT pg_advisory_lock(7000005)")
     await pool.query(
       "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile IN ('wos', 'kingshot')",
-      [allianceGuildId]
+      [guildId]
     )
     await pool.query(
-      `INSERT INTO event_guild_settings (
-         guild_id, game_profile, bot_instance_name, alliance_name, event_channel_id
-       ) VALUES
+      `INSERT INTO event_guild_settings
+         (guild_id, game_profile, bot_instance_name, alliance_name, event_channel_id)
+       VALUES
          ($1, 'wos', 'rachie-wos', 'WOS North', $2),
          ($1, 'kingshot', 'peggie-kingshot', 'Kingshot North', $2)`,
-      [allianceGuildId, allianceChannel]
+      [guildId, allianceChannel]
     )
     await pool.query(
-      `INSERT INTO event_state_links (
-         alliance_guild_id, game_profile, configured_by_bot_instance,
-         state_guild_id, state_event_channel_id, sharing_enabled
-       ) VALUES
+      `INSERT INTO event_state_links
+         (alliance_guild_id, game_profile, configured_by_bot_instance,
+          state_guild_id, state_event_channel_id, sharing_enabled)
+       VALUES
          ($1, 'wos', 'rachie-wos', $2, $3, true),
-         ($1, 'kingshot', 'peggie-kingshot', $2, $4, true)`,
-      [allianceGuildId, stateGuildId, wosStateChannel, kingshotStateChannel]
+         ($1, 'kingshot', 'peggie-kingshot', $2, $3, true)`,
+      [guildId, stateGuildId, stateChannel]
     )
     const events = await pool.query(
       `INSERT INTO scheduled_events (
-         guild_id, game_profile, created_by_bot_instance, alliance_name,
-         event_name, first_occurrence_date, event_time_utc, recurrence_days,
+         guild_id, game_profile, created_by_bot_instance, alliance_name, event_name,
+         first_occurrence_date, event_time_utc, recurrence_days,
          advance_reminder_minutes, reminder_at_start, publish_to_alliance,
-         publish_to_state, status, created_by_user_id
+         publish_to_state, include_in_weekly_roundup, status, created_by_user_id
        ) VALUES
-         ($1, 'wos', 'rachie-wos', 'WOS North', 'WOS State Event',
-          '2026-08-06', '12:10', 3, 10, true, true, true, 'active', $2),
-         ($1, 'kingshot', 'peggie-kingshot', 'Kingshot North', 'Kingshot State Event',
-          '2026-08-06', '12:10', 3, 10, true, true, true, 'active', $2)
+         ($1, 'wos', 'rachie-wos', 'WOS North', 'WOS Event',
+          '2026-08-06', '12:30', 3, 30, true, true, true, true, 'active', $2),
+         ($1, 'kingshot', 'peggie-kingshot', 'Kingshot North', 'Kingshot Event',
+          '2026-08-06', '12:30', 3, 30, true, true, true, true, 'active', $2)
        RETURNING id, game_profile`,
-      [allianceGuildId, userId]
+      [guildId, userId]
     )
-    wosEventId = events.rows.find(row => row.game_profile === "wos").id
-    kingshotEventId = events.rows.find(row => row.game_profile === "kingshot").id
+    const wosEventId = events.rows.find(row => row.game_profile === "wos").id
+    const kingshotEventId = events.rows.find(row => row.game_profile === "kingshot").id
+    const inserted = await pool.query(
+      `INSERT INTO event_delivery_claims (
+         event_id, game_profile, occurrence_at, deliver_at, delivery_kind,
+         target_kind, target_guild_id, target_channel_id, status,
+         claimed_by_bot_instance, claimed_by_worker, claimed_at, claimed_until,
+         sent_at, sent_message_id
+       ) VALUES
+         ($1, 'wos', '2026-08-06T12:00Z', '2026-08-06T11:59Z',
+          'final_reminder', 'alliance', $2, $3, 'pending', NULL, NULL, NULL, NULL, NULL, NULL),
+         ($1, 'wos', '2026-08-06T12:30Z', '2026-08-06T12:00Z',
+          'advance_reminder', 'alliance', $2, $3, 'pending', NULL, NULL, NULL, NULL, NULL, NULL),
+         ($4, 'kingshot', '2026-08-06T12:30Z', '2026-08-06T12:00Z',
+          'advance_reminder', 'alliance', $2, $3, 'pending', NULL, NULL, NULL, NULL, NULL, NULL)
+       RETURNING id, game_profile, target_kind, delivery_kind, status`,
+      [wosEventId, guildId, allianceChannel, kingshotEventId]
+    )
+    assert.equal(inserted.rowCount, 3)
 
-    const wos = createEventDeliveryRepository(pool, "wos")
-    const kingshot = createEventDeliveryRepository(pool, "kingshot")
-    const wosDefinitions = (await wos.listActiveEventDefinitions({ rangeEnd: generationEnd }))
-      .filter(event => String(event.id) === String(wosEventId))
-    const kingshotDefinitions = (await kingshot.listActiveEventDefinitions({ rangeEnd: generationEnd }))
-      .filter(event => String(event.id) === String(kingshotEventId))
-    assert.equal(wosDefinitions.length, 1)
-    assert.equal(kingshotDefinitions.length, 1)
-    assert.equal(wosDefinitions[0].first_occurrence_date, "2026-08-06")
-    assert.equal(kingshotDefinitions[0].first_occurrence_date, "2026-08-06")
-    assert.equal(wosDefinitions[0].state_event_channel_id, wosStateChannel)
-    assert.equal(kingshotDefinitions[0].state_event_channel_id, kingshotStateChannel)
+    const repository = createEventDeliveryRepository(pool, "wos", { targetKind: "alliance" })
+    const claims = await repository.claimDueDeliveries({
+      now,
+      batchSize: 10,
+      leaseSeconds: 60,
+      botInstanceName: "rachie-wos",
+      workerId: "alliance-only-worker"
+    })
+    assert.equal(claims.length, 1)
+    assert.equal(claims[0].target_kind, "alliance")
+    assert.equal(claims[0].delivery_kind, "advance_reminder")
 
-    const wosClaims = buildDeliveryClaims(wosDefinitions, {
+    const reconciled = await pool.query(
+      `SELECT target_kind, delivery_kind, status, sent_message_id, next_attempt_at, last_error
+         FROM event_delivery_claims
+        WHERE event_id = $1
+        ORDER BY id`,
+      [wosEventId]
+    )
+    const invalidated = reconciled.rows.filter(row => row.status === "failed")
+    assert.equal(invalidated.length, 1)
+    assert.ok(invalidated.every(row => row.next_attempt_at === null && row.last_error))
+    assert.ok(invalidated.some(row =>
+      row.delivery_kind === "final_reminder" &&
+      row.target_kind === "alliance" &&
+      row.last_error === "Final reminder delivery window has passed."
+    ))
+    const claimedAlliance = reconciled.rows.find(row => row.status === "claimed")
+    assert.equal(claimedAlliance.target_kind, "alliance")
+    assert.equal(claimedAlliance.delivery_kind, "advance_reminder")
+
+    const definitions = (await repository.listActiveEventDefinitions({
+      rangeEnd: new Date("2026-08-07T00:00:00Z")
+    })).filter(row => String(row.id) === String(wosEventId))
+    const generated = buildDeliveryClaims(definitions, {
       gameProfile: "wos",
-      windowStart: generationStart,
-      windowEnd: generationEnd
+      windowStart: new Date("2026-08-06T11:00:00Z"),
+      windowEnd: new Date("2026-08-06T13:00:00Z")
     })
-    const kingshotClaims = buildDeliveryClaims(kingshotDefinitions, {
-      gameProfile: "kingshot",
-      windowStart: generationStart,
-      windowEnd: generationEnd
-    })
-    assert.deepEqual(new Set(wosClaims.map(claim => claim.targetKind)), new Set(["alliance", "state"]))
-    assert.equal(await wos.insertMissingDeliveryClaims(wosClaims), 4)
-    assert.equal(await wos.insertMissingDeliveryClaims(wosClaims), 0)
-    assert.equal(await kingshot.insertMissingDeliveryClaims(kingshotClaims), 4)
+    assert.deepEqual(generated.map(claim => claim.targetKind), ["alliance", "alliance"])
+    assert.deepEqual(generated.map(claim => claim.deliveryKind), [
+      "advance_reminder",
+      "final_reminder"
+    ])
+    assert.equal(generated[1].deliverAt.toISOString(), "2026-08-06T12:29:00.000Z")
 
-    const claimedWos = await wos.claimDueDeliveries(claimInput("rachie-wos", "wos-worker"))
-    assert.equal(claimedWos.length, 4)
-    assert.ok(claimedWos.every(row => row.game_profile === "wos"))
-    const untouchedKingshot = await pool.query(
-      `SELECT count(*)::integer AS count FROM event_delivery_claims
-        WHERE event_id = $1 AND game_profile = 'kingshot' AND status = 'pending'`,
+    const kingshotPending = await pool.query(
+      `SELECT status FROM event_delivery_claims
+        WHERE event_id = $1 AND game_profile = 'kingshot'`,
       [kingshotEventId]
     )
-    assert.equal(untouchedKingshot.rows[0].count, 4)
-    const claimedKingshot = await kingshot.claimDueDeliveries(
-      claimInput("peggie-kingshot", "kingshot-worker")
+    assert.equal(kingshotPending.rows[0].status, "pending")
+    const stateLink = await pool.query(
+      `SELECT sharing_enabled, state_guild_id, state_event_channel_id
+         FROM event_state_links WHERE alliance_guild_id = $1 AND game_profile = 'wos'`,
+      [guildId]
     )
-    assert.equal(claimedKingshot.length, 4)
-    assert.ok(claimedKingshot.every(row => row.game_profile === "kingshot"))
-
-    const wosAlliance = claimedWos.find(row => row.target_kind === "alliance")
-    const wosState = claimedWos.find(row => row.target_kind === "state")
-    assert.equal(await wos.markClaimSent({
-      claimId: wosAlliance.id,
-      botInstanceName: "rachie-wos",
-      workerId: "wos-worker",
-      sentAt: claimNow,
-      sentMessageId: "alliance-message-id"
-    }), true)
-    assert.equal(await wos.markClaimSent({
-      claimId: wosState.id,
-      botInstanceName: "rachie-wos",
-      workerId: "wos-worker",
-      sentAt: claimNow,
-      sentMessageId: "state-message-id"
-    }), true)
-    const independent = await pool.query(
-      `SELECT target_kind, status, sent_message_id
-         FROM event_delivery_claims
-        WHERE id = ANY($1::bigint[])
-        ORDER BY target_kind`,
-      [[wosAlliance.id, wosState.id]]
-    )
-    assert.deepEqual(independent.rows, [
-      { target_kind: "alliance", status: "sent", sent_message_id: "alliance-message-id" },
-      { target_kind: "state", status: "sent", sent_message_id: "state-message-id" }
-    ])
-
-    await pool.query(
-      `DELETE FROM event_delivery_claims
-        WHERE event_id = $1 AND game_profile = 'wos' AND status <> 'sent'`,
-      [wosEventId]
-    )
-    await wos.insertMissingDeliveryClaims([
-      manualStateClaim(wosEventId, new Date("2026-08-09T12:10:00Z"))
-    ])
-    await pool.query(
-      `UPDATE event_state_links SET sharing_enabled = false
-        WHERE alliance_guild_id = $1 AND game_profile = 'wos'`,
-      [allianceGuildId]
-    )
-    assert.equal(await wos.reconcileInvalidStateClaims({ now: claimNow }), 1)
-    const disabled = await pool.query(
-      `SELECT status, next_attempt_at, last_error FROM event_delivery_claims
-        WHERE event_id = $1 AND game_profile = 'wos'
-          AND target_kind = 'state' AND occurrence_at = '2026-08-09T12:10:00Z'`,
-      [wosEventId]
-    )
-    assert.equal(disabled.rows[0].status, "failed")
-    assert.equal(disabled.rows[0].next_attempt_at, null)
-    assert.match(disabled.rows[0].last_error, /sharing disabled or target changed/i)
-    const sentHistory = await pool.query(
-      "SELECT status, sent_message_id FROM event_delivery_claims WHERE id = $1",
-      [wosState.id]
-    )
-    assert.deepEqual(sentHistory.rows[0], {
-      status: "sent",
-      sent_message_id: "state-message-id"
+    assert.deepEqual(stateLink.rows[0], {
+      sharing_enabled: true,
+      state_guild_id: stateGuildId,
+      state_event_channel_id: stateChannel
     })
-    const disabledDefinitions = (await wos.listActiveEventDefinitions({ rangeEnd: generationEnd }))
-      .filter(event => String(event.id) === String(wosEventId))
-    assert.ok(buildDeliveryClaims(disabledDefinitions, {
-      gameProfile: "wos",
-      windowStart: generationStart,
-      windowEnd: generationEnd
-    }).every(claim => claim.targetKind === "alliance"))
-
-    await pool.query(
-      `DELETE FROM event_delivery_claims
-        WHERE event_id = $1 AND game_profile = 'wos' AND status <> 'sent'`,
-      [wosEventId]
-    )
-    await pool.query(
-      `UPDATE event_state_links
-          SET sharing_enabled = true, state_event_channel_id = $2
-        WHERE alliance_guild_id = $1 AND game_profile = 'wos'`,
-      [allianceGuildId, wosStateChannel]
-    )
-    await wos.insertMissingDeliveryClaims([
-      manualStateClaim(wosEventId, new Date("2026-08-12T12:10:00Z"))
-    ])
-    const activeStateClaim = await createEventDeliveryRepository(
-      pool,
-      "wos",
-      { targetKind: "state" }
-    ).claimDueDeliveries(claimInput(
-      "rachie-wos",
-      "active-state-worker",
-      new Date("2026-08-12T12:11:00Z")
-    ))
-    assert.equal(activeStateClaim.length, 1)
-    await pool.query(
-      `UPDATE event_state_links SET sharing_enabled = false
-        WHERE alliance_guild_id = $1 AND game_profile = 'wos'`,
-      [allianceGuildId]
-    )
-    const stalePayload = await wos.getClaimPayload({
-      claimId: activeStateClaim[0].id,
-      botInstanceName: "rachie-wos",
-      workerId: "active-state-worker"
-    })
-    assert.equal(stalePayload.claim.targetIsCurrent, false)
-    assert.equal(await wos.markClaimPermanentlyFailed({
-      claimId: activeStateClaim[0].id,
-      botInstanceName: "rachie-wos",
-      workerId: "active-state-worker",
-      failedAt: new Date("2026-08-12T12:11:01Z"),
-      lastError: "State sharing disabled or target changed."
-    }), true)
-
-    await pool.query(
-      `DELETE FROM event_delivery_claims
-        WHERE event_id = $1 AND game_profile = 'wos' AND status <> 'sent'`,
-      [wosEventId]
-    )
-    await pool.query(
-      `UPDATE event_state_links
-          SET sharing_enabled = true, state_event_channel_id = $2
-        WHERE alliance_guild_id = $1 AND game_profile = 'wos'`,
-      [allianceGuildId, wosStateChannel]
-    )
-    await wos.insertMissingDeliveryClaims([
-      manualStateClaim(wosEventId, new Date("2026-08-09T12:10:00Z"), wosStateChannel)
-    ])
-    await pool.query(
-      `UPDATE event_state_links SET state_event_channel_id = $2
-        WHERE alliance_guild_id = $1 AND game_profile = 'wos'`,
-      [allianceGuildId, changedStateChannel]
-    )
-    assert.equal(await wos.reconcileInvalidStateClaims({ now: claimNow }), 1)
-    const oldTarget = await pool.query(
-      `SELECT status FROM event_delivery_claims
-        WHERE event_id = $1 AND game_profile = 'wos'
-          AND target_kind = 'state' AND target_channel_id = $2
-          AND occurrence_at = '2026-08-09T12:10:00Z'`,
-      [wosEventId, wosStateChannel]
-    )
-    assert.equal(oldTarget.rows[0].status, "failed")
-
-    const changedDefinitions = (await wos.listActiveEventDefinitions({
-      rangeEnd: new Date("2026-08-09T13:00:00Z")
-    })).filter(event => String(event.id) === String(wosEventId))
-    const changedClaims = buildDeliveryClaims(changedDefinitions, {
-      gameProfile: "wos",
-      windowStart: new Date("2026-08-09T11:00:00Z"),
-      windowEnd: new Date("2026-08-09T13:00:00Z")
-    })
-    assert.ok(changedClaims.some(claim =>
-      claim.targetKind === "state" && claim.targetChannelId === changedStateChannel
-    ))
-    await wos.insertMissingDeliveryClaims(changedClaims)
-    const newTarget = await pool.query(
-      `SELECT status FROM event_delivery_claims
-        WHERE event_id = $1 AND game_profile = 'wos'
-          AND target_kind = 'state' AND target_channel_id = $2
-          AND occurrence_at = '2026-08-09T12:10:00Z'`,
-      [wosEventId, changedStateChannel]
-    )
-    assert.equal(newTarget.rows[0].status, "pending")
-
-    const indexResult = await pool.query(
-      `SELECT 1 FROM pg_indexes
-        WHERE tablename = 'event_delivery_claims'
-          AND indexname = 'event_delivery_claims_state_unsent_idx'`
-    )
-    assert.equal(indexResult.rowCount, 1)
   } finally {
     await pool.query(
       "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile IN ('wos', 'kingshot')",
-      [allianceGuildId]
+      [guildId]
     ).catch(() => {})
     await isolationClient.query("SELECT pg_advisory_unlock(7000005)").catch(() => {})
     isolationClient.release()

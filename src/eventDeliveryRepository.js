@@ -42,6 +42,7 @@ function mapClaimPayload(row) {
       id: String(row.claim_id),
       gameProfile: row.game_profile,
       attemptCount: row.attempt_count,
+      scheduleVersion: row.schedule_version,
       deliveryKind: row.delivery_kind,
       targetKind: row.target_kind,
       targetGuildId: row.target_guild_id,
@@ -68,7 +69,7 @@ function mapClaimPayload(row) {
 function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } = {}) {
   requirePool(pool)
   assertProfile(gameProfile)
-  if (targetKind !== null && !["alliance", "state"].includes(targetKind)) {
+  if (targetKind !== null && targetKind !== "alliance") {
     throw new Error("Unsupported delivery target kind")
   }
 
@@ -80,21 +81,17 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
       const eventResult = await pool.query(
         `SELECT e.*, e.first_occurrence_date::text AS first_occurrence_date,
                 s.event_channel_id,
-                l.state_guild_id, l.state_event_channel_id, l.sharing_enabled,
                 i.original_filename AS image_filename,
                 i.content_type AS image_content_type,
                 i.byte_size AS image_byte_size
            FROM scheduled_events e
            JOIN event_guild_settings s
              ON s.guild_id = e.guild_id AND s.game_profile = e.game_profile
-           LEFT JOIN event_state_links l
-             ON l.alliance_guild_id = e.guild_id
-            AND l.game_profile = e.game_profile
            LEFT JOIN scheduled_event_images i
              ON i.event_id = e.id AND i.game_profile = e.game_profile
           WHERE e.game_profile = $1
             AND e.status = 'active'
-            AND (e.publish_to_alliance = true OR e.publish_to_state = true)
+            AND e.publish_to_alliance = true
             AND e.first_occurrence_date <= ($2::timestamptz AT TIME ZONE 'UTC')::date
           ORDER BY e.id`,
         [gameProfile, rangeEnd]
@@ -131,23 +128,24 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
           if (claim.gameProfile !== gameProfile) {
             throw new Error("Delivery claim game profile does not match repository ownership")
           }
-          if (!["alliance", "state"].includes(claim.targetKind)) {
-            throw new Error("Delivery claim target kind is unsupported")
+          if (claim.targetKind !== "alliance") {
+            throw new Error("Individual state reminder claims are disabled")
           }
           if (targetKind !== null && claim.targetKind !== targetKind) {
             throw new Error("Delivery claim target does not match repository scope")
           }
           const result = await client.query(
             `INSERT INTO event_delivery_claims (
-               event_id, group_id, game_profile, occurrence_at, deliver_at,
+               event_id, group_id, game_profile, schedule_version, occurrence_at, deliver_at,
                delivery_kind, target_kind, target_guild_id, target_channel_id
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT DO NOTHING
              RETURNING id`,
             [
               claim.eventId,
               claim.groupId,
               gameProfile,
+              claim.scheduleVersion || 1,
               claim.occurrenceAt,
               claim.deliverAt,
               claim.deliveryKind,
@@ -180,9 +178,7 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
       const client = await pool.connect()
       try {
         await client.query("BEGIN")
-        if (targetKind !== "alliance") {
-          await repository.reconcileInvalidStateClaims({ now, client })
-        }
+        await repository.reconcileInvalidEventClaims({ now, client })
         await client.query(
           `UPDATE event_delivery_claims
               SET status = 'failed',
@@ -207,25 +203,19 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
               WHERE d.game_profile = $1
                 AND ($8::varchar IS NULL OR d.target_kind = $8)
                 AND d.attempt_count < $7
-                AND (
-                  d.target_kind = 'alliance'
-                  OR (
-                    d.target_kind = 'state'
-                    AND EXISTS (
-                      SELECT 1
-                        FROM scheduled_events e
-                        JOIN event_state_links l
-                          ON l.alliance_guild_id = e.guild_id
-                         AND l.game_profile = e.game_profile
-                       WHERE e.id = d.event_id
-                         AND e.game_profile = d.game_profile
-                         AND e.status = 'active'
-                         AND e.publish_to_state = true
-                         AND l.sharing_enabled = true
-                         AND l.state_guild_id = d.target_guild_id
-                         AND l.state_event_channel_id = d.target_channel_id
-                    )
-                  )
+                AND EXISTS (
+                  SELECT 1
+                    FROM scheduled_events e
+                    JOIN event_guild_settings s
+                      ON s.guild_id = e.guild_id AND s.game_profile = e.game_profile
+                   WHERE e.id = d.event_id AND e.game_profile = d.game_profile
+                     AND e.status = 'active' AND e.schedule_version = d.schedule_version
+                     AND d.target_kind = 'alliance'
+                     AND e.publish_to_alliance = true
+                     AND e.guild_id = d.target_guild_id
+                     AND s.event_channel_id = d.target_channel_id
+                     AND d.delivery_kind <> 'event_start'
+                     AND (d.delivery_kind <> 'final_reminder' OR d.occurrence_at > $2)
                 )
                 AND (
                   (d.status = 'pending' AND d.deliver_at <= $2)
@@ -272,16 +262,15 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
 
     async getClaimPayload({ claimId, botInstanceName, workerId }) {
       const result = await pool.query(
-        `SELECT d.id AS claim_id, d.game_profile, d.attempt_count,
+        `SELECT d.id AS claim_id, d.game_profile, d.attempt_count, d.schedule_version,
                 d.delivery_kind, d.target_kind, d.target_guild_id,
                 d.target_channel_id, d.occurrence_at, d.deliver_at,
                 CASE
-                  WHEN d.target_kind = 'alliance' THEN true
-                  WHEN e.status = 'active'
-                   AND e.publish_to_state = true
-                   AND l.sharing_enabled = true
-                   AND l.state_guild_id = d.target_guild_id
-                   AND l.state_event_channel_id = d.target_channel_id
+                  WHEN e.status = 'active' AND e.schedule_version = d.schedule_version
+                   AND d.target_kind = 'alliance' AND e.publish_to_alliance = true
+                   AND e.guild_id = d.target_guild_id AND s.event_channel_id = d.target_channel_id
+                   AND d.delivery_kind <> 'event_start'
+                   AND (d.delivery_kind <> 'final_reminder' OR d.occurrence_at > now())
                   THEN true
                   ELSE false
                 END AS target_is_current,
@@ -296,15 +285,14 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
            FROM event_delivery_claims d
            JOIN scheduled_events e
              ON e.id = d.event_id AND e.game_profile = d.game_profile
+           JOIN event_guild_settings s
+             ON s.guild_id = e.guild_id AND s.game_profile = e.game_profile
            LEFT JOIN scheduled_event_groups g
              ON g.id = d.group_id
             AND g.event_id = d.event_id
             AND g.game_profile = d.game_profile
            LEFT JOIN scheduled_event_images i
              ON i.event_id = d.event_id AND i.game_profile = d.game_profile
-           LEFT JOIN event_state_links l
-             ON l.alliance_guild_id = e.guild_id
-            AND l.game_profile = e.game_profile
           WHERE d.id = $1 AND d.game_profile = $2
             AND d.status = 'claimed'
             AND d.claimed_by_bot_instance = $3
@@ -315,7 +303,7 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
       return mapClaimPayload(result.rows[0])
     },
 
-    async reconcileInvalidStateClaims({ now, client = pool }) {
+    async reconcileInvalidEventClaims({ now, client = pool }) {
       const result = await client.query(
         `UPDATE event_delivery_claims d
             SET status = 'failed',
@@ -324,31 +312,42 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
                 claimed_at = NULL,
                 claimed_until = NULL,
                 next_attempt_at = NULL,
-                last_error = 'State sharing disabled or target changed.',
+                last_error = CASE
+                  WHEN d.target_kind = 'state'
+                    THEN 'Individual state reminders are disabled.'
+                  WHEN d.delivery_kind = 'event_start'
+                    THEN 'Exact-start reminders are disabled.'
+                  WHEN d.delivery_kind = 'final_reminder' AND d.occurrence_at <= $2
+                    THEN 'Final reminder delivery window has passed.'
+                  ELSE 'Event schedule or delivery target changed.'
+                END,
                 updated_at = $2
            FROM scheduled_events e
-           LEFT JOIN event_state_links l
-             ON l.alliance_guild_id = e.guild_id
-            AND l.game_profile = e.game_profile
+           JOIN event_guild_settings s
+             ON s.guild_id = e.guild_id AND s.game_profile = e.game_profile
           WHERE d.event_id = e.id
             AND d.game_profile = e.game_profile
             AND d.game_profile = $1
-            AND d.target_kind = 'state'
             AND (
-              d.status IN ('pending', 'failed')
+              d.status = 'pending'
+              OR (d.status = 'failed' AND d.next_attempt_at IS NOT NULL)
               OR (d.status = 'claimed' AND d.claimed_until <= $2)
             )
             AND NOT COALESCE((
-              e.status = 'active'
-              AND e.publish_to_state = true
-              AND l.sharing_enabled = true
-              AND l.state_guild_id = d.target_guild_id
-              AND l.state_event_channel_id = d.target_channel_id
+              e.status = 'active' AND e.schedule_version = d.schedule_version
+              AND d.target_kind = 'alliance' AND e.publish_to_alliance = true
+              AND e.guild_id = d.target_guild_id AND s.event_channel_id = d.target_channel_id
+              AND d.delivery_kind <> 'event_start'
+              AND (d.delivery_kind <> 'final_reminder' OR d.occurrence_at > $2)
             ), false)
           RETURNING d.id`,
         [gameProfile, now]
       )
       return result.rowCount
+    },
+
+    async reconcileInvalidStateClaims(input) {
+      return repository.reconcileInvalidEventClaims(input)
     },
 
     async markClaimSent({ claimId, botInstanceName, workerId, sentAt, sentMessageId = null }) {

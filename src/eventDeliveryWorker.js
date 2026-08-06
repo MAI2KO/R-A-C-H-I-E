@@ -95,6 +95,7 @@ function createEventDeliveryWorker({
   gameProfile,
   botInstanceName,
   deliveryHandler,
+  additionalTick = null,
   logger = console,
   now = () => new Date(),
   workerId = `${process.pid}-${randomUUID()}`,
@@ -163,21 +164,30 @@ function createEventDeliveryWorker({
 
   async function runTick() {
     const tickNow = now()
-    await generateMissingDeliveryClaims({
-      repository,
-      gameProfile,
-      now: tickNow,
-      config
-    })
-    const claims = await repository.claimDueDeliveries({
-      now: tickNow,
-      batchSize: config.batchSize,
-      leaseSeconds: config.claimLeaseSeconds,
-      botInstanceName,
-      workerId
-    })
-    await Promise.all(claims.map(processClaim))
-    return claims.length
+    const roundupTick = typeof additionalTick === "function"
+      ? Promise.resolve().then(() => additionalTick(tickNow)).catch(error => {
+        logger.error(`[Event scheduler] Roundup tick failed: ${sanitizeDeliveryError(error)}`)
+      })
+      : Promise.resolve()
+    try {
+      await generateMissingDeliveryClaims({
+        repository,
+        gameProfile,
+        now: tickNow,
+        config
+      })
+      const claims = await repository.claimDueDeliveries({
+        now: tickNow,
+        batchSize: config.batchSize,
+        leaseSeconds: config.claimLeaseSeconds,
+        botInstanceName,
+        workerId
+      })
+      await Promise.all(claims.map(processClaim))
+      return claims.length
+    } finally {
+      await roundupTick
+    }
   }
 
   function tick() {

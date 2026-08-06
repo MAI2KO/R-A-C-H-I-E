@@ -12,7 +12,7 @@ const {
 } = require("discord.js")
 
 const { parseIsoDate, parseTimeOrGroups } = require("./timeParsing")
-const { validateEventDraft } = require("./eventValidation")
+const { EventValidationError, validateEventDraft } = require("./eventValidation")
 const { downloadEventImage } = require("./eventImage")
 const { InteractionSessionStore } = require("./interactionSessions")
 const {
@@ -77,7 +77,7 @@ function coreTimeValue(data) {
 function buildCoreModal(sessionId, data = {}) {
   const modal = new ModalBuilder()
     .setCustomId(`${CREATION_IDS.corePrefix}${sessionId}`)
-    .setTitle("Create scheduled event")
+    .setTitle(data.mode === "edit" ? "Edit scheduled event" : "Create scheduled event")
     .addComponents(
       textInput("a", "Alliance name", data.allianceName),
       textInput("e", "Event name", data.eventName),
@@ -97,8 +97,8 @@ function buildCoreModal(sessionId, data = {}) {
       .setFileUploadComponent(
         new FileUploadBuilder()
           .setCustomId("img")
-          .setRequired(false)
-          .setMinValues(0)
+          .setRequired(data.imageAction === "replace")
+          .setMinValues(data.imageAction === "replace" ? 1 : 0)
           .setMaxValues(1)
       )
   )
@@ -115,7 +115,7 @@ function buildTimingView(sessionId, data) {
       `Event options\n\n` +
       `Recurrence: every ${data.recurrenceDays} days\n` +
       `Advance reminder: ${data.advanceReminderMinutes ?? "none"}\n` +
-      `Reminder at event start: ${data.reminderAtStart ? "Yes" : "No"}`,
+      `Final reminder (1 minute before): ${data.reminderAtStart ? "Yes" : "No"}`,
     components: [
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -141,7 +141,7 @@ function buildTimingView(sessionId, data) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.startPrefix}${sessionId}`)
-          .setLabel(data.reminderAtStart ? "Start reminder: On" : "Start reminder: Off")
+          .setLabel(data.reminderAtStart ? "Final reminder: On" : "Final reminder: Off")
           .setStyle(data.reminderAtStart ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.optionsPrefix}${sessionId}`)
@@ -160,9 +160,9 @@ function buildPublishingView(sessionId, data) {
   return {
     content:
       `Publishing options\n\n` +
-      `Alliance Discord: ${data.publishToAlliance ? "Yes" : "No"}\n` +
-      `State Discord: ${data.publishToState ? "Yes" : "No"}\n` +
-      `Monday roundup: ${data.includeInWeeklyRoundup ? "Yes" : "No"}`,
+      `Alliance reminders: ${data.publishToAlliance ? "Yes" : "No"}\n` +
+      `State weekly roundup: ${data.publishToState ? "Yes" : "No"}\n` +
+      `Weekly roundup: ${data.includeInWeeklyRoundup ? "Yes" : "No"}`,
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -171,7 +171,7 @@ function buildPublishingView(sessionId, data) {
           .setStyle(data.publishToAlliance ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.statePrefix}${sessionId}`)
-          .setLabel(data.publishToState ? "State: On" : "State: Off")
+          .setLabel(data.publishToState ? "State roundup: On" : "State roundup: Off")
           .setStyle(data.publishToState ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.roundupPrefix}${sessionId}`)
@@ -199,7 +199,7 @@ function buildPreviewView(sessionId, data) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.createPrefix}${sessionId}`)
-          .setLabel("Create")
+          .setLabel(data.mode === "edit" ? "Save changes" : "Create")
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.editPrefix}${sessionId}`)
@@ -361,6 +361,12 @@ async function handleEventCreationInteraction(
     if (attachment) image = await downloadEventImage(attachment)
 
     const previous = sessionStore.get(sessionId, context).data
+    if (previous.mode === "edit" && previous.imageAction === "replace" && !image) {
+      throw new EventValidationError("Select one replacement image.")
+    }
+    const nextImage = previous.mode === "edit"
+      ? (previous.imageAction === "replace" ? image : previous.imageAction === "remove" ? null : previous.image)
+      : (image || previous.image || null)
     const session = sessionStore.update(sessionId, context, {
       allianceName: interaction.fields.getTextInputValue("a").trim(),
       eventName: interaction.fields.getTextInputValue("e").trim(),
@@ -369,7 +375,7 @@ async function handleEventCreationInteraction(
       eventTimeUtc: timeDetails.eventTimeUtc,
       groups: timeDetails.groups,
       grouped: timeDetails.groups.length > 0,
-      image: image || previous.image || null
+      image: nextImage
     })
     await interaction.editReply(buildTimingView(sessionId, session.data))
     return true
@@ -418,7 +424,7 @@ async function handleEventCreationInteraction(
   if (interaction.isButton?.() && prefix === CREATION_IDS.statePrefix) {
     if (!session.data.publishToState && !(await stateLinkIsEnabled(repository, interaction.guildId))) {
       await interaction.reply({
-        content: "Enable a valid state event link before selecting state publishing.",
+        content: "Enable a valid state roundup link before including this event in state roundups.",
         flags: MessageFlags.Ephemeral
       })
       return true
@@ -469,15 +475,25 @@ async function handleEventCreationInteraction(
       const event = validateEventDraft(session.data, {
         stateLinkEnabled: await stateLinkIsEnabled(repository, interaction.guildId)
       })
-      await repository.createEvent({
-        guildId: interaction.guildId,
-        createdByUserId: interaction.user.id,
-        createdByBotInstance: health.botInstanceName,
-        event
-      })
+      if (session.data.mode === "edit") {
+        const updated = await repository.updateEvent({
+          guildId: interaction.guildId,
+          eventId: session.data.eventId,
+          event,
+          imageAction: session.data.imageAction
+        })
+        if (!updated) throw new Error("That event is no longer available.")
+      } else {
+        await repository.createEvent({
+          guildId: interaction.guildId,
+          createdByUserId: interaction.user.id,
+          createdByBotInstance: health.botInstanceName,
+          event
+        })
+      }
       sessionStore.complete(sessionId, context)
       await interaction.editReply({
-        content: `Created ${event.eventName}. No public message was posted.`,
+        content: `${session.data.mode === "edit" ? "Updated" : "Created"} ${event.eventName}. No public message was posted.`,
         components: []
       })
     } catch (error) {
