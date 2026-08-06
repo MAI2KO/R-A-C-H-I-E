@@ -4,10 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "check": "node --check index.js && node --check src/db.js && node --check src/migrate.js && node --check src/eventSchedulerHealth.js",
+    "check": "node --check index.js && find src test -name '*.js' -print0 | xargs -0 -n1 node --check",
     "migrate": "node src/migrate.js",
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",

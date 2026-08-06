@@ -18,6 +18,8 @@ const {
 
 const axios = require("axios")
 const OpenAI = require("openai")
+const { getEventSchedulerCommandData } = require("./src/eventSchedulerCommands")
+const { handleEventSchedulerInteraction } = require("./src/eventSchedulerInteractions")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -1698,6 +1700,9 @@ const commands = [
     ),
 ].map(command => command.toJSON())
 
+const eventSchedulerCommand = getEventSchedulerCommandData()
+if (eventSchedulerCommand) commands.push(eventSchedulerCommand)
+
 /* -------------------- COMMAND REGISTRATION -------------------- */
 
 const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN)
@@ -1733,6 +1738,8 @@ client.once("clientReady", () => {
 
 client.on("interactionCreate", async interaction => {
   try {
+    if (await handleEventSchedulerInteraction(interaction, { userCanManageServer })) return
+
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "settings_max_bookings_select") {
         if (!(await userCanManageServer(interaction))) {
