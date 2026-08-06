@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "check": "node --check index.js && node --check src/db.js && node --check src/migrate.js && node --check src/eventSchedulerHealth.js",
+    "migrate": "node src/migrate.js",
     "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -15,6 +17,7 @@
     "axios": "^1.13.6",
     "discord.js": "^14.25.1",
     "dotenv": "^17.3.1",
-    "openai": "^6.34.0"
+    "openai": "^6.34.0",
+    "pg": "^8.22.0"
   }
 }

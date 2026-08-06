@@ -3933,9 +3933,15 @@ channelMessageThresholds.set(channelId, getRandomBanterThreshold())
   }
 })
 
+const { initializeEventSchedulerSubsystem } = require("./src/eventSchedulerHealth")
+
 /* -------------------- START BOT -------------------- */
 
 async function main() {
+  initializeEventSchedulerSubsystem().catch(() => {
+    console.error("[Event scheduler] Initialization failed unexpectedly")
+  })
+
   try {
     console.log("Registering slash commands...")
     await registerCommands()
