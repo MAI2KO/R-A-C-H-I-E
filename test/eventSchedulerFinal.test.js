@@ -49,7 +49,9 @@ test("scheduler help sections are complete and remain inside Discord limits", ()
   assert.match(combined, /image is attached only to the alliance advance reminder/i)
   assert.match(combined, /never creates an individual state reminder/i)
   assert.match(combined, /select no advance reminder|cancel future reminders/i)
-  assert.match(combined, /Developer Mode/i)
+  assert.match(combined, /Discord's channel list/i)
+  assert.match(combined, /one-time 15-minute link code/i)
+  assert.match(combined, /never requires server or channel IDs/i)
 })
 
 test("scheduler help is ephemeral and remains available when database health is down", async () => {

@@ -19,10 +19,10 @@ const HELP_SECTIONS = Object.freeze([
     description: "Channels, main alliance and sub-alliances",
     content:
       "**Getting started**\n\n" +
-      "1. Run `/event-scheduler` and choose **Alliance channel**. The first setup asks for the main alliance name and the alliance reminder channel.\n" +
-      "2. Choose **Alliances** to add or rename sub-alliances.\n" +
-      "3. Choose **Weekly roundup** to configure the alliance roundup channel, UTC weekday and UTC posting time.\n" +
-      "4. Choose **State roundup** only when a state Discord should receive the combined weekly roundup.\n\n" +
+      "1. Run `/event-scheduler`, choose **Alliance identity**, and set the main alliance name.\n" +
+      "2. Choose **Configure channels** and pick the alliance reminder channel from Discord's channel list. Pick the weekly-roundup channel there too if needed.\n" +
+      "3. Choose **Alliances** to add or rename sub-alliances.\n" +
+      "4. Use **State destination** and **State sharing** only when a state Discord should receive the combined weekly roundup.\n\n" +
       "All scheduler administration is private and uses the server's existing management authorisation."
   }),
   Object.freeze({
@@ -87,9 +87,9 @@ const HELP_SECTIONS = Object.freeze([
     content:
       "**State roundup setup**\n\n" +
       "1. Invite the appropriate bot to the state Discord. R.A.C.H.I.E links WOS data; P.E.G.G.I.E links Kingshot data.\n" +
-      "2. In Discord settings, enable Developer Mode if needed. Right-click the state server and copy its server ID; copy the target roundup channel ID too.\n" +
-      "3. In the alliance Discord, run `/event-scheduler`, choose **State roundup**, enter both IDs, and submit the modal to confirm.\n\n" +
-      "The bot validates its state-server membership, channel ownership, channel type, and View Channel, Send Messages and Embed Links permissions before enabling the profile-scoped link."
+      "2. In the state Discord, run `/event-scheduler`, choose **State destination**, and select the weekly-roundup channel from Discord's channel list.\n" +
+      "3. Generate a one-time 15-minute link code. In the alliance Discord choose **State sharing**, select **Link with code**, and enter it.\n\n" +
+      "The bot identifies both servers automatically and validates the channel type plus View Channel, Send Messages and Embed Links permissions. The code works only once and only for the same game profile. Normal setup never requires server or channel IDs."
   }),
   Object.freeze({
     id: "state-behaviour",
@@ -108,7 +108,8 @@ const HELP_SECTIONS = Object.freeze([
       "**Troubleshooting**\n\n" +
       "- Scheduler command absent: confirm `EVENT_SCHEDULER_ENABLED=true` and restart after command registration.\n" +
       "- Scheduler unavailable: check `DATABASE_URL`, `GAME_PROFILE`, `BOT_INSTANCE_NAME`, database access and migration logs. Existing bot features remain available.\n" +
-      "- Channel missing or state server not found: check Developer Mode IDs, bot membership, channel ownership and channel type.\n" +
+      "- Channel missing: confirm the bot is in that server, then choose an available text channel from the native list.\n" +
+      "- State link rejected: generate a fresh code in the state Discord and use the same bot/game profile on both sides.\n" +
       "- Missing permission: grant View Channel, Send Messages and Embed Links; alliance image channels also need Attach Files.\n" +
       "- Invalid date/time: use `YYYY-MM-DD` and a documented UTC format.\n" +
       "- Reminder missing: check event status, publishing, reminder choice, channel and grace window.\n" +

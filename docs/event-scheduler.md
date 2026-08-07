@@ -6,12 +6,13 @@ Run `/event-scheduler` as a user accepted by `userCanManageServer(interaction)`.
 
 Run `/event-scheduler-help` for private setup, creation, reminder, management, roundup, state-link and troubleshooting pages. Help is also available from the scheduler management home and does not require a healthy database connection.
 
-1. Configure the shared alliance reminder channel. The first setup also creates the main alliance.
-2. Open **Alliances** to add, list, rename, or delete sub-alliances.
-3. Configure the alliance weekly roundup channel, UTC weekday, UTC time, and empty-post behavior.
-4. Optionally configure the scheduler's state Discord and state roundup channel. Invite the profile's bot first, enable Discord Developer Mode if needed, copy the state server/channel IDs, then submit them through **State roundup**. The bot validates membership, channel ownership/type, View Channel, Send Messages and Embed Links before enabling the profile-scoped link.
+1. Choose **Alliance identity** and set or rename the main alliance in the text modal.
+2. Choose **Configure channels** and select the shared alliance reminder channel from Discord's native channel list. The bot validates View Channel, Send Messages, Embed Links, and Attach Files.
+3. In the same channel view, select the alliance weekly-roundup channel, then enter its UTC weekday, UTC time, and empty-post behavior. Roundups do not require Attach Files.
+4. Open **Alliances** to add, list, rename, or delete sub-alliances.
+5. For state sharing, invite the profile's bot to the state Discord. Run `/event-scheduler` there, choose **State destination**, select its weekly-roundup channel, and generate a one-time 15-minute link code. Back in the alliance Discord, choose **State sharing**, then **Link with code**. Both guilds and the channel are identified automatically.
 
-The scheduler state link is Postgres-backed and separate from existing Apps Script state linking. Alliance and state channels here do not reuse the existing Apps Script announcement channel.
+The scheduler state link is Postgres-backed and separate from existing Apps Script state linking. Alliance and state channels here do not reuse the existing Apps Script announcement channel. Codes are stored only as hashes, expire, work once, and cannot cross game profiles. Existing ID-backed configurations continue to work internally, but normal setup never asks users for guild or channel IDs.
 
 ## Alliances
 
@@ -65,7 +66,7 @@ Individual advance, final, grouped, and image deliveries are alliance-only. No s
 
 ## Help
 
-`/event-scheduler-help` uses one select menu to keep every page inside Discord's message and component limits. Sections cover getting started, event creation, accepted UTC formats, reminders/images, event management and cancellation, alliance roundups, state setup, state-only-roundup behavior, and troubleshooting. Help responses disable mention parsing and are always ephemeral.
+`/event-scheduler-help` uses one select menu to keep every page inside Discord's message and component limits. Sections cover native channel setup, event creation, accepted UTC formats, reminders/images, event management and cancellation, alliance roundups, two-sided state linking, state-only-roundup behavior, and troubleshooting. Help responses disable mention parsing and are always ephemeral.
 
 ## Weekly Roundups
 

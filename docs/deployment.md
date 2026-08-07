@@ -51,17 +51,18 @@ When enabled, scheduler initialization validates `GAME_PROFILE` and `BOT_INSTANC
 3. Verify `/event-scheduler` privately in a test guild/channel for that profile.
 4. Verify `/event-scheduler-help` and the management **Help** control are private and complete.
 5. Deploy the second service and verify it sees only its own profile data.
-6. Configure main/sub-alliances, alliance reminder channel, weekly roundup, and optional state roundup link.
-7. Create a test event far enough ahead to observe the chosen advance reminder and one-minute final announcement.
-8. Verify no exact-start or individual state message appears.
+6. Configure the main alliance identity, select alliance channels natively, and add any sub-alliances.
+7. For optional state sharing, configure the destination from inside the state Discord and consume its one-time code in the alliance Discord.
+8. Create a test event far enough ahead to observe the chosen advance reminder and one-minute final announcement.
+9. Verify no exact-start or individual state message appears.
 
-Migration 006 includes an old-writer compatibility trigger: an overlapping older process that omits `alliance_id` is assigned the profile's default alliance. New code always selects an explicit alliance.
+Migration 006 includes an old-writer compatibility trigger: an overlapping older process that omits `alliance_id` is assigned the profile's default alliance. Migration 007 preserves existing channel/state-link IDs while adding identity-first setup, state destinations, and one-time link codes. New code always selects an explicit alliance.
 
 ## Rollback
 
 Set `EVENT_SCHEDULER_ENABLED=false` on the affected service and redeploy/restart. This disables scheduler command registration and polling while preserving existing booking, state, administration, banter, and Apps Script-backed behavior.
 
-Leave additive migrations applied. Do not drop alliance or custom-message columns during an incident. Older code can continue default-alliance inserts because of the compatibility trigger, but it cannot manage sub-alliances or custom messages.
+Leave additive migrations applied. Do not drop alliance, custom-message, state-destination, or link-code data during an incident. Older code can continue default-alliance inserts because of the compatibility trigger and can read existing state links, but it cannot manage sub-alliances, custom messages, native destinations, or link codes.
 
 If a release must be reverted, revert only application code, keep the database backup, and monitor scheduler logs. Re-enable the scheduler after the corrected application is deployed and migration state reports zero pending files.
 

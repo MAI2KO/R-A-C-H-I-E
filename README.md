@@ -19,6 +19,8 @@ See [Architecture](docs/architecture.md) for the complete boundary and data mode
 
 Administrators use `/event-scheduler`; authorization uses the existing `userCanManageServer(interaction)` behavior. `/event-scheduler-help` provides private, database-independent setup, creation, reminder, management, roundup, state-link and troubleshooting pages. The management home also includes a **Help** control.
 
+Normal channel setup uses Discord's native channel selector. Set the main alliance through **Alliance identity**, then use **Configure channels** to choose the alliance reminder and weekly-roundup channels. No channel ID is typed. To link a state Discord, configure **State destination** inside that Discord, select its roundup channel, generate a one-time 15-minute code, and enter that code under **State sharing** in the alliance Discord. Guild and channel IDs are resolved internally.
+
 A Discord guild and game profile can contain one main alliance and multiple sub-alliances, such as `YOU`, `YOU2`, and `YOU Academy`. Events select an alliance through an ephemeral opaque control. Alliance channels, weekly-roundup channels, and state links remain guild/profile settings and may be shared by every alliance in that guild.
 
 Events support:
@@ -77,7 +79,7 @@ Migrations run during scheduler initialization under a session-level Postgres ad
 EVENT_SCHEDULER_ENABLED=true npm run migrate
 ```
 
-Migration files are append-only. Migrations 001 through 005 preserve the initial scheduler history; migration 006 adds flexible reminders, custom messages, and profile-scoped alliance entities while backfilling existing events. Run migrations again to confirm that zero files reapply.
+Migration files are append-only. Migrations 001 through 005 preserve the initial scheduler history; migration 006 adds flexible reminders, custom messages, and profile-scoped alliance entities while backfilling existing events. Migration 007 permits identity-first setup and adds profile-scoped state destinations plus hashed, expiring, one-time link codes. Existing channel IDs and state links are preserved. Run migrations again to confirm that zero files reapply.
 
 ## Testing
 
@@ -110,7 +112,7 @@ Each service retains its own Discord and Apps Script variables. Follow [Deployme
 
 Back up Postgres, validate migrations on a disposable database, deploy one service at a time, and verify scheduler health before enabling public use. Database idempotency, leases, profile scope, and a compatibility trigger protect ordinary restarts and overlapping deployments.
 
-The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables scheduler commands and polling without affecting existing bot features. Leave additive migrations applied; reverting to old scheduler code after migration 006 is supported for ordinary default-alliance writes, but old code does not understand sub-alliance management or custom messages.
+The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables scheduler commands and polling without affecting existing bot features. Leave additive migrations applied; reverting to old scheduler code after migrations 006 and 007 preserves existing rows, but old code does not understand sub-alliance management, custom messages, native state destinations, or link codes.
 
 ## Troubleshooting
 
@@ -118,6 +120,7 @@ The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables schedul
 - Commands are absent: confirm `EVENT_SCHEDULER_ENABLED=true` and that global command registration completed for that service's `CLIENT_ID`.
 - Messages are not delivered: verify the configured guild/channel, bot membership, View Channel, Send Messages, Embed Links, and Attach Files permissions.
 - State roundup is empty: verify the profile-scoped scheduler state link, sharing status, event `publish_to_state`, roundup inclusion, active status, and weekly window.
+- State link code is rejected: generate a fresh code in the state Discord and verify both sides use the same bot/game profile; codes expire after 15 minutes and work once.
 - Duplicate alliance rejected: names are unique case-insensitively within one guild/profile.
 
 ## Security And Limitations

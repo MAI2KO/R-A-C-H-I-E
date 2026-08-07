@@ -21,6 +21,7 @@ Scheduler failure is isolated. Discord login and existing slash-command registra
 
 - `eventSchedulerInteractions.js`: authorised ephemeral entry point and guild/channel configuration.
 - `eventSchedulerHelp.js`: database-independent, ephemeral help pages and controls.
+- `stateLinkCodes.js`: random, normalized and hashed one-time state destination codes.
 - `allianceManagementInteractions.js`: opaque, profile-scoped alliance add/list/rename/delete flows.
 - `eventCreationInteractions.js`: alliance selection, modal input, options, preview, and confirmation.
 - `eventSchedulerRepository.js`: transactional event/alliance writes and claim reconciliation.
@@ -32,7 +33,7 @@ Scheduler failure is isolated. Discord login and existing slash-command registra
 
 ## Data Ownership
 
-`event_guild_settings` is keyed by `(guild_id, game_profile)` and owns shared alliance reminder and weekly-roundup channels. `event_state_links` uses the same scope and supplies only the state weekly-roundup destination.
+`event_guild_settings` is keyed by `(guild_id, game_profile)` and owns shared alliance reminder and weekly-roundup channels. Its reminder channel may be null during identity-first setup. `event_state_destinations` records a channel selected natively inside a state guild. `event_state_link_codes` stores only a hash, profile, destination, expiry and one-time consumption state. Consuming a valid code writes the existing `event_state_links` contract used by weekly roundups, so older stored links remain compatible.
 
 `event_alliances` gives a guild/profile one main alliance and any number of sub-alliances. Names are unique case-insensitively within that scope. The same name may exist in another guild or game profile.
 
@@ -52,6 +53,6 @@ Discord send and database completion cannot be one transaction. If Discord accep
 
 ## Security
 
-Management uses the existing `userCanManageServer(interaction)` authorization. Interaction sessions bind opaque IDs to user, guild, and profile and expire after 15 minutes. Internal alliance and event IDs are not shown in public controls.
+Management uses the existing `userCanManageServer(interaction)` authorization. Interaction sessions bind opaque IDs to user, guild, and profile and expire after 15 minutes. Internal alliance and event IDs are not shown in public controls. Current-guild channels use Discord channel selectors and are revalidated for guild ownership, type and bot permissions before storage. State codes carry no credentials, are hashed at rest, expire after 15 minutes, work once, and are profile scoped.
 
 Custom messages are trimmed, length-limited, plain text, checked for unsafe URL schemes, mention-neutralized, and sent with `allowedMentions.parse=[]`. Image downloads accept only trusted Discord attachment URLs, supported image signatures, and bounded sizes.

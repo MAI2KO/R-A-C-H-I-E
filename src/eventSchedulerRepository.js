@@ -17,6 +17,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
       const result = await pool.query(
         `SELECT s.guild_id, s.game_profile, s.bot_instance_name,
                 COALESCE(a.alliance_name, s.alliance_name) AS alliance_name,
+                a.id AS default_alliance_id,
                 s.event_channel_id, s.weekly_roundup_enabled, s.weekly_roundup_day,
                 s.weekly_roundup_time_utc, s.weekly_roundup_channel_id,
                 s.roundup_when_empty, s.created_at, s.updated_at,
@@ -63,6 +64,71 @@ function createEventSchedulerRepository(pool, gameProfile) {
         [guildId, gameProfile, botInstanceName, allianceName, eventChannelId]
       )
       return result.rows[0]
+    },
+
+    async upsertGuildIdentity({ guildId, botInstanceName, allianceName }) {
+      if (typeof pool.connect !== "function") {
+        throw new Error("The Postgres pool does not support transactions")
+      }
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        await client.query(
+          `INSERT INTO event_guild_settings (
+             guild_id, game_profile, bot_instance_name, alliance_name, event_channel_id
+           ) VALUES ($1, $2, $3, $4, NULL)
+           ON CONFLICT (guild_id, game_profile) DO UPDATE SET
+             bot_instance_name = EXCLUDED.bot_instance_name,
+             updated_at = now()`,
+          [guildId, gameProfile, botInstanceName, allianceName]
+        )
+        await client.query(
+          `INSERT INTO event_alliances (
+             guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+           ) VALUES ($1, $2, $3, true, $4)
+           ON CONFLICT DO NOTHING`,
+          [guildId, gameProfile, allianceName, botInstanceName]
+        )
+        const defaultAlliance = (await client.query(
+          `UPDATE event_alliances
+              SET alliance_name = $3, updated_at = now()
+            WHERE guild_id = $1 AND game_profile = $2 AND is_default = true
+            RETURNING id`,
+          [guildId, gameProfile, allianceName]
+        )).rows[0]
+        if (!defaultAlliance) throw new Error("The main alliance could not be configured")
+        await client.query(
+          `UPDATE scheduled_events
+              SET alliance_name = $4, updated_at = now()
+            WHERE alliance_id = $1 AND guild_id = $2 AND game_profile = $3`,
+          [defaultAlliance.id, guildId, gameProfile, allianceName]
+        )
+        const settings = (await client.query(
+          `UPDATE event_guild_settings
+              SET alliance_name = $3, updated_at = now()
+            WHERE guild_id = $1 AND game_profile = $2
+            RETURNING *`,
+          [guildId, gameProfile, allianceName]
+        )).rows[0]
+        await client.query("COMMIT")
+        return settings
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
+    },
+
+    async setEventChannel({ guildId, eventChannelId }) {
+      const result = await pool.query(
+        `UPDATE event_guild_settings
+            SET event_channel_id = $3, updated_at = now()
+          WHERE guild_id = $1 AND game_profile = $2
+          RETURNING *`,
+        [guildId, gameProfile, eventChannelId]
+      )
+      return result.rows[0] || null
     },
 
     async listAlliances(guildId, { limit = 25, offset = 0 } = {}) {
@@ -264,6 +330,133 @@ function createEventSchedulerRepository(pool, gameProfile) {
         [allianceGuildId, gameProfile, enabled]
       )
       return result.rows[0] || null
+    },
+
+    async getStateDestination(stateGuildId) {
+      const result = await pool.query(
+        `SELECT state_guild_id, game_profile, configured_by_bot_instance,
+                state_roundup_channel_id, enabled, created_at, updated_at
+           FROM event_state_destinations
+          WHERE state_guild_id = $1 AND game_profile = $2`,
+        [stateGuildId, gameProfile]
+      )
+      return result.rows[0] || null
+    },
+
+    async upsertStateDestination({
+      stateGuildId,
+      configuredByBotInstance,
+      stateRoundupChannelId
+    }) {
+      const result = await pool.query(
+        `WITH destination AS (
+           INSERT INTO event_state_destinations (
+             state_guild_id, game_profile, configured_by_bot_instance,
+             state_roundup_channel_id, enabled
+           ) VALUES ($1, $2, $3, $4, true)
+           ON CONFLICT (state_guild_id, game_profile) DO UPDATE SET
+             configured_by_bot_instance = EXCLUDED.configured_by_bot_instance,
+             state_roundup_channel_id = EXCLUDED.state_roundup_channel_id,
+             enabled = true,
+             updated_at = now()
+           RETURNING *
+         ), updated_links AS (
+           UPDATE event_state_links link
+              SET state_event_channel_id = destination.state_roundup_channel_id,
+                  updated_at = now()
+             FROM destination
+            WHERE link.state_guild_id = destination.state_guild_id
+              AND link.game_profile = destination.game_profile
+           RETURNING link.alliance_guild_id
+         )
+         SELECT destination.* FROM destination`,
+        [stateGuildId, gameProfile, configuredByBotInstance, stateRoundupChannelId]
+      )
+      return result.rows[0]
+    },
+
+    async createStateLinkCode({
+      stateGuildId,
+      codeHash,
+      createdByBotInstance,
+      createdByUserId,
+      expiresAt
+    }) {
+      const result = await pool.query(
+         `INSERT INTO event_state_link_codes (
+           game_profile, state_guild_id, code_hash, created_by_bot_instance,
+           created_by_user_id, expires_at
+         )
+         SELECT $2::varchar, d.state_guild_id, $3::char(64), $4::varchar, $5::varchar, $6::timestamptz
+           FROM event_state_destinations d
+          WHERE d.state_guild_id = $1::varchar
+            AND d.game_profile = $2::varchar
+            AND d.enabled = true
+         RETURNING id, game_profile, state_guild_id, expires_at`,
+        [stateGuildId, gameProfile, codeHash, createdByBotInstance, createdByUserId, expiresAt]
+      )
+      return result.rows[0] || null
+    },
+
+    async consumeStateLinkCode({ allianceGuildId, configuredByBotInstance, codeHash }) {
+      if (typeof pool.connect !== "function") {
+        throw new Error("The Postgres pool does not support transactions")
+      }
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const code = (await client.query(
+          `SELECT c.id, c.state_guild_id, d.state_roundup_channel_id
+             FROM event_state_link_codes c
+             JOIN event_state_destinations d
+               ON d.state_guild_id = c.state_guild_id
+              AND d.game_profile = c.game_profile
+            WHERE c.code_hash = $1
+              AND c.game_profile = $2
+              AND c.consumed_at IS NULL
+              AND c.expires_at > now()
+              AND d.enabled = true
+            FOR UPDATE OF c`,
+          [codeHash, gameProfile]
+        )).rows[0]
+        if (!code) {
+          await client.query("ROLLBACK")
+          return null
+        }
+        const link = (await client.query(
+          `INSERT INTO event_state_links (
+             alliance_guild_id, game_profile, configured_by_bot_instance,
+             state_guild_id, state_event_channel_id, sharing_enabled
+           ) VALUES ($1, $2, $3, $4, $5, true)
+           ON CONFLICT (alliance_guild_id, game_profile) DO UPDATE SET
+             configured_by_bot_instance = EXCLUDED.configured_by_bot_instance,
+             state_guild_id = EXCLUDED.state_guild_id,
+             state_event_channel_id = EXCLUDED.state_event_channel_id,
+             sharing_enabled = true,
+             updated_at = now()
+           RETURNING *`,
+          [
+            allianceGuildId,
+            gameProfile,
+            configuredByBotInstance,
+            code.state_guild_id,
+            code.state_roundup_channel_id
+          ]
+        )).rows[0]
+        await client.query(
+          `UPDATE event_state_link_codes
+              SET consumed_at = now(), consumed_by_alliance_guild_id = $2
+            WHERE id = $1`,
+          [code.id, allianceGuildId]
+        )
+        await client.query("COMMIT")
+        return link
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
     },
 
     async configureWeeklyRoundup({
