@@ -6,6 +6,7 @@ const {
   ChannelType,
   MessageFlags,
   ModalBuilder,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle
 } = require("discord.js")
@@ -36,9 +37,16 @@ const IDS = Object.freeze({
   identityModal: "es:identitym",
   channels: "es:channels",
   reminderChannel: "es:reminderch",
+  roundupSettings: "es:roundset",
+  roundupEnable: "es:roundon",
+  roundupDisable: "es:roundoff",
+  roundupSchedule: "es:roundsched",
+  roundupDay: "es:roundday",
+  roundupTimeModalPrefix: "es:roundtime:",
+  roundupScheduleConfirmPrefix: "es:roundconfirm:",
+  roundupChannelView: "es:roundchannel",
   roundupChannel: "es:roundch",
-  roundupModalPrefix: "es:roundm:",
-  roundupOff: "es:roundoff",
+  stateRoundupToggle: "es:stateroundtoggle",
   stateDestination: "es:statedest",
   stateDestinationChannel: "es:statedestch",
   stateCode: "es:statecode",
@@ -50,6 +58,7 @@ const IDS = Object.freeze({
 
 const TEXT_CHANNEL_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement]
 const SAFE_MENTIONS = Object.freeze({ parse: [], repliedUser: false })
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 
 function isSchedulerInteraction(interaction) {
   return interaction.commandName === "event-scheduler"
@@ -117,6 +126,8 @@ function buildHomeView(settings, stateLink, stateDestination) {
         new ButtonBuilder().setCustomId(IDS.identity).setLabel("Alliance identity")
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(IDS.channels).setLabel("Configure channels")
+          .setStyle(ButtonStyle.Primary).setDisabled(!settings),
+        new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Weekly roundup settings")
           .setStyle(ButtonStyle.Primary).setDisabled(!settings)
       ),
       new ActionRowBuilder().addComponents(
@@ -153,22 +164,14 @@ function buildChannelConfigurationView(settings) {
   return {
     content:
       "Configure channels\n\n" +
-      "Choose the alliance reminder channel. It must also allow Attach Files for event images.\n\n" +
-      "Choose the alliance weekly-roundup channel to enable or update its UTC schedule.",
+      "Choose the alliance reminder channel. It must also allow Attach Files for event images.",
     components: [
       new ActionRowBuilder().addComponents(channelSelect(
         IDS.reminderChannel,
         "Select alliance reminder channel",
         settings?.event_channel_id
       )),
-      new ActionRowBuilder().addComponents(channelSelect(
-        IDS.roundupChannel,
-        "Select alliance weekly-roundup channel",
-        settings?.weekly_roundup_channel_id
-      )),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(IDS.roundupOff).setLabel("Disable weekly roundup")
-          .setStyle(ButtonStyle.Secondary).setDisabled(!settings?.weekly_roundup_enabled),
         backButton()
       )
     ],
@@ -176,27 +179,112 @@ function buildChannelConfigurationView(settings) {
   }
 }
 
-function buildRoundupModal(settings, channelId) {
+function buildRoundupTimeModal(day, settings) {
   return new ModalBuilder()
-    .setCustomId(`${IDS.roundupModalPrefix}${channelId}`)
-    .setTitle("Alliance weekly roundup")
+    .setCustomId(`${IDS.roundupTimeModalPrefix}${day}`)
+    .setTitle("Weekly roundup schedule")
     .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("d").setLabel("Weekday (0 Sunday to 6 Saturday)")
-          .setStyle(TextInputStyle.Short).setRequired(true)
-          .setValue(String(settings?.weekly_roundup_day ?? 1))
-      ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("t").setLabel("UTC time")
           .setStyle(TextInputStyle.Short).setRequired(true)
           .setValue(String(settings?.weekly_roundup_time_utc || "09:00").slice(0, 5))
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("x").setLabel("Post when no events? yes or no")
-          .setStyle(TextInputStyle.Short).setRequired(true)
-          .setValue(settings?.roundup_when_empty ? "yes" : "no")
       )
     )
+}
+
+function roundupScheduleLabel(settings) {
+  const day = WEEKDAYS[Number(settings?.weekly_roundup_day ?? 1)] || "Monday"
+  const time = String(settings?.weekly_roundup_time_utc || "09:00").slice(0, 5)
+  return `${day} at ${time} UTC`
+}
+
+function buildRoundupSettingsView(settings) {
+  const channel = settings?.weekly_roundup_channel_id
+    ? `<#${settings.weekly_roundup_channel_id}>`
+    : "Not configured"
+  return {
+    content:
+      `Weekly roundup settings\n\n` +
+      `Alliance weekly roundup: ${settings?.weekly_roundup_enabled ? "Enabled" : "Disabled"}\n` +
+      `State publishing: ${settings?.state_roundup_enabled ? "Enabled" : "Disabled"}\n` +
+      `Schedule: ${roundupScheduleLabel(settings)}\n` +
+      `Channel: ${channel}\n\n` +
+      "Alliance and state publishing are enabled independently. They use the displayed UTC schedule.",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.roundupEnable).setLabel("Enable alliance roundup")
+          .setStyle(ButtonStyle.Success).setDisabled(Boolean(settings?.weekly_roundup_enabled)),
+        new ButtonBuilder().setCustomId(IDS.roundupDisable).setLabel("Disable alliance roundup")
+          .setStyle(ButtonStyle.Secondary).setDisabled(!settings?.weekly_roundup_enabled),
+        new ButtonBuilder().setCustomId(IDS.stateRoundupToggle)
+          .setLabel(settings?.state_roundup_enabled ? "Disable state publishing" : "Enable state publishing")
+          .setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.roundupSchedule).setLabel("Change schedule")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(IDS.roundupChannelView).setLabel("Change channel")
+          .setStyle(ButtonStyle.Primary),
+        backButton()
+      )
+    ],
+    allowedMentions: SAFE_MENTIONS
+  }
+}
+
+function buildRoundupDayView(settings) {
+  return {
+    content: `Change weekly roundup schedule\n\nCurrent schedule: ${roundupScheduleLabel(settings)}\n\nSelect a UTC weekday.`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(IDS.roundupDay)
+          .setPlaceholder("Select UTC weekday")
+          .addOptions(WEEKDAYS.map((day, index) => ({
+            label: day,
+            value: String(index),
+            default: Number(settings?.weekly_roundup_day) === index
+          })))
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  }
+}
+
+function buildRoundupChannelView(settings) {
+  return {
+    content: "Change alliance weekly-roundup channel\n\nSelect a text channel. Roundups do not require Attach Files.",
+    components: [
+      new ActionRowBuilder().addComponents(channelSelect(
+        IDS.roundupChannel,
+        "Select alliance weekly-roundup channel",
+        settings?.weekly_roundup_channel_id
+      )),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
+          .setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  }
+}
+
+function buildRoundupSchedulePreview(day, timeUtc) {
+  const normalized = String(timeUtc).replace(":", "")
+  return {
+    content:
+      `Weekly roundup schedule preview\n\n` +
+      `${WEEKDAYS[day]} at ${timeUtc} UTC\n\n` +
+      "This takes effect from the next future scheduled roundup and will not replay an earlier roundup.",
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${IDS.roundupScheduleConfirmPrefix}${day}:${normalized}`)
+        .setLabel("Save schedule").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary)
+    )]
+  }
 }
 
 function buildStateDestinationView(destination, generatedCode = null) {
@@ -397,7 +485,24 @@ async function handleEventSchedulerInteraction(
       return true
     }
 
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupSettings) {
+      await interaction.deferUpdate()
+      await interaction.editReply(buildRoundupSettingsView(
+        await repository.getGuildSettings(guildId)
+      ))
+      return true
+    }
+
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupChannelView) {
+      await interaction.deferUpdate()
+      await interaction.editReply(buildRoundupChannelView(
+        await repository.getGuildSettings(guildId)
+      ))
+      return true
+    }
+
     if (interaction.isChannelSelectMenu?.() && interaction.customId === IDS.roundupChannel) {
+      await interaction.deferUpdate()
       const settings = await repository.getGuildSettings(guildId)
       const target = await resolveSendableChannel(
         interaction.client,
@@ -405,48 +510,105 @@ async function handleEventSchedulerInteraction(
         interaction.values[0],
         { requireAttachments: false }
       )
-      await interaction.showModal(buildRoundupModal(settings, target.channelId))
+      await repository.configureWeeklyRoundup({
+        guildId,
+        enabled: settings.weekly_roundup_enabled,
+        weekday: settings.weekly_roundup_day,
+        timeUtc: settings.weekly_roundup_time_utc,
+        channelId: target.channelId,
+        postWhenEmpty: settings.roundup_when_empty,
+        stateEnabled: settings.state_roundup_enabled
+      })
+      await interaction.editReply(buildRoundupSettingsView(
+        await repository.getGuildSettings(guildId)
+      ))
+      return true
+    }
+
+    if (interaction.isButton?.()
+      && [IDS.roundupEnable, IDS.roundupDisable, IDS.stateRoundupToggle]
+        .includes(interaction.customId)) {
+      await interaction.deferUpdate()
+      const settings = await repository.getGuildSettings(guildId)
+      const enableAlliance = interaction.customId === IDS.roundupEnable
+        ? true
+        : interaction.customId === IDS.roundupDisable
+          ? false
+          : settings.weekly_roundup_enabled
+      if (enableAlliance && !settings.weekly_roundup_channel_id) {
+        throw new SchedulerValidationError("Choose the alliance roundup channel before enabling it.")
+      }
+      await repository.configureWeeklyRoundup({
+        guildId,
+        enabled: enableAlliance,
+        weekday: settings.weekly_roundup_day,
+        timeUtc: settings.weekly_roundup_time_utc,
+        channelId: settings.weekly_roundup_channel_id,
+        postWhenEmpty: settings.roundup_when_empty,
+        stateEnabled: interaction.customId === IDS.stateRoundupToggle
+          ? !settings.state_roundup_enabled
+          : settings.state_roundup_enabled
+      })
+      await interaction.editReply(buildRoundupSettingsView(
+        await repository.getGuildSettings(guildId)
+      ))
+      return true
+    }
+
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupSchedule) {
+      await interaction.deferUpdate()
+      await interaction.editReply(buildRoundupDayView(
+        await repository.getGuildSettings(guildId)
+      ))
+      return true
+    }
+
+    if (interaction.isStringSelectMenu?.() && interaction.customId === IDS.roundupDay) {
+      const day = Number(interaction.values[0])
+      if (!Number.isInteger(day) || day < 0 || day > 6) {
+        throw new SchedulerValidationError("Select a valid UTC weekday.")
+      }
+      await interaction.showModal(buildRoundupTimeModal(
+        day,
+        await repository.getGuildSettings(guildId)
+      ))
       return true
     }
 
     if (interaction.isModalSubmit?.()
-      && String(interaction.customId).startsWith(IDS.roundupModalPrefix)) {
+      && String(interaction.customId).startsWith(IDS.roundupTimeModalPrefix)) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral })
-      const channelId = String(interaction.customId).slice(IDS.roundupModalPrefix.length)
-      await resolveSendableChannel(interaction.client, guildId, channelId, {
-        requireAttachments: false
-      })
-      const weekday = Number(interaction.fields.getTextInputValue("d"))
-      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
-        throw new SchedulerValidationError("Weekday must be an integer from 0 to 6.")
+      const day = Number(String(interaction.customId).slice(IDS.roundupTimeModalPrefix.length))
+      if (!Number.isInteger(day) || day < 0 || day > 6) {
+        throw new SchedulerValidationError("Select a valid UTC weekday.")
       }
-      await repository.configureWeeklyRoundup({
-        guildId,
-        enabled: true,
-        weekday,
-        timeUtc: parseUtcTime(interaction.fields.getTextInputValue("t")),
-        channelId,
-        postWhenEmpty: parseYesNo(
-          interaction.fields.getTextInputValue("x"),
-          "Post when empty"
-        )
-      })
-      await interaction.editReply(await loadHome(repository, guildId, interaction.client))
+      const timeUtc = parseUtcTime(interaction.fields.getTextInputValue("t"))
+      await interaction.editReply(buildRoundupSchedulePreview(day, timeUtc))
       return true
     }
 
-    if (interaction.isButton?.() && interaction.customId === IDS.roundupOff) {
+    if (interaction.isButton?.()
+      && String(interaction.customId).startsWith(IDS.roundupScheduleConfirmPrefix)) {
       await interaction.deferUpdate()
+      const [dayValue, compactTime] = String(interaction.customId)
+        .slice(IDS.roundupScheduleConfirmPrefix.length)
+        .split(":")
+      const day = Number(dayValue)
+      if (!Number.isInteger(day) || day < 0 || day > 6) {
+        throw new SchedulerValidationError("Select a valid UTC weekday.")
+      }
+      const timeUtc = parseUtcTime(compactTime)
       const settings = await repository.getGuildSettings(guildId)
       await repository.configureWeeklyRoundup({
         guildId,
-        enabled: false,
-        weekday: settings.weekly_roundup_day,
-        timeUtc: settings.weekly_roundup_time_utc,
+        enabled: settings.weekly_roundup_enabled,
+        weekday: day,
+        timeUtc,
         channelId: settings.weekly_roundup_channel_id,
-        postWhenEmpty: settings.roundup_when_empty
+        postWhenEmpty: settings.roundup_when_empty,
+        stateEnabled: settings.state_roundup_enabled
       })
-      await interaction.editReply(buildChannelConfigurationView(
+      await interaction.editReply(buildRoundupSettingsView(
         await repository.getGuildSettings(guildId)
       ))
       return true
@@ -566,7 +728,12 @@ module.exports = {
   buildHomeView,
   buildAllianceIdentityModal,
   buildChannelConfigurationView,
-  buildRoundupModal,
+  buildRoundupTimeModal,
+  roundupScheduleLabel,
+  buildRoundupSettingsView,
+  buildRoundupDayView,
+  buildRoundupChannelView,
+  buildRoundupSchedulePreview,
   buildStateDestinationView,
   buildStateSharingView,
   buildStateLinkModal,

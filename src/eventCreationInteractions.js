@@ -12,7 +12,7 @@ const {
   TextInputStyle
 } = require("discord.js")
 
-const { parseIsoDate, parseTimeOrGroups } = require("./timeParsing")
+const { parseIsoDate, parseUtcTime } = require("./timeParsing")
 const {
   EventValidationError,
   normalizeCustomMessage,
@@ -35,6 +35,21 @@ const ALLIANCES_PER_PAGE = 25
 const CREATION_IDS = Object.freeze({
   newEvent: "ec:new",
   corePrefix: "ec:m:",
+  timingChoicePrefix: "ec:tc:",
+  singleTimePrefix: "ec:ts:",
+  singleTimeModalPrefix: "ec:tsm:",
+  groupsPrefix: "ec:tg:",
+  groupSelectPrefix: "ec:gs:",
+  groupAddPrefix: "ec:ga:",
+  groupEditPrefix: "ec:ge:",
+  groupRemovePrefix: "ec:gr:",
+  groupContinuePrefix: "ec:gc:",
+  groupModalPrefix: "ec:gm:",
+  imageManagePrefix: "ec:im:",
+  imageKeepPrefix: "ec:ik:",
+  imageReplacePrefix: "ec:ir:",
+  imageRemovePrefix: "ec:id:",
+  imageUploadPrefix: "ec:iu:",
   allianceSelectPrefix: "ec:as:",
   alliancePagePrefix: "ec:ap:",
   allianceChangePrefix: "ec:ac:",
@@ -83,41 +98,150 @@ function textInput(
   return new ActionRowBuilder().addComponents(input)
 }
 
-function coreTimeValue(data) {
-  if (data.groups?.length) {
-    return data.groups.map(group => `${group.groupName} = ${group.eventTimeUtc}`).join("\n")
-  }
-  return data.eventTimeUtc || ""
-}
-
 function buildCoreModal(sessionId, data = {}) {
-  const modal = new ModalBuilder()
+  return new ModalBuilder()
     .setCustomId(`${CREATION_IDS.corePrefix}${sessionId}`)
     .setTitle(data.mode === "edit" ? "Edit scheduled event" : "Create scheduled event")
     .addComponents(
       textInput("e", "Event name", data.eventName),
-      textInput("d", "First date (YYYY-MM-DD)", data.firstOccurrenceDate),
-      textInput(
-        "t",
-        "UTC time or Group = UTC time per line",
-        coreTimeValue(data),
-        { paragraph: true, maximum: 1000 }
-      )
+      textInput("d", "First date (YYYY-MM-DD)", data.firstOccurrenceDate)
     )
+}
 
-  modal.addLabelComponents(
-    new LabelBuilder()
-      .setLabel("Event image (optional)")
-      .setDescription("PNG, JPEG, GIF or WebP; maximum 8 MB")
-      .setFileUploadComponent(
-        new FileUploadBuilder()
-          .setCustomId("img")
-          .setRequired(data.imageAction === "replace")
-          .setMinValues(data.imageAction === "replace" ? 1 : 0)
-          .setMaxValues(1)
-      )
+function buildTimingChoiceView(sessionId, data = {}) {
+  const current = data.groups?.length
+    ? `${data.groups.length} configured group${data.groups.length === 1 ? "" : "s"}`
+    : data.eventTimeUtc
+      ? `${data.eventTimeUtc} UTC`
+      : "Not configured"
+  return {
+    content: `Event timing\n\nCurrent timing: ${current}\n\nChoose one event time or manage separate named groups.`,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${CREATION_IDS.singleTimePrefix}${sessionId}`)
+        .setLabel("Single time").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${CREATION_IDS.groupsPrefix}${sessionId}`)
+        .setLabel("Multiple groups").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${CREATION_IDS.cancelPrefix}${sessionId}`)
+        .setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    )]
+  }
+}
+
+function buildSingleTimeModal(sessionId, data = {}) {
+  return new ModalBuilder()
+    .setCustomId(`${CREATION_IDS.singleTimeModalPrefix}${sessionId}`)
+    .setTitle("Single event time")
+    .addComponents(textInput("t", "Event time (UTC)", data.eventTimeUtc, { maximum: 20 }))
+}
+
+function normalizeGroupInput(name, time, groups, editingIndex = null) {
+  const groupName = String(name || "").trim()
+  if (!groupName || groupName.length > 100) {
+    throw new EventValidationError("Group name must be 1 to 100 characters.")
+  }
+  const duplicate = groups.some((group, index) =>
+    index !== editingIndex && group.groupName.toLowerCase() === groupName.toLowerCase()
   )
-  return modal
+  if (duplicate) throw new EventValidationError(`Duplicate group name: ${groupName}.`)
+  return { groupName, eventTimeUtc: parseUtcTime(time) }
+}
+
+function upsertGroup(groups, group, editingIndex = null) {
+  const updated = [...groups]
+  if (editingIndex === null) {
+    if (updated.length >= 20) throw new EventValidationError("An event can have at most 20 groups.")
+    updated.push(group)
+  } else {
+    if (!Number.isInteger(editingIndex) || !updated[editingIndex]) {
+      throw new EventValidationError("Select a group to edit.")
+    }
+    updated[editingIndex] = group
+  }
+  return updated.map((item, index) => ({ ...item, sortOrder: index }))
+}
+
+function removeGroup(groups, index) {
+  if (!Number.isInteger(index) || !groups[index]) {
+    throw new EventValidationError("Select a group to remove.")
+  }
+  return groups
+    .filter((_, groupIndex) => groupIndex !== index)
+    .map((group, groupIndex) => ({ ...group, sortOrder: groupIndex }))
+}
+
+function buildGroupModal(sessionId, mode, group = {}) {
+  return new ModalBuilder()
+    .setCustomId(`${CREATION_IDS.groupModalPrefix}${sessionId}:${mode}`)
+    .setTitle(mode === "edit" ? "Edit event group" : "Add event group")
+    .addComponents(
+      textInput("name", "Group name", group.groupName, { maximum: 100 }),
+      textInput("time", "Event time (UTC)", group.eventTimeUtc, { maximum: 20 })
+    )
+}
+
+function buildGroupManagerView(sessionId, data = {}) {
+  const groups = data.groups || []
+  const selected = Number.isInteger(data.selectedGroupIndex) ? data.selectedGroupIndex : null
+  const lines = groups.length
+    ? groups.map((group, index) => `${index + 1}. ${group.groupName} - ${group.eventTimeUtc} UTC`).join("\n")
+    : "No groups configured."
+  const components = []
+  if (groups.length) {
+    components.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`${CREATION_IDS.groupSelectPrefix}${sessionId}`)
+        .setPlaceholder("Select a group to edit or remove")
+        .addOptions(groups.slice(0, 25).map((group, index) => ({
+          label: group.groupName.slice(0, 100),
+          description: `${group.eventTimeUtc} UTC`,
+          value: String(index),
+          default: selected === index
+        })))
+    ))
+  }
+  components.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`${CREATION_IDS.groupAddPrefix}${sessionId}`)
+      .setLabel("Add group").setStyle(ButtonStyle.Primary).setDisabled(groups.length >= 20),
+    new ButtonBuilder().setCustomId(`${CREATION_IDS.groupEditPrefix}${sessionId}`)
+      .setLabel("Edit group").setStyle(ButtonStyle.Secondary).setDisabled(selected === null),
+    new ButtonBuilder().setCustomId(`${CREATION_IDS.groupRemovePrefix}${sessionId}`)
+      .setLabel("Remove group").setStyle(ButtonStyle.Danger).setDisabled(selected === null),
+    new ButtonBuilder().setCustomId(`${CREATION_IDS.groupContinuePrefix}${sessionId}`)
+      .setLabel("Continue").setStyle(ButtonStyle.Success).setDisabled(groups.length === 0)
+  ))
+  return { content: `Groups\n\n${lines}`, components }
+}
+
+function buildImageChoiceView(sessionId, data = {}) {
+  return {
+    content: `Manage image\n\n${data.image ? "An event image is currently stored." : "No event image is stored."}`,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${CREATION_IDS.imageKeepPrefix}${sessionId}`)
+        .setLabel("Keep current image").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${CREATION_IDS.imageReplacePrefix}${sessionId}`)
+        .setLabel("Replace image").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`${CREATION_IDS.imageRemovePrefix}${sessionId}`)
+        .setLabel("Remove image").setStyle(ButtonStyle.Danger).setDisabled(!data.image)
+    )]
+  }
+}
+
+function buildImageUploadModal(sessionId) {
+  return new ModalBuilder()
+    .setCustomId(`${CREATION_IDS.imageUploadPrefix}${sessionId}`)
+    .setTitle("Replace event image")
+    .addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Event image")
+        .setDescription("PNG, JPEG, GIF or WebP; maximum 8 MB")
+        .setFileUploadComponent(
+          new FileUploadBuilder()
+            .setCustomId("img")
+            .setRequired(true)
+            .setMinValues(1)
+            .setMaxValues(1)
+        )
+      )
 }
 
 function buildMessagesModal(sessionId, data = {}) {
@@ -267,6 +391,10 @@ function buildTimingView(sessionId, data) {
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.messagesPrefix}${sessionId}`)
           .setLabel("Messages")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`${CREATION_IDS.imageManagePrefix}${sessionId}`)
+          .setLabel("Manage image")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.optionsPrefix}${sessionId}`)
@@ -443,7 +571,7 @@ async function handleEventCreationInteraction(
 
   if (interaction.isButton?.() && customId === CREATION_IDS.newEvent) {
     const settings = await repository.getGuildSettings(interaction.guildId)
-    if (!settings) {
+    if (!settings?.event_channel_id) {
       await interaction.reply({
         content: "Configure the alliance event channel before creating events.",
         flags: MessageFlags.Ephemeral
@@ -537,7 +665,74 @@ async function handleEventCreationInteraction(
       allianceName: alliance.alliance_name,
       allianceTokenMap: null
     })
-    await interaction.showModal(buildCoreModal(sessionId, updated.data))
+    if (updated.data.allianceChangeOnly) {
+      const event = await validateSessionEvent(repository, interaction.guildId, updated.data)
+      sessionStore.update(sessionId, context, { ...event, allianceChangeOnly: false })
+      await interaction.deferUpdate()
+      await interaction.editReply(buildPreviewView(sessionId, event))
+    } else {
+      await interaction.showModal(buildCoreModal(sessionId, updated.data))
+    }
+    return true
+  }
+
+  if (interaction.isModalSubmit?.()
+    && customId.startsWith(CREATION_IDS.singleTimeModalPrefix)) {
+    const sessionId = idSuffix(customId, CREATION_IDS.singleTimeModalPrefix)
+    sessionStore.get(sessionId, context)
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    const session = sessionStore.update(sessionId, context, {
+      eventTimeUtc: parseUtcTime(interaction.fields.getTextInputValue("t")),
+      groups: [],
+      grouped: false,
+      selectedGroupIndex: null
+    })
+    await interaction.editReply(buildTimingView(sessionId, session.data))
+    return true
+  }
+
+  if (interaction.isModalSubmit?.() && customId.startsWith(CREATION_IDS.groupModalPrefix)) {
+    const suffix = idSuffix(customId, CREATION_IDS.groupModalPrefix)
+    const separator = suffix.lastIndexOf(":")
+    const sessionId = suffix.slice(0, separator)
+    const mode = suffix.slice(separator + 1)
+    if (!sessionId || !["add", "edit"].includes(mode)) {
+      throw new EventValidationError("That group action is invalid.")
+    }
+    const current = sessionStore.get(sessionId, context).data
+    const editingIndex = mode === "edit" ? current.selectedGroupIndex : null
+    if (mode === "edit" && !Number.isInteger(editingIndex)) {
+      throw new EventValidationError("Select a group to edit.")
+    }
+    const group = normalizeGroupInput(
+      interaction.fields.getTextInputValue("name"),
+      interaction.fields.getTextInputValue("time"),
+      current.groups || [],
+      editingIndex
+    )
+    const groups = upsertGroup(current.groups || [], group, editingIndex)
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    const session = sessionStore.update(sessionId, context, {
+      groups,
+      eventTimeUtc: null,
+      grouped: true,
+      selectedGroupIndex: mode === "edit" ? editingIndex : groups.length - 1
+    })
+    await interaction.editReply(buildGroupManagerView(sessionId, session.data))
+    return true
+  }
+
+  if (interaction.isModalSubmit?.() && customId.startsWith(CREATION_IDS.imageUploadPrefix)) {
+    const sessionId = idSuffix(customId, CREATION_IDS.imageUploadPrefix)
+    const current = sessionStore.get(sessionId, context).data
+    const attachment = interaction.fields.getUploadedFiles("img")?.first?.()
+    if (!attachment) throw new EventValidationError("Select one replacement image.")
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    const image = await downloadEventImage(attachment)
+    const session = sessionStore.update(sessionId, context, { image, imageAction: "replace" })
+    await interaction.editReply(current.imageReturnView === "preview"
+      ? buildPreviewView(sessionId, session.data)
+      : buildTimingView(sessionId, session.data))
     return true
   }
 
@@ -568,29 +763,12 @@ async function handleEventCreationInteraction(
     await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
     const parsedDate = parseIsoDate(interaction.fields.getTextInputValue("d"))
-    const timeDetails = parseTimeOrGroups(interaction.fields.getTextInputValue("t"))
-    let image
-    const uploads = interaction.fields.getUploadedFiles("img")
-    const attachment = uploads?.first?.()
-    if (attachment) image = await downloadEventImage(attachment)
-
-    const previous = sessionStore.get(sessionId, context).data
-    if (previous.mode === "edit" && previous.imageAction === "replace" && !image) {
-      throw new EventValidationError("Select one replacement image.")
-    }
-    const nextImage = previous.mode === "edit"
-      ? (previous.imageAction === "replace" ? image : previous.imageAction === "remove" ? null : previous.image)
-      : (image || previous.image || null)
     const session = sessionStore.update(sessionId, context, {
       eventName: interaction.fields.getTextInputValue("e").trim(),
       firstOccurrenceDate: parsedDate.value,
-      firstDateIsPast: parsedDate.isPast,
-      eventTimeUtc: timeDetails.eventTimeUtc,
-      groups: timeDetails.groups,
-      grouped: timeDetails.groups.length > 0,
-      image: nextImage
+      firstDateIsPast: parsedDate.isPast
     })
-    await interaction.editReply(buildTimingView(sessionId, session.data))
+    await interaction.editReply(buildTimingChoiceView(sessionId, session.data))
     return true
   }
 
@@ -605,6 +783,12 @@ async function handleEventCreationInteraction(
     sessionStore.update(sessionId, context, { recurrenceDays: Number(interaction.values[0]) })
     await interaction.deferUpdate()
     await interaction.editReply(buildTimingView(sessionId, session.data))
+    return true
+  }
+  if (interaction.isStringSelectMenu?.() && prefix === CREATION_IDS.groupSelectPrefix) {
+    sessionStore.update(sessionId, context, { selectedGroupIndex: Number(interaction.values[0]) })
+    await interaction.deferUpdate()
+    await interaction.editReply(buildGroupManagerView(sessionId, session.data))
     return true
   }
   if (interaction.isStringSelectMenu?.() && prefix === CREATION_IDS.advancePrefix) {
@@ -623,8 +807,80 @@ async function handleEventCreationInteraction(
     await interaction.editReply(buildTimingView(sessionId, session.data))
     return true
   }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.singleTimePrefix) {
+    await interaction.showModal(buildSingleTimeModal(sessionId, session.data))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.groupsPrefix) {
+    sessionStore.update(sessionId, context, {
+      groups: session.data.groups || [],
+      eventTimeUtc: null,
+      grouped: true,
+      selectedGroupIndex: null
+    })
+    await interaction.deferUpdate()
+    await interaction.editReply(buildGroupManagerView(sessionId, session.data))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.groupAddPrefix) {
+    await interaction.showModal(buildGroupModal(sessionId, "add"))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.groupEditPrefix) {
+    const index = session.data.selectedGroupIndex
+    if (!Number.isInteger(index) || !session.data.groups?.[index]) {
+      throw new EventValidationError("Select a group to edit.")
+    }
+    await interaction.showModal(buildGroupModal(sessionId, "edit", session.data.groups[index]))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.groupRemovePrefix) {
+    const index = session.data.selectedGroupIndex
+    if (!Number.isInteger(index) || !session.data.groups?.[index]) {
+      throw new EventValidationError("Select a group to remove.")
+    }
+    const groups = removeGroup(session.data.groups, index)
+    sessionStore.update(sessionId, context, { groups, selectedGroupIndex: null })
+    await interaction.deferUpdate()
+    await interaction.editReply(buildGroupManagerView(sessionId, session.data))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.groupContinuePrefix) {
+    if (!session.data.groups?.length) {
+      throw new EventValidationError("A grouped event requires at least one group.")
+    }
+    await interaction.deferUpdate()
+    await interaction.editReply(buildTimingView(sessionId, session.data))
+    return true
+  }
   if (interaction.isButton?.() && prefix === CREATION_IDS.messagesPrefix) {
     await interaction.showModal(buildMessagesModal(sessionId, session.data))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.imageManagePrefix) {
+    sessionStore.update(sessionId, context, { imageReturnView: "timing" })
+    await interaction.deferUpdate()
+    await interaction.editReply(buildImageChoiceView(sessionId, session.data))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.imageKeepPrefix) {
+    sessionStore.update(sessionId, context, { imageAction: "retain" })
+    await interaction.deferUpdate()
+    await interaction.editReply(session.data.imageReturnView === "preview"
+      ? buildPreviewView(sessionId, session.data)
+      : buildTimingView(sessionId, session.data))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.imageReplacePrefix) {
+    await interaction.showModal(buildImageUploadModal(sessionId))
+    return true
+  }
+  if (interaction.isButton?.() && prefix === CREATION_IDS.imageRemovePrefix) {
+    sessionStore.update(sessionId, context, { image: null, imageAction: "remove" })
+    await interaction.deferUpdate()
+    await interaction.editReply(session.data.imageReturnView === "preview"
+      ? buildPreviewView(sessionId, session.data)
+      : buildTimingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.optionsPrefix) {
@@ -671,6 +927,7 @@ async function handleEventCreationInteraction(
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.allianceChangePrefix) {
+    sessionStore.update(sessionId, context, { allianceChangeOnly: true })
     await interaction.deferUpdate()
     await renderAllianceSelection(
       interaction,
@@ -745,6 +1002,15 @@ module.exports = {
   creationSessions,
   sessionContext,
   buildCoreModal,
+  buildTimingChoiceView,
+  buildSingleTimeModal,
+  normalizeGroupInput,
+  upsertGroup,
+  removeGroup,
+  buildGroupModal,
+  buildGroupManagerView,
+  buildImageChoiceView,
+  buildImageUploadModal,
   buildMessagesModal,
   buildAllianceSelectionView,
   renderAllianceSelection,

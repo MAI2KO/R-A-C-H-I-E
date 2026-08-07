@@ -30,13 +30,14 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
         `SELECT s.guild_id AS source_guild_id, s.game_profile, s.alliance_name,
                 s.weekly_roundup_day, s.weekly_roundup_time_utc,
                 s.weekly_roundup_channel_id, s.roundup_when_empty,
+                s.weekly_roundup_enabled, s.state_roundup_enabled,
+                s.weekly_roundup_not_before,
                 l.state_guild_id, l.state_event_channel_id, l.sharing_enabled
            FROM event_guild_settings s
            LEFT JOIN event_state_links l
              ON l.alliance_guild_id = s.guild_id AND l.game_profile = s.game_profile
           WHERE s.game_profile = $1
-            AND s.weekly_roundup_enabled = true
-            AND s.weekly_roundup_channel_id IS NOT NULL
+            AND (s.weekly_roundup_enabled = true OR s.state_roundup_enabled = true)
           ORDER BY s.guild_id`,
         [gameProfile]
       )
@@ -109,7 +110,7 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
                     ON l.alliance_guild_id = s.guild_id
                    AND l.game_profile = s.game_profile
                  WHERE s.game_profile = r.game_profile
-                   AND s.weekly_roundup_enabled = true
+                   AND s.state_roundup_enabled = true
                    AND l.sharing_enabled = true
                    AND l.state_guild_id = r.target_guild_id
                    AND l.state_event_channel_id = r.target_channel_id
@@ -189,7 +190,7 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
                     JOIN event_state_links l
                       ON l.alliance_guild_id = s.guild_id AND l.game_profile = s.game_profile
                      WHERE s.game_profile = r.game_profile
-                       AND s.weekly_roundup_enabled = true AND l.sharing_enabled = true
+                       AND s.state_roundup_enabled = true AND l.sharing_enabled = true
                        AND l.state_guild_id = r.target_guild_id
                        AND l.state_event_channel_id = r.target_channel_id
                   )

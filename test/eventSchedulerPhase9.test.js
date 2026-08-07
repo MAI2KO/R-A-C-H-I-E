@@ -181,7 +181,7 @@ test("custom messages are trimmed, bounded and reject unsafe schemes", () => {
   }), /valid alliance/)
 })
 
-test("advance and final custom messages stay isolated and preserve standard details", () => {
+test("advance and final custom messages stay isolated in concise reminders", () => {
   const advance = formatAllianceEventDelivery(deliveryPayload("advance_reminder", {
     advance: "Advance @everyone",
     final: "Final only"
@@ -190,9 +190,10 @@ test("advance and final custom messages stay isolated and preserve standard deta
   assert.match(advanceJson.title, /Foundry/)
   assert.match(advanceJson.description, /YOU/)
   assert.match(advanceJson.description, /Alpha/)
-  assert.match(advanceJson.fields[0].value, /18:00 UTC/)
-  assert.match(advanceJson.fields[0].value, /<t:/)
-  assert.match(advanceJson.fields.find(field => field.name === "Alliance message").value, /Advance @​everyone/)
+  assert.match(advanceJson.description, /Starts in 15 minutes/)
+  assert.match(advanceJson.description, /Advance @​everyone/)
+  assert.equal(advanceJson.fields, undefined)
+  assert.doesNotMatch(JSON.stringify(advanceJson), /When|UTC|<t:|Recurrence|Status:|Alliance message:/i)
   assert.doesNotMatch(JSON.stringify(advanceJson), /Final only/)
   assert.deepEqual(advance.allowedMentions, { parse: [], repliedUser: false })
 
@@ -202,14 +203,15 @@ test("advance and final custom messages stay isolated and preserve standard deta
   }))
   const finalJson = final.embeds[0].toJSON()
   assert.match(finalJson.title, /About to start/)
-  assert.match(finalJson.fields.find(field => field.name === "Status").value, /approximately 1 minute/)
-  assert.match(finalJson.fields.find(field => field.name === "Alliance message").value, /Final message/)
+  assert.match(finalJson.description, /approximately 1 minute/)
+  assert.match(finalJson.description, /Final message/)
+  assert.equal(finalJson.fields, undefined)
   assert.doesNotMatch(JSON.stringify(finalJson), /Advance only/)
 
   const defaults = formatAllianceEventDelivery(deliveryPayload("advance_reminder", {
     advance: "   "
   })).embeds[0].toJSON()
-  assert.equal(defaults.fields.some(field => field.name === "Alliance message"), false)
+  assert.equal(defaults.description, "YOU\nFoundry\nAlpha\n\nStarts in 15 minutes")
 })
 
 test("images are eligible only for alliance advance reminders at every valid offset", () => {
@@ -267,6 +269,12 @@ test("alliance selectors and management controls expose names through opaque val
   const selectJson = selection.view.components[0].toJSON()
   assert.deepEqual(Object.values(selection.tokenMap).sort(), ["101", "102"])
   assert.ok(selectJson.components[0].options.every(option => !["101", "102"].includes(option.value)))
+  const currentToken = Object.entries(selection.tokenMap)
+    .find(([, allianceId]) => allianceId === "101")[0]
+  assert.equal(
+    selectJson.components[0].options.find(option => option.value === currentToken).default,
+    true
+  )
   assert.doesNotMatch(selection.view.content, /101|102/)
 
   const management = allianceListView(alliances, 0, 2, "session", "101")

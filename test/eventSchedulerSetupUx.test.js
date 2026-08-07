@@ -7,6 +7,10 @@ const {
   buildAllianceIdentityModal,
   buildChannelConfigurationView,
   buildHomeView,
+  buildRoundupChannelView,
+  buildRoundupDayView,
+  buildRoundupSchedulePreview,
+  buildRoundupSettingsView,
   buildStateDestinationView,
   buildStateLinkModal,
   handleEventSchedulerInteraction
@@ -80,7 +84,7 @@ function handlerOptions(repository) {
   }
 }
 
-test("alliance reminder and roundup channels use native text-channel selectors", () => {
+test("alliance reminder and roundup settings use separate native channel selectors", () => {
   const view = buildChannelConfigurationView({
     event_channel_id: channelId,
     weekly_roundup_channel_id: "3456789012345678",
@@ -93,9 +97,15 @@ test("alliance reminder and roundup channels use native text-channel selectors",
     ChannelType.GuildText,
     ChannelType.GuildAnnouncement
   ])
-  assert.equal(components[1].components[0].type, ComponentType.ChannelSelect)
-  assert.equal(components[1].components[0].custom_id, IDS.roundupChannel)
+  assert.equal(components[1].components[0].type, ComponentType.Button)
   assert.equal(components[0].components[0].default_values[0].id, channelId)
+
+  const roundup = buildRoundupChannelView({
+    weekly_roundup_channel_id: "3456789012345678"
+  }).components.map(row => row.toJSON())
+  assert.equal(roundup[0].components[0].type, ComponentType.ChannelSelect)
+  assert.equal(roundup[0].components[0].custom_id, IDS.roundupChannel)
+  assert.equal(roundup[0].components[0].default_values[0].id, "3456789012345678")
 })
 
 test("normal setup modals contain names, settings or link codes but no Discord IDs", () => {
@@ -200,52 +210,53 @@ test("main-alliance identity editing uses reconciled alliance rename", async () 
   })
 })
 
-test("alliance roundup native selection validates without requiring Attach Files", async () => {
-  const settings = { weekly_roundup_day: 1, weekly_roundup_time_utc: "09:00:00" }
-  const repository = { async getGuildSettings() { return settings } }
+test("alliance roundup native selection saves without requiring Attach Files", async () => {
+  let saved
+  const settings = {
+    weekly_roundup_day: 1,
+    weekly_roundup_time_utc: "09:00:00",
+    weekly_roundup_enabled: false,
+    state_roundup_enabled: true,
+    roundup_when_empty: false
+  }
+  const repository = {
+    async getGuildSettings() { return settings },
+    async configureWeeklyRoundup(input) { saved = input; return input }
+  }
   const target = discordTarget({ deniedPermission: PermissionFlagsBits.AttachFiles })
   const interaction = interactionForChannel(IDS.roundupChannel, target.client)
   await handleEventSchedulerInteraction(interaction, handlerOptions(repository))
-  assert.equal(interaction.modal.toJSON().custom_id, `${IDS.roundupModalPrefix}${channelId}`)
+  assert.equal(saved.channelId, channelId)
+  assert.equal(saved.enabled, false)
+  assert.equal(saved.stateEnabled, true)
+  assert.equal(interaction.deferred, true)
 })
 
-test("alliance roundup modal stores the natively selected channel ID", async () => {
-  let saved
-  const repository = {
-    async configureWeeklyRoundup(input) { saved = input; return input },
-    async getGuildSettings() {
-      return {
-        alliance_name: "YOU",
-        alliance_count: 1,
-        event_channel_id: channelId,
-        weekly_roundup_enabled: true,
-        weekly_roundup_channel_id: channelId,
-        weekly_roundup_day: 1,
-        weekly_roundup_time_utc: "09:00:00",
-        roundup_when_empty: false
-      }
-    },
-    async getStateLink() { return null },
-    async getStateDestination() { return null }
+test("roundup settings remain manageable while disabled and preview schedule changes", () => {
+  const settings = {
+    weekly_roundup_enabled: false,
+    state_roundup_enabled: true,
+    weekly_roundup_channel_id: channelId,
+    weekly_roundup_day: 1,
+    weekly_roundup_time_utc: "09:00:00"
   }
-  const interaction = {
-    commandName: null,
-    customId: `${IDS.roundupModalPrefix}${channelId}`,
-    guildId,
-    client: discordTarget({ deniedPermission: PermissionFlagsBits.AttachFiles }).client,
-    fields: {
-      getTextInputValue(id) { return { d: "1", t: "09:00", x: "no" }[id] }
-    },
-    isChatInputCommand: () => false,
-    isButton: () => false,
-    isModalSubmit: () => true,
-    isChannelSelectMenu: () => false,
-    async deferReply() { this.deferred = true },
-    async editReply(payload) { this.edited = payload }
-  }
-  await handleEventSchedulerInteraction(interaction, handlerOptions(repository))
-  assert.equal(saved.channelId, channelId)
-  assert.equal(saved.enabled, true)
+  const view = buildRoundupSettingsView(settings)
+  assert.match(view.content, /Alliance weekly roundup: Disabled/)
+  assert.match(view.content, /State publishing: Enabled/)
+  assert.match(view.content, /Monday at 09:00 UTC/)
+  assert.match(view.content, new RegExp(`<#${channelId}>`))
+  const buttons = view.components.flatMap(row => row.toJSON().components)
+  assert.equal(buttons.find(button => button.custom_id === IDS.roundupEnable).disabled, false)
+  assert.equal(buttons.find(button => button.custom_id === IDS.roundupDisable).disabled, true)
+  assert.ok(buttons.some(button => button.custom_id === IDS.roundupSchedule))
+  assert.ok(buttons.some(button => button.custom_id === IDS.roundupChannelView))
+
+  const dayView = buildRoundupDayView(settings).components[0].toJSON().components[0]
+  assert.deepEqual(dayView.options.map(option => option.label), [
+    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
+  ])
+  assert.match(buildRoundupSchedulePreview(0, "18:00").content, /Sunday at 18:00 UTC/)
+  assert.match(buildRoundupSchedulePreview(0, "18:00").content, /will not replay/)
 })
 
 test("state destination selection uses the interaction guild automatically", async () => {

@@ -20,9 +20,10 @@ const HELP_SECTIONS = Object.freeze([
     content:
       "**Getting started**\n\n" +
       "1. Run `/event-scheduler`, choose **Alliance identity**, and set the main alliance name.\n" +
-      "2. Choose **Configure channels** and pick the alliance reminder channel from Discord's channel list. Pick the weekly-roundup channel there too if needed.\n" +
-      "3. Choose **Alliances** to add or rename sub-alliances.\n" +
-      "4. Use **State destination** and **State sharing** only when a state Discord should receive the combined weekly roundup.\n\n" +
+      "2. Choose **Configure channels** and pick the alliance reminder channel from Discord's channel list.\n" +
+      "3. Choose **Weekly roundup settings** to enable or disable the alliance roundup, control state publishing, and change its UTC weekday, time, or channel.\n" +
+      "4. Choose **Alliances** to add or rename sub-alliances.\n" +
+      "5. Use **State destination** and **State sharing** only when a state Discord should receive the combined weekly roundup.\n\n" +
       "All scheduler administration is private and uses the server's existing management authorisation."
   }),
   Object.freeze({
@@ -31,9 +32,9 @@ const HELP_SECTIONS = Object.freeze([
     description: "Event details, reminders and confirmation",
     content:
       "**Creating an event**\n\n" +
-      "Choose **Create event**, then select the main alliance or sub-alliance. Enter the event name, first occurrence date, and either one UTC time or `Group = UTC time` on separate lines.\n\n" +
-      "Choose recurrence every 3, 7, 14 or 28 days; one optional advance reminder; the optional one-minute final announcement; and optional advance/final custom messages. You may upload one supported image.\n\n" +
-      "Publishing controls cover alliance reminders, alliance weekly-roundup inclusion, and state weekly-roundup eligibility. Review the UTC preview and image behaviour before the final confirmation. Nothing is saved before confirmation."
+      "Choose **Create event**, select the main alliance or sub-alliance, then enter the event name and first occurrence date. Under **Event timing**, choose **Single time** for one UTC time or **Multiple groups** to add each group name and UTC time through a guided modal. Groups may share a time.\n\n" +
+      "Choose recurrence every 3, 7, 14 or 28 days; one optional advance reminder; the optional one-minute final announcement; and optional advance/final custom messages. Use **Manage image** to add, replace or remove one supported image.\n\n" +
+      "Publishing controls cover alliance reminders, alliance weekly-roundup inclusion, and state weekly-roundup eligibility. Review the clearly labelled UTC and local-time preview before final confirmation. Nothing is saved before confirmation."
   }),
   Object.freeze({
     id: "accepted-times",
@@ -59,7 +60,7 @@ const HELP_SECTIONS = Object.freeze([
       "**Reminder behaviour**\n\n" +
       "Each event/group occurrence can have one advance reminder: none, 5, 10, 15, 20 or 30 minutes before.\n\n" +
       "The separate final announcement says **About to start** and is delivered one minute before the configured event time. There is no exact-start post.\n\n" +
-      "Custom text supplements the alliance, event, group, UTC time and Discord timestamp. Mentions never ping. An image is attached only to the alliance advance reminder. Individual reminders are alliance-only."
+      "Immediate reminders contain only the alliance, event, optional group, countdown, and optional custom text. The final message uses **About to start** and approximate one-minute wording. Detailed UTC/local schedules belong in previews and weekly roundups. Mentions never ping. An image is attached only to the alliance advance reminder. Individual reminders are alliance-only."
   }),
   Object.freeze({
     id: "managing-events",
@@ -67,8 +68,9 @@ const HELP_SECTIONS = Object.freeze([
     description: "Edit, cancel, pause, resume and delete",
     content:
       "**Managing events**\n\n" +
-      "Use **View events**, select an event, then choose Preview, Edit, Pause/Resume or Delete.\n\n" +
-      "Editing can change the alliance, event/group times, recurrence, advance reminder, final announcement, custom messages, publishing settings, and image. Select no advance reminder or disable the final announcement to cancel future reminders of that type. Optional messages can be cleared; images can be retained, replaced or removed.\n\n" +
+      "Use **View events**, select an event, then choose Preview, Edit details, Change alliance, Manage image, Pause/Resume or Delete.\n\n" +
+      "**Edit details** keeps the current alliance and image automatically. **Change alliance** changes only ownership and preserves times, recurrence, reminders, messages, publishing settings, groups, and image. **Manage image** explicitly keeps, replaces or removes the stored image. No unrelated edit requires another upload.\n\n" +
+      "Select no advance reminder or disable the final announcement to cancel future reminders of that type. Optional messages can be cleared.\n\n" +
       "Pause stops future reminders and roundup appearances while retaining the recurrence anchor. Resume uses that anchor without replaying expired reminders. Delete is soft deletion and preserves sent history."
   }),
   Object.freeze({
@@ -77,6 +79,7 @@ const HELP_SECTIONS = Object.freeze([
     description: "Local eligibility and alliance labels",
     content:
       "**Alliance weekly roundups**\n\n" +
+      "Open **Weekly roundup settings** at any time, including while disabled. Enable or disable the alliance roundup, independently enable state publishing, change the roundup channel, or preview and save any UTC weekday/time. Disabled settings retain their channel and schedule. Re-enabling starts at the next future schedule and does not replay missed roundups.\n\n" +
       "An active event appears when weekly-roundup inclusion is enabled and an occurrence falls inside the configured weekly window for the same Discord guild and game profile.\n\n" +
       "Main-alliance and sub-alliance entries are labelled separately. Alliance inclusion does not depend on state eligibility. Paused or deleted events are excluded. Roundups never include event images."
   }),

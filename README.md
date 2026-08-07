@@ -19,14 +19,14 @@ See [Architecture](docs/architecture.md) for the complete boundary and data mode
 
 Administrators use `/event-scheduler`; authorization uses the existing `userCanManageServer(interaction)` behavior. `/event-scheduler-help` provides private, database-independent setup, creation, reminder, management, roundup, state-link and troubleshooting pages. The management home also includes a **Help** control.
 
-Normal channel setup uses Discord's native channel selector. Set the main alliance through **Alliance identity**, then use **Configure channels** to choose the alliance reminder and weekly-roundup channels. No channel ID is typed. To link a state Discord, configure **State destination** inside that Discord, select its roundup channel, generate a one-time 15-minute code, and enter that code under **State sharing** in the alliance Discord. Guild and channel IDs are resolved internally.
+Normal channel setup uses Discord's native channel selector. Set the main alliance through **Alliance identity**, use **Configure channels** for the alliance reminder channel, and use **Weekly roundup settings** for roundup enablement, state publishing, UTC weekday/time, and channel. No channel ID is typed. To link a state Discord, configure **State destination** inside that Discord, select its roundup channel, generate a one-time 15-minute code, and enter that code under **State sharing** in the alliance Discord. Guild and channel IDs are resolved internally.
 
 A Discord guild and game profile can contain one main alliance and multiple sub-alliances, such as `YOU`, `YOU2`, and `YOU Academy`. Events select an alliance through an ephemeral opaque control. Alliance channels, weekly-roundup channels, and state links remain guild/profile settings and may be shared by every alliance in that guild.
 
 Events support:
 
 - Custom event names and a required alliance selection.
-- One UTC time, or named groups with a separate UTC time per group.
+- A guided choice between one UTC time and named groups managed one at a time with separate UTC times; groups may share a time.
 - First occurrence dates and recurrence every 3, 7, 14, or 28 days.
 - One optional advance reminder: 5, 10, 15, 20, or 30 minutes before.
 - One optional final announcement one minute before, worded **About to start**.
@@ -34,12 +34,12 @@ Events support:
 - An optional image attached only to the alliance advance reminder.
 - Alliance-only individual reminders.
 - Alliance weekly roundups and combined state weekly roundups.
-- Editing, image retain/replace/remove, pause, resume, and soft deletion.
+- Ordinary editing that retains alliance and image, separate alliance changes, explicit image retain/replace/remove, pause, resume, and soft deletion.
 - Reminder cancellation by selecting no advance reminder or disabling the final announcement.
 
 Accepted UTC time examples include `18:30`, `1830`, `1800`, `6:30pm`, and `6.30 PM`. Ambiguous values are rejected. The legacy database column `reminder_at_start` now means the one-minute final announcement; no exact-start delivery is created.
 
-Custom messages supplement the standard alliance, event, group, UTC time, and Discord timestamp details. Discord mention parsing is disabled. Images are never attached to final announcements, state Discord messages, roundups, or management previews. If an image is stored while the advance reminder is disabled, it remains available for a later edit but is not posted.
+Immediate reminders contain the alliance, event, optional group, countdown, and optional custom text without date, recurrence, or timestamp fields. Detailed UTC and clearly labelled Discord-local times appear in previews and weekly roundups. Discord mention parsing is disabled. Images are never attached to final announcements, state Discord messages, roundups, or management previews. Images persist through ordinary edits and alliance changes unless explicitly replaced or removed.
 
 Each alliance roundup contains eligible events for its guild/profile and lists alliance names. A linked state Discord receives one combined profile-scoped roundup containing only active, roundup-enabled, `publish_to_state=true` events from valid enabled state links. State Discords never receive individual event reminders.
 
@@ -79,7 +79,7 @@ Migrations run during scheduler initialization under a session-level Postgres ad
 EVENT_SCHEDULER_ENABLED=true npm run migrate
 ```
 
-Migration files are append-only. Migrations 001 through 005 preserve the initial scheduler history; migration 006 adds flexible reminders, custom messages, and profile-scoped alliance entities while backfilling existing events. Migration 007 permits identity-first setup and adds profile-scoped state destinations plus hashed, expiring, one-time link codes. Existing channel IDs and state links are preserved. Run migrations again to confirm that zero files reapply.
+Migration files are append-only. Migrations 001 through 005 preserve the initial scheduler history; migration 006 adds flexible reminders, custom messages, and profile-scoped alliance entities while backfilling existing events. Migration 007 permits identity-first setup and adds profile-scoped state destinations plus hashed, expiring, one-time link codes. Migration 008 separates state-roundup enablement and adds a replay boundary for changed or re-enabled schedules. Existing channels, schedules, state links, and sent history are preserved. Run migrations again to confirm that zero files reapply.
 
 ## Testing
 
@@ -112,7 +112,7 @@ Each service retains its own Discord and Apps Script variables. Follow [Deployme
 
 Back up Postgres, validate migrations on a disposable database, deploy one service at a time, and verify scheduler health before enabling public use. Database idempotency, leases, profile scope, and a compatibility trigger protect ordinary restarts and overlapping deployments.
 
-The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables scheduler commands and polling without affecting existing bot features. Leave additive migrations applied; reverting to old scheduler code after migrations 006 and 007 preserves existing rows, but old code does not understand sub-alliance management, custom messages, native state destinations, or link codes.
+The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables scheduler commands and polling without affecting existing bot features. Leave additive migrations applied; reverting to old scheduler code after migrations 006 through 008 preserves existing rows, but old code does not understand sub-alliance management, custom messages, native state destinations, link codes, or independent roundup controls.
 
 ## Troubleshooting
 

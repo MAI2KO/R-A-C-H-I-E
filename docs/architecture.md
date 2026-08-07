@@ -33,7 +33,7 @@ Scheduler failure is isolated. Discord login and existing slash-command registra
 
 ## Data Ownership
 
-`event_guild_settings` is keyed by `(guild_id, game_profile)` and owns shared alliance reminder and weekly-roundup channels. Its reminder channel may be null during identity-first setup. `event_state_destinations` records a channel selected natively inside a state guild. `event_state_link_codes` stores only a hash, profile, destination, expiry and one-time consumption state. Consuming a valid code writes the existing `event_state_links` contract used by weekly roundups, so older stored links remain compatible.
+`event_guild_settings` is keyed by `(guild_id, game_profile)` and owns shared alliance reminder and weekly-roundup channels, the UTC roundup weekday/time, independent alliance/state enablement, and a not-before replay boundary. Its reminder channel may be null during identity-first setup. `event_state_destinations` records a channel selected natively inside a state guild. `event_state_link_codes` stores only a hash, profile, destination, expiry and one-time consumption state. Consuming a valid code writes the existing `event_state_links` contract used by weekly roundups, so older stored links remain compatible.
 
 `event_alliances` gives a guild/profile one main alliance and any number of sub-alliances. Names are unique case-insensitively within that scope. The same name may exist in another guild or game profile.
 
@@ -48,6 +48,8 @@ Claim uniqueness prevents duplicate database rows. Pollers claim transactionally
 Migration runners acquire the same session-level PostgreSQL advisory lock before creating or reading `schema_migrations`. The lock remains held while pending files are checked, each migration and version record commit in one transaction, and final state is returned. It is released in `finally`, including failures. Simultaneous R.A.C.H.I.E and P.E.G.G.I.E startups therefore cannot both apply the same migration.
 
 Sent history is never deleted by edits. Schedule-affecting changes increment `schedule_version` and terminally fail every unsent old claim. Grouped claims retain immutable group identity/name snapshots when group rows are replaced. State individual and exact-start claims are blocked by migration 005's policy constraint; historical sent rows remain readable.
+
+Roundup configuration changes preserve sent claims, terminally fail unsent claims for that source guild/profile, and advance `weekly_roundup_not_before`. Claim generation accepts only a scheduled time after that boundary, preventing an enable or schedule change from replaying an elapsed roundup. Alliance and state roundup enablement are evaluated independently.
 
 Discord send and database completion cannot be one transaction. If Discord accepts a message and the process exits before storing its ID, a retry may duplicate it. Multipart roundups reduce this window by storing each part immediately and skipping recorded parts.
 

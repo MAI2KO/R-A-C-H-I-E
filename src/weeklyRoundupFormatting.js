@@ -16,7 +16,7 @@ function occurrenceLine(occurrence, targetKind) {
   const time = occurrence.occurrenceAt.toISOString().slice(11, 16)
   const alliance = `**${safeText(occurrence.allianceName)}** - `
   const group = occurrence.groupName ? ` (${safeText(occurrence.groupName)})` : ""
-  return `${time} UTC · <t:${timestamp}:t> · ${alliance}${safeText(occurrence.eventName)}${group}`
+  return `${time} UTC · Local time: <t:${timestamp}:t> · ${alliance}${safeText(occurrence.eventName)}${group}`
 }
 
 function splitRoundupLines(occurrences, targetKind) {

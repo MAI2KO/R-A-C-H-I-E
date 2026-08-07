@@ -55,11 +55,11 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
       `INSERT INTO event_guild_settings (
          guild_id, game_profile, bot_instance_name, alliance_name, event_channel_id,
          weekly_roundup_enabled, weekly_roundup_day, weekly_roundup_time_utc,
-         weekly_roundup_channel_id, roundup_when_empty
+         weekly_roundup_channel_id, roundup_when_empty, state_roundup_enabled
        ) VALUES
-         ($1, 'wos', 'rachie-wos', 'North', $3, true, 1, '09:00', $3, false),
-         ($2, 'wos', 'rachie-wos', 'South', $4, true, 1, '09:00', $4, false),
-         ($1, 'kingshot', 'peggie-kingshot', 'Kingshot North', $3, true, 1, '09:00', $3, false)`,
+         ($1, 'wos', 'rachie-wos', 'North', $3, true, 1, '09:00', $3, false, true),
+         ($2, 'wos', 'rachie-wos', 'South', $4, true, 1, '09:00', $4, false, true),
+         ($1, 'kingshot', 'peggie-kingshot', 'Kingshot North', $3, true, 1, '09:00', $3, false, true)`,
       [guildA, guildB, channelA, channelB]
     )
     const alliances = await pool.query(

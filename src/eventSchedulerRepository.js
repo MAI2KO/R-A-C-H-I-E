@@ -20,7 +20,8 @@ function createEventSchedulerRepository(pool, gameProfile) {
                 a.id AS default_alliance_id,
                 s.event_channel_id, s.weekly_roundup_enabled, s.weekly_roundup_day,
                 s.weekly_roundup_time_utc, s.weekly_roundup_channel_id,
-                s.roundup_when_empty, s.created_at, s.updated_at,
+                s.roundup_when_empty, s.state_roundup_enabled,
+                s.weekly_roundup_not_before, s.created_at, s.updated_at,
                 (SELECT COUNT(*)::integer FROM event_alliances total
                   WHERE total.guild_id = s.guild_id
                     AND total.game_profile = s.game_profile) AS alliance_count
@@ -465,21 +466,57 @@ function createEventSchedulerRepository(pool, gameProfile) {
       weekday,
       timeUtc,
       channelId,
-      postWhenEmpty
+      postWhenEmpty,
+      stateEnabled = null
     }) {
-      const result = await pool.query(
-        `UPDATE event_guild_settings
-            SET weekly_roundup_enabled = $3,
-                weekly_roundup_day = $4,
-                weekly_roundup_time_utc = $5,
-                weekly_roundup_channel_id = $6,
-                roundup_when_empty = $7,
-                updated_at = now()
-          WHERE guild_id = $1 AND game_profile = $2
-          RETURNING *`,
-        [guildId, gameProfile, enabled, weekday, timeUtc, channelId, postWhenEmpty]
-      )
-      return result.rows[0] || null
+      if (typeof pool.connect !== "function") {
+        throw new Error("The Postgres pool does not support transactions")
+      }
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const result = await client.query(
+          `UPDATE event_guild_settings
+              SET weekly_roundup_enabled = $3,
+                  weekly_roundup_day = $4,
+                  weekly_roundup_time_utc = $5,
+                  weekly_roundup_channel_id = $6,
+                  roundup_when_empty = $7,
+                  state_roundup_enabled = COALESCE($8, state_roundup_enabled),
+                  weekly_roundup_not_before = now(),
+                  updated_at = now()
+            WHERE guild_id = $1 AND game_profile = $2
+            RETURNING *`,
+          [
+            guildId,
+            gameProfile,
+            enabled,
+            weekday,
+            timeUtc,
+            channelId,
+            postWhenEmpty,
+            stateEnabled
+          ]
+        )
+        if (result.rows[0]) {
+          await client.query(
+            `UPDATE weekly_roundup_claims
+                SET status = 'failed', next_attempt_at = NULL,
+                    claimed_by_bot_instance = NULL, claimed_by_worker = NULL,
+                    claimed_at = NULL, claimed_until = NULL,
+                    last_error = 'Roundup configuration changed.', updated_at = now()
+              WHERE source_guild_id = $1 AND game_profile = $2 AND status <> 'sent'`,
+            [guildId, gameProfile]
+          )
+        }
+        await client.query("COMMIT")
+        return result.rows[0] || null
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
     },
 
     async createEvent({ guildId, createdByUserId, createdByBotInstance, event }) {

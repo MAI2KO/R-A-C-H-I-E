@@ -8,7 +8,7 @@ Run `/event-scheduler-help` for private setup, creation, reminder, management, r
 
 1. Choose **Alliance identity** and set or rename the main alliance in the text modal.
 2. Choose **Configure channels** and select the shared alliance reminder channel from Discord's native channel list. The bot validates View Channel, Send Messages, Embed Links, and Attach Files.
-3. In the same channel view, select the alliance weekly-roundup channel, then enter its UTC weekday, UTC time, and empty-post behavior. Roundups do not require Attach Files.
+3. Choose **Weekly roundup settings** to enable or disable the alliance roundup, independently control state publishing, select the roundup channel, and preview or change its UTC weekday/time. Roundups do not require Attach Files.
 4. Open **Alliances** to add, list, rename, or delete sub-alliances.
 5. For state sharing, invite the profile's bot to the state Discord. Run `/event-scheduler` there, choose **State destination**, select its weekly-roundup channel, and generate a one-time 15-minute link code. Back in the alliance Discord, choose **State sharing**, then **Link with code**. Both guilds and the channel are identified automatically.
 
@@ -27,16 +27,17 @@ Channels remain guild/profile settings, so alliances may share the alliance remi
 The private flow is:
 
 1. Select an alliance or sub-alliance.
-2. Enter event name, first date, and either one UTC time or `Group = UTC time` lines.
-3. Optionally upload one PNG, JPEG, GIF, or WebP image up to 8 MB.
+2. Enter the event name and first date.
+3. Choose **Single time** and enter one UTC time, or choose **Multiple groups** and add each group through separate name/time fields. Groups may share a time; names must be unique without regard to case.
 4. Choose recurrence: 3, 7, 14, or 28 days.
 5. Choose one advance reminder: none, 5, 10, 15, 20, or 30 minutes.
 6. Optionally enter separate advance and final custom messages, each up to 500 characters.
 7. Enable or disable the one-minute final announcement.
-8. Choose alliance reminders, alliance weekly roundup inclusion, and state weekly-roundup eligibility.
-9. Review the interpreted UTC preview and confirm.
+8. Use **Manage image** to keep, replace, or remove one PNG, JPEG, GIF, or WebP image up to 8 MB.
+9. Choose alliance reminders, alliance weekly roundup inclusion, and state weekly-roundup eligibility.
+10. Review the clearly labelled UTC and Discord-local preview and confirm.
 
-No event is saved before final confirmation. Editing additionally offers image retain, replace, or remove. Invalid image replacement rolls back the complete edit and retains the prior image.
+No event is saved before final confirmation. **Edit details** retains the current alliance and image automatically. **Change alliance** is separate and preserves all other event properties. **Manage image** is the only flow that retains, replaces, or removes the image. Invalid image replacement rolls back the complete edit and retains the prior image.
 
 Selecting no advance reminder cancels future advance claims. Disabling the final announcement cancels future final claims. Clearing either optional message restores default wording. These edits increment `schedule_version`, invalidate unsent claims from the previous version, and preserve sent history.
 
@@ -48,7 +49,7 @@ Accepted time forms include `18:30`, `1830`, `1800`, `6:30pm`, and `6.30 PM`. Ti
 
 `reminder_at_start` is a legacy column name. When true, it creates one `final_reminder` claim with `deliver_at = occurrence_at - 1 minute`. For an 18:00 event, the final announcement is due at 17:59. The Discord handler uses the stored `deliver_at` and does not subtract another minute. Nothing is generated for 18:00 itself.
 
-The final announcement always retains **About to start** and may state **Starts in approximately 1 minute**. Custom text supplements rather than replaces standard event details.
+The final announcement always retains **About to start** and **Starts in approximately 1 minute**. Immediate reminders contain only alliance, event, optional group, countdown, and optional custom text. They omit dates, UTC/local timestamps, recurrence, and field labels; those details belong in previews and roundups.
 
 The advance custom message appears only on the advance reminder. The final custom message appears only on the final announcement. Blank or whitespace-only input stores `NULL` and uses default wording. Mentions do not ping.
 
@@ -70,7 +71,9 @@ Individual advance, final, grouped, and image deliveries are alliance-only. No s
 
 ## Weekly Roundups
 
-The default schedule is Monday at 09:00 UTC with a 60-minute catch-up grace. The window is half-open: Monday 00:00 inclusive through the following Monday 00:00 exclusive. Different UTC weekdays and times may be configured.
+The default schedule is Monday at 09:00 UTC with a 60-minute catch-up grace. The window begins on the configured UTC weekday and is half-open through the same weekday one week later. **Weekly roundup settings** always remains available: it can enable/disable the alliance roundup, independently toggle state publishing, select the channel, and preview/save any UTC weekday/time.
+
+Disabling retains the configured channel and schedule. Changing the configuration terminally invalidates obsolete unsent roundup work, preserves sent history, and sets a replay boundary. Re-enabling or changing the schedule begins with the next future scheduled roundup and does not replay a missed period.
 
 Alliance roundup eligibility requires matching guild/profile, active status, `include_in_weekly_roundup=true`, and an occurrence in the window. It is independent of `publish_to_state` and includes separate alliance names for main/sub-alliance entries.
 

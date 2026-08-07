@@ -60,7 +60,7 @@ function occurrenceLine(occurrence, { numbered = false, index = 0 } = {}) {
   const timestamp = Math.floor(occurrence.occurrenceAt.getTime() / 1000)
   const utc = occurrence.occurrenceAt.toISOString().slice(0, 16).replace("T", " ")
   const group = occurrence.groupName ? ` - ${occurrence.groupName}` : ""
-  return `${numbered ? `${index + 1}. ` : ""}<t:${timestamp}:F> - ${utc} UTC${group}`
+  return `${numbered ? `${index + 1}. ` : ""}${utc} UTC${group}\nLocal time: <t:${timestamp}:F>`
 }
 
 function formatEventPreview(event, { now = new Date() } = {}) {

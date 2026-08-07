@@ -194,7 +194,8 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       weekday: 1,
       timeUtc: "09:00",
       channelId: roundupChannel,
-      postWhenEmpty: false
+      postWhenEmpty: false,
+      stateEnabled: true
     })
     await wos.upsertStateLink({
       allianceGuildId: guildId,

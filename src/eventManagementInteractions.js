@@ -11,7 +11,9 @@ const { InteractionSessionError, InteractionSessionStore } = require("./interact
 const {
   creationSessions,
   sessionContext,
-  renderAllianceSelection
+  renderAllianceSelection,
+  buildCoreModal,
+  buildImageChoiceView
 } = require("./eventCreationInteractions")
 const {
   EVENTS_PER_PAGE,
@@ -63,7 +65,9 @@ function eventDraft(event) {
 function actionOptions(event, eventToken) {
   return [
     { label: "Preview", value: `preview:${eventToken}` },
-    { label: "Edit", value: `edit:${eventToken}` },
+    { label: "Edit details", value: `edit:${eventToken}` },
+    { label: "Change alliance", value: `alliance:${eventToken}` },
+    { label: "Manage image", value: `image:${eventToken}` },
     {
       label: event.status === "paused" ? "Resume" : "Pause",
       value: `${event.status === "paused" ? "resume" : "pause"}:${eventToken}`
@@ -109,20 +113,6 @@ async function renderList(interaction, repository, health, page, sessionId = nul
   const view = listView(result.events, safePage, result.total, id, eventMap)
   if (interaction.deferred || interaction.replied) await interaction.editReply(view)
   else await interaction.reply({ ...view, flags: MessageFlags.Ephemeral })
-}
-
-function imageChoiceView(editSessionId, draft) {
-  return {
-    content: `Edit ${draft.eventName}\n\nChoose what should happen to the event image.`,
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${MANAGEMENT_PREFIX}i:${editSessionId}:retain`)
-        .setLabel("Retain image").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${MANAGEMENT_PREFIX}i:${editSessionId}:replace`)
-        .setLabel("Replace image").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`${MANAGEMENT_PREFIX}i:${editSessionId}:remove`)
-        .setLabel("Remove image").setStyle(ButtonStyle.Danger).setDisabled(!draft.image)
-    )]
-  }
 }
 
 function confirmationView(sessionId, action, eventToken, event) {
@@ -172,7 +162,7 @@ async function handleEventManagementInteraction(
     const sessionId = customId.split(":")[2]
     const session = managementSessions.get(sessionId, context)
     const [action, eventToken] = String(interaction.values[0]).split(":")
-    if (!["preview", "edit", "pause", "resume", "delete"].includes(action)) {
+    if (!["preview", "edit", "alliance", "image", "pause", "resume", "delete"].includes(action)) {
       throw new InteractionSessionError("That event action is invalid.")
     }
     const eventId = session.data.eventMap[eventToken]
@@ -196,8 +186,28 @@ async function handleEventManagementInteraction(
     if (action === "edit") {
       const draft = eventDraft(event)
       const editSessionId = creationSessions.create(context, draft)
+      await interaction.showModal(buildCoreModal(editSessionId, draft))
+      return true
+    }
+    if (action === "alliance") {
+      const draft = { ...eventDraft(event), allianceChangeOnly: true }
+      const editSessionId = creationSessions.create(context, draft)
       await interaction.deferUpdate()
-      await interaction.editReply(imageChoiceView(editSessionId, draft))
+      await renderAllianceSelection(
+        interaction,
+        repository,
+        creationSessions,
+        editSessionId,
+        context,
+        0
+      )
+      return true
+    }
+    if (action === "image") {
+      const draft = { ...eventDraft(event), imageReturnView: "preview" }
+      const editSessionId = creationSessions.create(context, draft)
+      await interaction.deferUpdate()
+      await interaction.editReply(buildImageChoiceView(editSessionId, draft))
       return true
     }
     if (["pause", "resume", "delete"].includes(action)) {
@@ -205,24 +215,6 @@ async function handleEventManagementInteraction(
       await interaction.editReply(confirmationView(sessionId, action, eventToken, event))
       return true
     }
-  }
-
-  if (interaction.isButton?.() && customId.startsWith(`${MANAGEMENT_PREFIX}i:`)) {
-    const [, , editSessionId, imageAction] = customId.split(":")
-    if (!["retain", "replace", "remove"].includes(imageAction)) {
-      throw new InteractionSessionError("That image action is invalid.")
-    }
-    creationSessions.update(editSessionId, context, { imageAction })
-    await interaction.deferUpdate()
-    await renderAllianceSelection(
-      interaction,
-      repository,
-      creationSessions,
-      editSessionId,
-      context,
-      0
-    )
-    return true
   }
 
   if (interaction.isButton?.() && customId.startsWith(`${MANAGEMENT_PREFIX}c:`)) {
@@ -255,8 +247,9 @@ module.exports = {
   MANAGEMENT_PREFIX,
   managementSessions,
   eventDraft,
+  actionOptions,
   listView,
-  imageChoiceView,
+  imageChoiceView: buildImageChoiceView,
   confirmationView,
   handleEventManagementInteraction
 }

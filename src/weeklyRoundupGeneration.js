@@ -12,17 +12,22 @@ function claimsForConfigurations(configurations, { gameProfile, now, graceMinute
       graceMinutes
     )
     if (!period) continue
-    claims.push({
-      ...period,
-      gameProfile,
-      targetKind: "alliance",
-      targetGuildId: config.source_guild_id,
-      targetChannelId: config.weekly_roundup_channel_id,
-      sourceGuildId: config.source_guild_id,
-      postWhenEmpty: config.roundup_when_empty === true
-    })
+    const notBefore = new Date(config.weekly_roundup_not_before || 0)
+    if (Number.isFinite(notBefore.getTime()) && period.scheduledFor <= notBefore) continue
+    if (config.weekly_roundup_enabled === true && config.weekly_roundup_channel_id) {
+      claims.push({
+        ...period,
+        gameProfile,
+        targetKind: "alliance",
+        targetGuildId: config.source_guild_id,
+        targetChannelId: config.weekly_roundup_channel_id,
+        sourceGuildId: config.source_guild_id,
+        postWhenEmpty: config.roundup_when_empty === true
+      })
+    }
     if (
-      config.sharing_enabled === true
+      config.state_roundup_enabled === true
+      && config.sharing_enabled === true
       && String(config.state_guild_id || "").trim()
       && String(config.state_event_channel_id || "").trim()
     ) {

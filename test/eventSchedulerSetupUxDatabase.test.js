@@ -67,6 +67,76 @@ test("migration 007 preserves existing channel and state-link IDs", {
   }
 })
 
+test("migration 008 adds replay protection and backfills prior state-roundup behavior", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 })
+  const client = await pool.connect()
+  const schema = `roundup_ux_upgrade_${process.pid}`
+  try {
+    await client.query("SELECT pg_advisory_lock(7000010)")
+    await client.query(`CREATE SCHEMA "${schema}"`)
+    await client.query(`SET search_path TO "${schema}"`)
+    for (const fileName of [
+      "001_event_scheduler.sql",
+      "002_event_images.sql",
+      "003_event_delivery_indexes.sql",
+      "004_state_delivery_reconciliation.sql",
+      "005_event_management_and_roundups.sql",
+      "006_flexible_reminders_and_alliances.sql",
+      "007_native_channel_and_state_link_setup.sql"
+    ]) {
+      await client.query(await fs.readFile(path.join(migrationsDirectory, fileName), "utf8"))
+    }
+    await client.query(
+      `INSERT INTO event_guild_settings
+         (guild_id, game_profile, bot_instance_name, alliance_name,
+          weekly_roundup_enabled, weekly_roundup_day, weekly_roundup_time_utc,
+          weekly_roundup_channel_id)
+       VALUES
+         ('enabled', 'wos', 'rachie-wos', 'YOU', true, 0, '18:00', 'channel-a'),
+         ('disabled', 'kingshot', 'peggie-kingshot', 'YOU', false, 3, '12:30', 'channel-b')`
+    )
+
+    await client.query(await fs.readFile(
+      path.join(migrationsDirectory, "008_roundup_schedule_controls.sql"),
+      "utf8"
+    ))
+    const settings = (await client.query(
+      `SELECT guild_id, weekly_roundup_enabled, state_roundup_enabled,
+              weekly_roundup_day, weekly_roundup_time_utc::text,
+              weekly_roundup_channel_id, weekly_roundup_not_before::text
+         FROM event_guild_settings ORDER BY guild_id`
+    )).rows
+    assert.deepEqual(settings, [
+      {
+        guild_id: "disabled",
+        weekly_roundup_enabled: false,
+        state_roundup_enabled: false,
+        weekly_roundup_day: 3,
+        weekly_roundup_time_utc: "12:30:00",
+        weekly_roundup_channel_id: "channel-b",
+        weekly_roundup_not_before: "-infinity"
+      },
+      {
+        guild_id: "enabled",
+        weekly_roundup_enabled: true,
+        state_roundup_enabled: true,
+        weekly_roundup_day: 0,
+        weekly_roundup_time_utc: "18:00:00",
+        weekly_roundup_channel_id: "channel-a",
+        weekly_roundup_not_before: "-infinity"
+      }
+    ])
+  } finally {
+    await client.query("SET search_path TO public").catch(() => {})
+    await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
+    await client.query("SELECT pg_advisory_unlock(7000010)").catch(() => {})
+    client.release()
+    await pool.end()
+  }
+})
+
 test("state destinations and one-time links remain profile scoped", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
@@ -175,6 +245,212 @@ test("state destinations and one-time links remain profile scoped", {
     await pool.query(
       "DELETE FROM event_guild_settings WHERE guild_id IN ($1, $2)",
       [allianceGuild, otherAllianceGuild]
+    ).catch(() => {})
+    await pool.end()
+  }
+})
+
+test("roundup configuration changes preserve settings and sent history", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const pool = new Pool({ connectionString: databaseUrl, max: 4 })
+  const guildId = "6888888888888811"
+  const channelId = "6888888888888812"
+  const repository = createEventSchedulerRepository(pool, "wos")
+  try {
+    await pool.query("DELETE FROM weekly_roundup_claims WHERE source_guild_id = $1", [guildId])
+    await pool.query(
+      "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile = 'wos'",
+      [guildId]
+    )
+    await repository.upsertGuildSettings({
+      guildId,
+      botInstanceName: "rachie-wos",
+      allianceName: "Roundup Test",
+      eventChannelId: "6888888888888813"
+    })
+    await repository.configureWeeklyRoundup({
+      guildId,
+      enabled: true,
+      stateEnabled: true,
+      weekday: 0,
+      timeUtc: "18:00",
+      channelId,
+      postWhenEmpty: false
+    })
+    await pool.query(
+      `INSERT INTO weekly_roundup_claims (
+         week_start_date, game_profile, target_kind, target_guild_id,
+         target_channel_id, source_guild_id, scheduled_for, status,
+         sent_at, sent_message_id
+       ) VALUES
+         ('2028-02-27', 'wos', 'alliance', $1, $2, $1,
+          '2028-02-27T18:00Z', 'sent', '2028-02-27T18:00Z', 'sent-roundup'),
+         ('2028-03-05', 'wos', 'alliance', $1, $2, $1,
+          '2028-03-05T18:00Z', 'pending', NULL, NULL)`,
+      [guildId, channelId]
+    )
+
+    await repository.configureWeeklyRoundup({
+      guildId,
+      enabled: false,
+      stateEnabled: true,
+      weekday: 0,
+      timeUtc: "18:00",
+      channelId,
+      postWhenEmpty: false
+    })
+    let settings = await repository.getGuildSettings(guildId)
+    assert.equal(settings.weekly_roundup_enabled, false)
+    assert.equal(settings.state_roundup_enabled, true)
+    assert.equal(settings.weekly_roundup_day, 0)
+    assert.equal(String(settings.weekly_roundup_time_utc).slice(0, 5), "18:00")
+    assert.equal(settings.weekly_roundup_channel_id, channelId)
+
+    const claims = (await pool.query(
+      `SELECT status, sent_message_id, last_error
+         FROM weekly_roundup_claims
+        WHERE source_guild_id = $1 ORDER BY week_start_date`,
+      [guildId]
+    )).rows
+    assert.deepEqual(claims[0], {
+      status: "sent",
+      sent_message_id: "sent-roundup",
+      last_error: null
+    })
+    assert.equal(claims[1].status, "failed")
+    assert.match(claims[1].last_error, /configuration changed/i)
+
+    await repository.configureWeeklyRoundup({
+      guildId,
+      enabled: true,
+      stateEnabled: false,
+      weekday: settings.weekly_roundup_day,
+      timeUtc: settings.weekly_roundup_time_utc,
+      channelId: settings.weekly_roundup_channel_id,
+      postWhenEmpty: settings.roundup_when_empty
+    })
+    settings = await repository.getGuildSettings(guildId)
+    assert.equal(settings.weekly_roundup_enabled, true)
+    assert.equal(settings.state_roundup_enabled, false)
+    assert.equal(settings.weekly_roundup_day, 0)
+    assert.equal(String(settings.weekly_roundup_time_utc).slice(0, 5), "18:00")
+    assert.equal(settings.weekly_roundup_channel_id, channelId)
+    assert.ok(settings.weekly_roundup_not_before instanceof Date)
+  } finally {
+    await pool.query("DELETE FROM weekly_roundup_claims WHERE source_guild_id = $1", [guildId])
+      .catch(() => {})
+    await pool.query(
+      "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile = 'wos'",
+      [guildId]
+    ).catch(() => {})
+    await pool.end()
+  }
+})
+
+test("ordinary edits and alliance changes retain image and event configuration", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const pool = new Pool({ connectionString: databaseUrl, max: 4 })
+  const guildId = "6888888888888821"
+  const repository = createEventSchedulerRepository(pool, "wos")
+  try {
+    await pool.query(
+      "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile = 'wos'",
+      [guildId]
+    )
+    await repository.upsertGuildSettings({
+      guildId,
+      botInstanceName: "rachie-wos",
+      allianceName: "Main",
+      eventChannelId: "6888888888888822"
+    })
+    const main = (await repository.listAlliances(guildId)).alliances[0]
+    const second = await repository.createAlliance({
+      guildId,
+      allianceName: "Second",
+      createdByBotInstance: "rachie-wos"
+    })
+    const image = {
+      originalFilename: "event.png",
+      contentType: "image/png",
+      byteSize: 8,
+      imageData: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    }
+    const event = {
+      allianceId: String(main.id),
+      allianceName: main.alliance_name,
+      eventName: "Retained Event",
+      firstOccurrenceDate: "2028-02-28",
+      eventTimeUtc: "18:00",
+      groups: [],
+      grouped: false,
+      recurrenceDays: 14,
+      advanceReminderMinutes: 30,
+      advanceReminderMessage: "Prepare",
+      reminderAtStart: true,
+      finalReminderMessage: "Final call",
+      publishToAlliance: true,
+      publishToState: true,
+      includeInWeeklyRoundup: true,
+      image
+    }
+    const created = await repository.createEvent({
+      guildId,
+      createdByUserId: "6888888888888823",
+      createdByBotInstance: "rachie-wos",
+      event
+    })
+
+    const ordinary = await repository.updateEvent({
+      guildId,
+      eventId: created.id,
+      event: { ...event, eventName: "Ordinarily Edited" },
+      imageAction: "retain"
+    })
+    assert.equal(String(ordinary.alliance_id), String(main.id))
+    assert.equal((await repository.getEvent(guildId, created.id)).image_filename, "event.png")
+
+    await pool.query(
+      `INSERT INTO event_delivery_claims (
+         event_id, game_profile, schedule_version, occurrence_at, deliver_at,
+         delivery_kind, target_kind, target_guild_id, target_channel_id
+       ) VALUES ($1, 'wos', 2, '2028-03-13T18:00Z', '2028-03-13T17:30Z',
+                 'advance_reminder', 'alliance', $2, '6888888888888822')`,
+      [created.id, guildId]
+    )
+    const changed = await repository.updateEvent({
+      guildId,
+      eventId: created.id,
+      event: {
+        ...event,
+        eventName: "Ordinarily Edited",
+        allianceId: String(second.id),
+        allianceName: second.alliance_name
+      },
+      imageAction: "retain"
+    })
+    assert.equal(changed.schedule_version, 3)
+    assert.equal(String(changed.alliance_id), String(second.id))
+    assert.equal((await repository.getEvent(guildId, created.id)).image_filename, "event.png")
+    assert.equal(changed.recurrence_days, 14)
+    assert.equal(changed.advance_reminder_minutes, 30)
+    assert.equal(changed.advance_reminder_message, "Prepare")
+    assert.equal(changed.reminder_at_start, true)
+    assert.equal(changed.final_reminder_message, "Final call")
+    assert.equal(changed.publish_to_alliance, true)
+    assert.equal(changed.publish_to_state, true)
+    assert.equal(changed.include_in_weekly_roundup, true)
+    const unsent = (await pool.query(
+      "SELECT status, last_error FROM event_delivery_claims WHERE event_id = $1",
+      [created.id]
+    )).rows[0]
+    assert.equal(unsent.status, "failed")
+    assert.match(unsent.last_error, /schedule changed/i)
+  } finally {
+    await pool.query(
+      "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile = 'wos'",
+      [guildId]
     ).catch(() => {})
     await pool.end()
   }

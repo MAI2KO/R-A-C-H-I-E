@@ -11,8 +11,6 @@ const {
 const {
   EMBED_TITLE_LIMIT,
   EMBED_DESCRIPTION_LIMIT,
-  EMBED_FIELD_NAME_LIMIT,
-  EMBED_FIELD_VALUE_LIMIT,
   formatAllianceEventDelivery
 } = require("../src/eventDeliveryFormatting")
 const {
@@ -75,21 +73,19 @@ test("advance reminder embeds cover 10, 30 and grouped events", () => {
   const ten = formatAllianceEventDelivery(payload())
   const tenEmbed = embedJson(ten)
   assert.match(tenEmbed.title, /Event reminder: Bear Hunt/)
-  assert.match(tenEmbed.description, /Alliance: \*\*North\*\*/)
-  assert.match(tenEmbed.fields[1].value, /10 minutes/)
-  assert.match(tenEmbed.fields[2].value, /Every week/)
-  assert.match(tenEmbed.fields[0].value, /2026-08-10 18:30 UTC/)
-  assert.match(tenEmbed.fields[0].value, /<t:1786386600:F>/)
+  assert.equal(tenEmbed.description, "North\nBear Hunt\n\nStarts in 10 minutes")
+  assert.equal(tenEmbed.fields, undefined)
+  assert.doesNotMatch(JSON.stringify(tenEmbed), /Alliance:|Group:|Status:|When|UTC|<t:|recurrence/i)
 
   const thirty = embedJson(formatAllianceEventDelivery(payload({
     claim: { deliverAt: new Date("2026-08-10T18:00:00Z") }
   })))
-  assert.match(thirty.fields[1].value, /30 minutes/)
+  assert.match(thirty.description, /Starts in 30 minutes/)
 
   const grouped = embedJson(formatAllianceEventDelivery(payload({
     group: { id: "2", name: "Alpha", eventTimeUtc: "18:30", sortOrder: 0 }
   })))
-  assert.match(grouped.description, /Group: \*\*Alpha\*\*/)
+  assert.equal(grouped.description, "North\nBear Hunt\nAlpha\n\nStarts in 10 minutes")
 })
 
 test("final reminder embeds say about to start one minute before", () => {
@@ -98,10 +94,8 @@ test("final reminder embeds say about to start one minute before", () => {
     event: { recurrenceDays: 3 }
   })))
   assert.match(final.title, /About to start: Bear Hunt/)
-  assert.match(final.fields[1].value, /^About to start/)
-  assert.match(final.fields[1].value, /approximately 1 minute/)
-  assert.equal(final.fields[2].value, "Every 3 days")
-  assert.doesNotMatch(final.description, /Group:/)
+  assert.equal(final.description, "North\nBear Hunt\n\nAbout to start\nStarts in approximately 1 minute")
+  assert.equal(final.fields, undefined)
   assert.doesNotMatch(JSON.stringify(final), /Starting now|Has started|Event start/i)
 
   const grouped = embedJson(formatAllianceEventDelivery(payload({
@@ -132,11 +126,7 @@ test("formatting neutralizes mentions and remains within Discord limits", () => 
   assert.deepEqual(message.allowedMentions, { parse: [], repliedUser: false })
   assert.ok(embed.title.length <= EMBED_TITLE_LIMIT)
   assert.ok(embed.description.length <= EMBED_DESCRIPTION_LIMIT)
-  assert.ok(embed.fields.length <= 25)
-  for (const field of embed.fields) {
-    assert.ok(field.name.length <= EMBED_FIELD_NAME_LIMIT)
-    assert.ok(field.value.length <= EMBED_FIELD_VALUE_LIMIT)
-  }
+  assert.equal(embed.fields, undefined)
 })
 
 const imageFixtures = Object.freeze({

@@ -33,16 +33,18 @@ The database suite starts two `runMigrations` calls concurrently against one iso
 - Profile-scoped settings and WOS/Kingshot isolation.
 - UTC parsing and deterministic occurrence arithmetic.
 - Advance choices, one-minute final boundaries, and no exact-start claims.
-- Custom-message normalization, isolation, mention safety, and standard details.
+- Guided single/group timing, shared group times, structured add/edit/remove, and case-insensitive group-name validation.
+- Ordinary edit ownership/image retention, separate alliance changes, and explicit image actions.
+- Concise reminder/custom-message isolation, mention safety, and absence of schedule fields.
 - Image validation and advance-only attachment behavior.
 - Alliance-only individual delivery and terminal legacy-state reconciliation.
 - Main/sub-alliance ownership, duplicate names, opaque controls, editing, and deletion blocks.
 - Native reminder, alliance-roundup, and state-destination channel selectors; current-guild ownership; channel type; and permission validation.
 - Hashed, expiring, one-time, profile-scoped state link codes and preservation of existing ID-backed links.
 - Reminder cancellation through editing, custom-message clearing, and sent-history preservation.
-- Alliance and combined state roundup eligibility, ordering, splitting, and profile isolation.
+- Alliance and combined state roundup eligibility, independent enablement, editable UTC schedules, replay protection, ordering, splitting, and profile isolation.
 - Transactional claiming, idempotency, leases, retries, stale-worker rejection, and multipart recovery.
-- Migrations 006/007 backfill, old-writer, and stored-channel/state-link compatibility.
+- Migrations 006/007/008 backfill, old-writer, stored-channel/state-link compatibility, and roundup-setting preservation.
 - Ephemeral scheduler help content, controls, limits, degraded-mode availability, and accurate state policy.
 - Concurrent migration-runner serialization and exactly-once migration application.
 

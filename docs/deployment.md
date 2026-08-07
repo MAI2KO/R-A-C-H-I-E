@@ -56,13 +56,13 @@ When enabled, scheduler initialization validates `GAME_PROFILE` and `BOT_INSTANC
 8. Create a test event far enough ahead to observe the chosen advance reminder and one-minute final announcement.
 9. Verify no exact-start or individual state message appears.
 
-Migration 006 includes an old-writer compatibility trigger: an overlapping older process that omits `alliance_id` is assigned the profile's default alliance. Migration 007 preserves existing channel/state-link IDs while adding identity-first setup, state destinations, and one-time link codes. New code always selects an explicit alliance.
+Migration 006 includes an old-writer compatibility trigger: an overlapping older process that omits `alliance_id` is assigned the profile's default alliance. Migration 007 preserves existing channel/state-link IDs while adding identity-first setup, state destinations, and one-time link codes. Migration 008 preserves existing roundup channel/schedule values, backfills prior state-roundup enablement, and adds schedule-change replay protection. New event code always selects an explicit alliance.
 
 ## Rollback
 
 Set `EVENT_SCHEDULER_ENABLED=false` on the affected service and redeploy/restart. This disables scheduler command registration and polling while preserving existing booking, state, administration, banter, and Apps Script-backed behavior.
 
-Leave additive migrations applied. Do not drop alliance, custom-message, state-destination, or link-code data during an incident. Older code can continue default-alliance inserts because of the compatibility trigger and can read existing state links, but it cannot manage sub-alliances, custom messages, native destinations, or link codes.
+Leave additive migrations applied. Do not drop alliance, custom-message, state-destination, link-code, or roundup-history data during an incident. Older code can continue default-alliance inserts because of the compatibility trigger and can read existing state links, but it cannot manage sub-alliances, custom messages, native destinations, link codes, or independent roundup controls.
 
 If a release must be reverted, revert only application code, keep the database backup, and monitor scheduler logs. Re-enable the scheduler after the corrected application is deployed and migration state reports zero pending files.
 

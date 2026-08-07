@@ -104,6 +104,9 @@ function configuration(overrides = {}) {
     weekly_roundup_day: 1,
     weekly_roundup_time_utc: "09:00:00",
     weekly_roundup_channel_id: "alliance-channel",
+    weekly_roundup_enabled: true,
+    state_roundup_enabled: true,
+    weekly_roundup_not_before: "2028-02-27T00:00:00Z",
     roundup_when_empty: false,
     sharing_enabled: true,
     state_guild_id: "state-guild",
@@ -127,6 +130,41 @@ test("roundup generation is profile scoped and deduplicates a shared state targe
     now: new Date("2028-02-28T11:00:00Z"),
     graceMinutes: 60
   }), [])
+})
+
+test("alliance and state roundup enablement are independent", () => {
+  const now = new Date("2028-02-28T09:10:00Z")
+  const stateOnly = claimsForConfigurations([configuration({
+    weekly_roundup_enabled: false,
+    state_roundup_enabled: true
+  })], { gameProfile: "wos", now, graceMinutes: 60 })
+  assert.deepEqual(stateOnly.map(claim => claim.targetKind), ["state"])
+
+  const allianceOnly = claimsForConfigurations([configuration({
+    weekly_roundup_enabled: true,
+    state_roundup_enabled: false
+  })], { gameProfile: "wos", now, graceMinutes: 60 })
+  assert.deepEqual(allianceOnly.map(claim => claim.targetKind), ["alliance"])
+})
+
+test("a changed or re-enabled schedule does not replay the elapsed roundup", () => {
+  const currentWeek = claimsForConfigurations([configuration({
+    weekly_roundup_not_before: "2028-02-28T09:05:00Z"
+  })], {
+    gameProfile: "wos",
+    now: new Date("2028-02-28T09:10:00Z"),
+    graceMinutes: 60
+  })
+  assert.deepEqual(currentWeek, [])
+
+  const nextWeek = claimsForConfigurations([configuration({
+    weekly_roundup_not_before: "2028-02-28T09:05:00Z"
+  })], {
+    gameProfile: "wos",
+    now: new Date("2028-03-06T09:10:00Z"),
+    graceMinutes: 60
+  })
+  assert.equal(nextWeek.length, 2)
 })
 
 function roundupPayload(overrides = {}) {
