@@ -89,14 +89,14 @@ test("scheduler slash command acknowledges before authorization and database loa
   assert.equal(interaction.replyCount || 0, 0)
 })
 
-test("management entry button acknowledges before its event-list query", async () => {
+test("management entry button acknowledges before its alliance-list query", async () => {
   const interaction = schedulerInteraction("button", { customId: "el:0" })
   const repository = {
-    listEvents: delayed(interaction, { events: [], total: 0 })
+    listAlliances: delayed(interaction, { alliances: [], total: 0 })
   }
   await handleEventSchedulerInteraction(interaction, options(repository))
   assert.equal(interaction.acknowledgedWith, "deferUpdate")
-  assert.match(interaction.edited.content, /No active or paused events/)
+  assert.match(interaction.edited.content, /Select an alliance/)
 })
 
 test("channel selector acknowledges before validation and persistence", async () => {

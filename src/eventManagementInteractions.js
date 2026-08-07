@@ -18,13 +18,18 @@ const {
 } = require("./eventCreationInteractions")
 const {
   EVENTS_PER_PAGE,
-  formatEventListPage,
+  formatEventEntry,
   formatUpcomingOccurrencePreview
 } = require("./eventSchedulerFormatting")
 const { getNextOccurrences } = require("./occurrenceCalculation")
 
 const managementSessions = new InteractionSessionStore()
 const MANAGEMENT_PREFIX = "mg:"
+const ALLIANCES_PER_FILTER = 24
+const FILTER_IDS = Object.freeze({
+  selectPrefix: `${MANAGEMENT_PREFIX}f:`,
+  changePrefix: `${MANAGEMENT_PREFIX}fc:`
+})
 
 function token() {
   return crypto.randomBytes(6).toString("base64url")
@@ -84,7 +89,64 @@ function actionOptions(event) {
   ]
 }
 
-function listView(events, page, total, sessionId, eventMap, eventDraftMap = {}) {
+function allianceFilterView(alliances, sessionId) {
+  const allianceMap = {}
+  const options = [{ label: "All alliances", value: "all", description: "Every alliance in this server" }]
+  for (const alliance of alliances) {
+    const allianceToken = uniqueToken(allianceMap)
+    allianceMap[allianceToken] = {
+      id: String(alliance.id),
+      name: alliance.alliance_name,
+      isDefault: alliance.is_default === true
+    }
+    options.push({
+      label: alliance.alliance_name.slice(0, 100),
+      value: allianceToken,
+      description: alliance.is_default ? "Main alliance" : "Sub-alliance"
+    })
+  }
+  return {
+    view: {
+      content: "View events\n\nSelect an alliance or choose All alliances.",
+      components: [
+        new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId(`${FILTER_IDS.selectPrefix}${sessionId}`)
+            .setPlaceholder("Select alliance")
+            .addOptions(options)
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("es:home").setLabel("Back")
+            .setStyle(ButtonStyle.Secondary)
+        )
+      ]
+    },
+    allianceMap
+  }
+}
+
+async function renderAllianceFilter(interaction, repository, health, sessionId = null) {
+  const context = sessionContext(interaction, health)
+  const id = sessionId || managementSessions.create(context, {})
+  managementSessions.get(id, context)
+  const result = await repository.listAlliances(interaction.guildId, {
+    limit: ALLIANCES_PER_FILTER,
+    offset: 0
+  })
+  const built = allianceFilterView(result.alliances, id)
+  managementSessions.update(id, context, { allianceMap: built.allianceMap })
+  await interaction.editReply(built.view)
+}
+
+function listView(
+  events,
+  page,
+  total,
+  sessionId,
+  eventMap,
+  eventDraftMap = {},
+  { filterLabel = "All alliances", allAlliances = true } = {}
+) {
   const totalPages = Math.max(1, Math.ceil(total / EVENTS_PER_PAGE))
   const components = events.map((event, index) => {
     const eventToken = uniqueToken(eventMap)
@@ -93,34 +155,52 @@ function listView(events, page, total, sessionId, eventMap, eventDraftMap = {}) 
     return new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId(`${MANAGEMENT_PREFIX}a:${sessionId}:${eventToken}`)
-        .setPlaceholder(`${index + 1}. ${event.event_name}`.slice(0, 100))
+        .setPlaceholder(`${index + 1}. ${allAlliances ? `${event.alliance_name} — ` : ""}${event.event_name}`.slice(0, 100))
         .addOptions(actionOptions(event))
     )
   })
-  components.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`${MANAGEMENT_PREFIX}l:${sessionId}:${Math.max(0, page - 1)}`)
-      .setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-    new ButtonBuilder()
-      .setCustomId(`${MANAGEMENT_PREFIX}l:${sessionId}:${page + 1}`)
-      .setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1),
+  const navigation = [
+    new ButtonBuilder().setCustomId(`${FILTER_IDS.changePrefix}${sessionId}`)
+      .setLabel("Change alliance").setStyle(ButtonStyle.Secondary)
+  ]
+  if (events.length) {
+    navigation.push(
+      new ButtonBuilder()
+        .setCustomId(`${MANAGEMENT_PREFIX}l:${sessionId}:${Math.max(0, page - 1)}`)
+        .setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder()
+        .setCustomId(`${MANAGEMENT_PREFIX}l:${sessionId}:${page + 1}`)
+        .setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1)
+    )
+  }
+  navigation.push(
     new ButtonBuilder().setCustomId("es:home").setLabel("Back").setStyle(ButtonStyle.Secondary)
-  ))
-  return { content: formatEventListPage(events, page, total), components }
+  )
+  components.push(new ActionRowBuilder().addComponents(...navigation))
+  const content = events.length
+    ? `Scheduled events — ${filterLabel}\nPage ${page + 1} of ${totalPages}\n\n` +
+      events.map(formatEventEntry).join("\n\n")
+    : `No scheduled events for ${filterLabel}.`
+  return { content: content.slice(0, 1950), components }
 }
 
 async function renderList(interaction, repository, health, page, sessionId = null) {
   const context = sessionContext(interaction, health)
   const safePage = Math.max(0, Number(page) || 0)
+  const id = sessionId || managementSessions.create(context, {})
+  const session = managementSessions.get(id, context)
   const result = await repository.listEvents(interaction.guildId, {
     limit: EVENTS_PER_PAGE,
-    offset: safePage * EVENTS_PER_PAGE
+    offset: safePage * EVENTS_PER_PAGE,
+    allianceId: session.data.selectedAllianceId || null
   })
-  const id = sessionId || managementSessions.create(context, {})
   const eventMap = {}
   const eventDraftMap = {}
   managementSessions.update(id, context, { page: safePage, eventMap, eventDraftMap })
-  const view = listView(result.events, safePage, result.total, id, eventMap, eventDraftMap)
+  const view = listView(result.events, safePage, result.total, id, eventMap, eventDraftMap, {
+    filterLabel: session.data.selectedAllianceName || "All alliances",
+    allAlliances: !session.data.selectedAllianceId
+  })
   if (interaction.deferred || interaction.replied) await interaction.editReply(view)
   else await interaction.reply({ ...view, flags: MessageFlags.Ephemeral })
 }
@@ -144,7 +224,7 @@ async function handleEventManagementModalOpeningInteraction(interaction, { healt
   return true
 }
 
-function confirmationView(sessionId, action, eventToken, event) {
+function confirmationView(sessionId, action, eventToken, event, page = 0) {
   const verb = action === "delete" ? "Delete" : action === "pause" ? "Pause" : "Resume"
   const effect = action === "delete"
     ? "Delete softly removes future reminders and roundups while preserving history."
@@ -159,7 +239,7 @@ function confirmationView(sessionId, action, eventToken, event) {
         .setLabel(`Confirm ${verb.toLowerCase()}`)
         .setStyle(action === "delete" ? ButtonStyle.Danger : ButtonStyle.Primary),
       new ButtonBuilder()
-        .setCustomId(`${MANAGEMENT_PREFIX}l:${sessionId}:0`)
+        .setCustomId(`${MANAGEMENT_PREFIX}l:${sessionId}:${page}`)
         .setLabel("Cancel").setStyle(ButtonStyle.Secondary)
     )]
   }
@@ -175,7 +255,39 @@ async function handleEventManagementInteraction(
 
   if (interaction.isButton?.() && customId.startsWith("el:")) {
     await acknowledgeSchedulerInteraction(interaction)
-    await renderList(interaction, repository, health, Number(customId.slice(3)))
+    await renderAllianceFilter(interaction, repository, health)
+    return true
+  }
+
+  if (interaction.isButton?.() && customId.startsWith(FILTER_IDS.changePrefix)) {
+    const sessionId = customId.slice(FILTER_IDS.changePrefix.length)
+    managementSessions.get(sessionId, context)
+    await acknowledgeSchedulerInteraction(interaction)
+    await renderAllianceFilter(interaction, repository, health, sessionId)
+    return true
+  }
+
+  if (interaction.isStringSelectMenu?.() && customId.startsWith(FILTER_IDS.selectPrefix)) {
+    const sessionId = customId.slice(FILTER_IDS.selectPrefix.length)
+    const session = managementSessions.get(sessionId, context)
+    const selectedToken = String(interaction.values?.[0] || "")
+    let selectedAllianceId = null
+    let selectedAllianceName = "All alliances"
+    if (selectedToken !== "all") {
+      const selected = session.data.allianceMap?.[selectedToken]
+      if (!selected?.id) throw new InteractionSessionError("That alliance control has expired.")
+      const alliance = await repository.getAlliance(interaction.guildId, selected.id)
+      if (!alliance) throw new InteractionSessionError("That alliance is no longer available.")
+      selectedAllianceId = String(alliance.id)
+      selectedAllianceName = alliance.alliance_name
+    }
+    managementSessions.update(sessionId, context, {
+      selectedAllianceId,
+      selectedAllianceName,
+      page: 0
+    })
+    await acknowledgeSchedulerInteraction(interaction)
+    await renderList(interaction, repository, health, 0, sessionId)
     return true
   }
 
@@ -238,7 +350,13 @@ async function handleEventManagementInteraction(
     }
     if (["pause", "resume", "delete"].includes(action)) {
       await acknowledgeSchedulerInteraction(interaction)
-      await interaction.editReply(confirmationView(sessionId, action, eventToken, event))
+      await interaction.editReply(confirmationView(
+        sessionId,
+        action,
+        eventToken,
+        event,
+        session.data.page
+      ))
       return true
     }
   }
@@ -271,9 +389,12 @@ async function handleEventManagementInteraction(
 
 module.exports = {
   MANAGEMENT_PREFIX,
+  FILTER_IDS,
   managementSessions,
   eventDraft,
   actionOptions,
+  allianceFilterView,
+  renderAllianceFilter,
   listView,
   imageChoiceView: buildImageChoiceView,
   confirmationView,

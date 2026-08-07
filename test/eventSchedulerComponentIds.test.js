@@ -18,6 +18,7 @@ const {
   creationSessions
 } = require("../src/eventCreationInteractions")
 const {
+  allianceFilterView,
   confirmationView,
   eventDraft,
   handleEventManagementModalOpeningInteraction,
@@ -129,6 +130,7 @@ function managementView(events = liveFixture, page = 0, total = events.length, s
 }
 
 function componentInteraction(customId, values = []) {
+  const isSelect = customId.startsWith("mg:a:") || customId.startsWith("mg:f:")
   return {
     commandName: null,
     customId,
@@ -138,8 +140,8 @@ function componentInteraction(customId, values = []) {
     deferred: false,
     replied: false,
     isChatInputCommand: () => false,
-    isButton: () => !customId.startsWith("mg:a:"),
-    isStringSelectMenu: () => customId.startsWith("mg:a:"),
+    isButton: () => !isSelect,
+    isStringSelectMenu: () => isSelect,
     isChannelSelectMenu: () => false,
     isModalSubmit: () => false,
     async deferUpdate() { this.deferred = true },
@@ -147,6 +149,52 @@ function componentInteraction(customId, values = []) {
     async reply(payload) { this.replied = true; this.replyPayload = payload },
     async showModal(modal) { this.modal = modal }
   }
+}
+
+function allianceRepository(events = liveFixture) {
+  const alliances = [
+    { id: "alliance-1", alliance_name: "HnC", is_default: true },
+    { id: "alliance-2", alliance_name: "HwC", is_default: false },
+    { id: "alliance-3", alliance_name: "Empty", is_default: false }
+  ]
+  const calls = []
+  return {
+    calls,
+    async listAlliances() { return { alliances, total: alliances.length } },
+    async getAlliance(guildId, allianceId) {
+      if (guildId !== context.guildId) return null
+      return alliances.find(alliance => alliance.id === String(allianceId)) || null
+    },
+    async listEvents(guildId, { limit, offset, allianceId }) {
+      calls.push({ guildId, limit, offset, allianceId })
+      const filtered = allianceId
+        ? events.filter(event => event.alliance_id === String(allianceId))
+        : events
+      return { events: filtered.slice(offset, offset + limit), total: filtered.length }
+    },
+    async getEvent(guildId, eventId) {
+      if (guildId !== context.guildId) return null
+      return events.find(event => event.id === String(eventId)) || null
+    }
+  }
+}
+
+function schedulerOptions(repository, overrides = {}) {
+  return {
+    healthProvider: () => health,
+    userCanManageServer: async () => true,
+    repositoryProvider: () => repository,
+    logger: { error() {}, warn() {} },
+    ...overrides
+  }
+}
+
+async function openEventFilter(repository, options = schedulerOptions(repository)) {
+  const interaction = componentInteraction("el:0")
+  await handleEventSchedulerInteraction(interaction, options)
+  const select = componentData(interaction.edited)
+    .find(component => component.custom_id?.startsWith("mg:f:"))
+  return { interaction, select, options }
 }
 
 test("the live duplicate-name event list has unique component IDs", () => {
@@ -193,8 +241,17 @@ test("event list pagination remains unique and navigates both pages", async () =
   const events = [...liveFixture, fourth]
   const calls = []
   const repository = {
-    async listEvents(guildId, { limit, offset }) {
-      calls.push({ guildId, limit, offset })
+    async listAlliances() {
+      return {
+        alliances: [
+          { id: "alliance-1", alliance_name: "HnC", is_default: true },
+          { id: "alliance-2", alliance_name: "HwC", is_default: false }
+        ],
+        total: 2
+      }
+    },
+    async listEvents(guildId, { limit, offset, allianceId }) {
+      calls.push({ guildId, limit, offset, allianceId })
       return { events: events.slice(offset, offset + limit), total: events.length }
     }
   }
@@ -207,9 +264,15 @@ test("event list pagination remains unique and navigates both pages", async () =
 
   const pageOne = componentInteraction("el:0")
   await handleEventSchedulerInteraction(pageOne, options)
-  assert.match(pageOne.edited.content, /page 1 of 2/i)
-  assertUniqueComponentIds(pageOne.edited, "event list page 1")
-  const next = componentData(pageOne.edited).find(component => component.label === "Next")
+  assert.match(pageOne.edited.content, /select an alliance/i)
+  const filter = componentData(pageOne.edited).find(component => component.custom_id?.startsWith("mg:f:"))
+
+  const allAlliances = componentInteraction(filter.custom_id, ["all"])
+  await handleEventSchedulerInteraction(allAlliances, options)
+  assert.match(allAlliances.edited.content, /page 1 of 2/i)
+  assert.match(componentData(allAlliances.edited)[0].placeholder, /HnC — Bear Trap/)
+  assertUniqueComponentIds(allAlliances.edited, "event list page 1")
+  const next = componentData(allAlliances.edited).find(component => component.label === "Next")
   assert.ok(next.custom_id.startsWith("mg:l:"))
 
   const pageTwo = componentInteraction(next.custom_id)
@@ -223,6 +286,105 @@ test("event list pagination remains unique and navigates both pages", async () =
   await handleEventSchedulerInteraction(pageOneAgain, options)
   assert.match(pageOneAgain.edited.content, /page 1 of 2/i)
   assert.equal(calls.at(-1).offset, 0)
+  assert.equal(calls.at(-1).allianceId, null)
+})
+
+test("view events requires an alliance choice and filters duplicate event names", async () => {
+  const repository = allianceRepository()
+  const opened = await openEventFilter(repository)
+  assert.match(opened.interaction.edited.content, /Select an alliance/)
+  assert.doesNotMatch(opened.interaction.edited.content, /Bear Trap/)
+  const labels = opened.select.options.map(option => option.label)
+  assert.deepEqual(labels, ["All alliances", "HnC", "HwC", "Empty"])
+  assert.equal(opened.select.options[1].description, "Main alliance")
+  assert.equal(opened.select.options[2].description, "Sub-alliance")
+  assert.ok(opened.select.options.every(option => !/^\d+$/.test(option.value)))
+
+  for (const allianceName of ["HnC", "HwC"]) {
+    const fresh = await openEventFilter(repository)
+    const option = fresh.select.options.find(item => item.label === allianceName)
+    const selected = componentInteraction(fresh.select.custom_id, [option.value])
+    await handleEventSchedulerInteraction(selected, fresh.options)
+    assert.match(selected.edited.content, new RegExp(`Scheduled events — ${allianceName}`))
+    const selectors = componentData(selected.edited)
+      .filter(component => component.custom_id?.startsWith("mg:a:"))
+    assert.ok(selectors.length > 0)
+    assert.ok(selectors.every(component => !component.placeholder.includes("—")))
+    const expectedAllianceId = allianceName === "HnC" ? "alliance-1" : "alliance-2"
+    assert.equal(repository.calls.at(-1).allianceId, expectedAllianceId)
+    if (allianceName === "HnC") assert.doesNotMatch(selected.edited.content, /Alliance: HwC/)
+    if (allianceName === "HwC") assert.doesNotMatch(selected.edited.content, /Alliance: HnC/)
+  }
+
+  const all = await openEventFilter(repository)
+  const selectedAll = componentInteraction(all.select.custom_id, ["all"])
+  await handleEventSchedulerInteraction(selectedAll, all.options)
+  const allSelectors = componentData(selectedAll.edited)
+    .filter(component => component.custom_id?.startsWith("mg:a:"))
+  assert.match(allSelectors[0].placeholder, /HnC — Bear Trap/)
+  assert.match(allSelectors[1].placeholder, /HwC — Bear Trap/)
+})
+
+test("filtered pagination and event preview return preserve the alliance filter", async () => {
+  const hncEvents = Array.from({ length: 4 }, (_, index) => scheduledEvent({
+    id: String(index + 10),
+    event_name: `HnC Event ${index + 1}`,
+    groups: [],
+    event_time_utc: `${10 + index}:00:00`
+  }))
+  const repository = allianceRepository([...hncEvents, liveFixture[1]])
+  const opened = await openEventFilter(repository)
+  const hnc = opened.select.options.find(option => option.label === "HnC")
+  const selected = componentInteraction(opened.select.custom_id, [hnc.value])
+  await handleEventSchedulerInteraction(selected, opened.options)
+  assert.match(selected.edited.content, /Page 1 of 2/)
+
+  const next = componentData(selected.edited).find(component => component.label === "Next")
+  const pageTwo = componentInteraction(next.custom_id)
+  await handleEventSchedulerInteraction(pageTwo, opened.options)
+  assert.match(pageTwo.edited.content, /Page 2 of 2/)
+  assert.equal(repository.calls.at(-1).allianceId, "alliance-1")
+
+  const selector = componentData(pageTwo.edited)
+    .find(component => component.custom_id?.startsWith("mg:a:"))
+  const preview = componentInteraction(selector.custom_id, ["preview"])
+  await handleEventSchedulerInteraction(preview, opened.options)
+  const back = componentData(preview.edited).find(component => component.label === "Back to events")
+  const returned = componentInteraction(back.custom_id)
+  await handleEventSchedulerInteraction(returned, opened.options)
+  assert.match(returned.edited.content, /Scheduled events — HnC/)
+  assert.match(returned.edited.content, /Page 2 of 2/)
+  assert.equal(repository.calls.at(-1).allianceId, "alliance-1")
+})
+
+test("an empty alliance has a clear state without pagination", async () => {
+  const repository = allianceRepository()
+  const opened = await openEventFilter(repository)
+  const empty = opened.select.options.find(option => option.label === "Empty")
+  const selected = componentInteraction(opened.select.custom_id, [empty.value])
+  await handleEventSchedulerInteraction(selected, opened.options)
+  assert.equal(selected.edited.content, "No scheduled events for Empty.")
+  const controls = componentData(selected.edited)
+  assert.deepEqual(controls.map(component => component.label), ["Change alliance", "Back"])
+})
+
+test("alliance filters reject cross-guild and cross-profile session use", async () => {
+  const repository = allianceRepository()
+  const opened = await openEventFilter(repository)
+  const hnc = opened.select.options.find(option => option.label === "HnC")
+
+  const wrongGuild = componentInteraction(opened.select.custom_id, [hnc.value])
+  wrongGuild.guildId = "guild-2"
+  await handleEventSchedulerInteraction(wrongGuild, opened.options)
+  assert.match(wrongGuild.edited.content, /another Discord server/)
+  assert.equal(repository.calls.length, 0)
+
+  const wrongProfile = componentInteraction(opened.select.custom_id, [hnc.value])
+  await handleEventSchedulerInteraction(wrongProfile, schedulerOptions(repository, {
+    healthProvider: () => ({ ...health, gameProfile: "kingshot" })
+  }))
+  assert.match(wrongProfile.edited.content, /another game profile/)
+  assert.equal(repository.calls.length, 0)
 })
 
 test("event controls reject forged tokens and cross-guild or cross-profile sessions", async () => {
@@ -308,6 +470,7 @@ test("all scheduler message builders emit unique, concise custom IDs", () => {
     ["event listing", buildListView(liveFixture, 0, liveFixture.length)],
     ["occurrence preview", buildOccurrencePreviewView(liveFixture[0], [], 0)],
     ["event management", managementView().view],
+    ["event alliance filter", allianceFilterView(alliances, "session").view],
     ["event confirmation", confirmationView("session", "delete", "event-token", liveFixture[0])]
   ]
 

@@ -289,6 +289,20 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       new Set(["YOU", "YOU2", "YOU Academy"])
     )
     assert.equal((await kingshot.listEvents(guildId, { limit: 10 })).events.length, 1)
+    const mainAllianceEvents = await wos.listEvents(guildId, {
+      limit: 10,
+      allianceId: String(wosDefault.id)
+    })
+    assert.deepEqual(mainAllianceEvents.events.map(event => event.event_name), ["Main Foundry"])
+    const subAllianceEvents = await wos.listEvents(guildId, {
+      limit: 10,
+      allianceId: String(you2.id)
+    })
+    assert.deepEqual(subAllianceEvents.events.map(event => event.event_name), ["Sub Bear"])
+    assert.equal((await wos.listEvents(guildId, {
+      limit: 10,
+      allianceId: String(kingshotYou2.id)
+    })).events.length, 0)
 
     await pool.query(
       `INSERT INTO event_delivery_claims (

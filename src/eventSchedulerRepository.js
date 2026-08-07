@@ -668,7 +668,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
       }
     },
 
-    async listEvents(guildId, { limit = 10, offset = 0 } = {}) {
+    async listEvents(guildId, { limit = 10, offset = 0, allianceId = null } = {}) {
       const result = await pool.query(
         `SELECT e.*, a.alliance_name AS alliance_name,
                 e.first_occurrence_date::text AS first_occurrence_date,
@@ -684,9 +684,10 @@ function createEventSchedulerRepository(pool, gameProfile) {
           WHERE e.guild_id = $1
             AND e.game_profile = $2
             AND e.status IN ('active', 'paused')
+            AND ($5::bigint IS NULL OR e.alliance_id = $5)
           ORDER BY lower(a.alliance_name), e.first_occurrence_date, e.event_name, e.id
           LIMIT $3 OFFSET $4`,
-        [guildId, gameProfile, limit, offset]
+        [guildId, gameProfile, limit, offset, allianceId]
       )
 
       const events = result.rows
