@@ -1,3 +1,8 @@
+const {
+  buildRoundupOccurrences,
+  configuredRoundupWindow
+} = require("./weeklyRoundupCalculation")
+
 const SUPPORTED_PROFILES = new Set(["wos", "kingshot"])
 
 function assertProfile(gameProfile) {
@@ -516,6 +521,63 @@ function createEventSchedulerRepository(pool, gameProfile) {
         throw error
       } finally {
         client.release()
+      }
+    },
+
+    async getWeeklyRoundupPreview(guildId, { now = new Date() } = {}) {
+      const settings = await this.getGuildSettings(guildId)
+      if (!settings) return null
+      const eventResult = await pool.query(
+        `SELECT e.*, a.alliance_name AS alliance_name,
+                a.is_default AS is_default_alliance,
+                e.first_occurrence_date::text AS first_occurrence_date
+           FROM scheduled_events e
+           JOIN event_alliances a
+             ON a.id = e.alliance_id AND a.guild_id = e.guild_id
+            AND a.game_profile = e.game_profile
+          WHERE e.guild_id = $1 AND e.game_profile = $2
+            AND e.status = 'active' AND e.include_in_weekly_roundup = true
+          ORDER BY e.id`,
+        [guildId, gameProfile]
+      )
+      const eventIds = eventResult.rows.map(event => event.id)
+      let groups = []
+      if (eventIds.length) {
+        groups = (await pool.query(
+          `SELECT id AS group_id, event_id, group_name, event_time_utc, sort_order
+             FROM scheduled_event_groups
+            WHERE game_profile = $1 AND event_id = ANY($2::bigint[])
+            ORDER BY event_id, sort_order, group_name, id`,
+          [gameProfile, eventIds]
+        )).rows
+      }
+      const groupsByEvent = new Map()
+      for (const group of groups) {
+        const key = String(group.event_id)
+        if (!groupsByEvent.has(key)) groupsByEvent.set(key, [])
+        groupsByEvent.get(key).push(group)
+      }
+      const events = eventResult.rows.map(event => ({
+        ...event,
+        groups: groupsByEvent.get(String(event.id)) || []
+      }))
+      const { weekStart, weekEnd } = configuredRoundupWindow(
+        now,
+        settings.weekly_roundup_day
+      )
+      return {
+        claim: {
+          gameProfile,
+          targetKind: "alliance",
+          targetGuildId: guildId,
+          targetChannelId: settings.weekly_roundup_channel_id,
+          targetIsCurrent: true,
+          weekStart,
+          weekEnd,
+          postWhenEmpty: settings.roundup_when_empty === true
+        },
+        allianceName: settings.alliance_name,
+        occurrences: buildRoundupOccurrences(events, weekStart, weekEnd)
       }
     },
 

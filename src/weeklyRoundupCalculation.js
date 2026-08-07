@@ -39,6 +39,22 @@ function roundupPeriod(now, weekday, timeUtc, graceMinutes = DEFAULT_ROUNDUP_GRA
   })
 }
 
+function configuredRoundupWindow(now, weekday) {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    throw new Error("Roundup calculation requires a valid date")
+  }
+  const day = Number(weekday)
+  if (!Number.isInteger(day) || day < 0 || day > 6) {
+    throw new Error("Roundup weekday must be between 0 and 6")
+  }
+  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const weekStartMs = midnight - ((now.getUTCDay() - day + 7) % 7) * DAY_MS
+  return Object.freeze({
+    weekStart: new Date(weekStartMs),
+    weekEnd: new Date(weekStartMs + WEEK_MS)
+  })
+}
+
 function occurrenceKey(item) {
   return [
     item.eventId,
@@ -48,11 +64,14 @@ function occurrenceKey(item) {
 }
 
 function compareRoundupOccurrences(left, right) {
-  return left.occurrenceAt.getTime() - right.occurrenceAt.getTime()
-    || String(left.allianceName).localeCompare(String(right.allianceName))
+  return Number(Boolean(right.isMainAlliance)) - Number(Boolean(left.isMainAlliance))
+    || String(left.allianceName).localeCompare(String(right.allianceName), undefined, { sensitivity: "base" })
+    || String(left.sourceGuildId || "").localeCompare(String(right.sourceGuildId || ""))
+    || String(left.allianceId || "").localeCompare(String(right.allianceId || ""))
+    || left.occurrenceAt.getTime() - right.occurrenceAt.getTime()
     || String(left.eventName).localeCompare(String(right.eventName))
-    || Number(left.groupSortOrder || 0) - Number(right.groupSortOrder || 0)
     || String(left.groupName || "").localeCompare(String(right.groupName || ""))
+    || Number(left.groupSortOrder || 0) - Number(right.groupSortOrder || 0)
     || String(left.eventId).localeCompare(String(right.eventId))
 }
 
@@ -66,7 +85,10 @@ function buildRoundupOccurrences(events, weekStart, weekEnd) {
     for (const occurrence of getOccurrencesInRange(event, weekStart, weekEnd)) {
       const item = {
         ...occurrence,
+        sourceGuildId: event.guild_id,
+        allianceId: event.alliance_id,
         allianceName: event.alliance_name,
+        isMainAlliance: event.is_default_alliance === true || event.is_default === true,
         eventName: event.event_name
       }
       unique.set(occurrenceKey(item), item)
@@ -81,6 +103,7 @@ module.exports = {
   DEFAULT_ROUNDUP_GRACE_MINUTES,
   parseRoundupTime,
   roundupPeriod,
+  configuredRoundupWindow,
   compareRoundupOccurrences,
   buildRoundupOccurrences
 }

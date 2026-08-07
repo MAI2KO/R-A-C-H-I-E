@@ -97,6 +97,66 @@ test("weekly selection is half-open, recurring, grouped, filtered and ordered", 
     || selected[index - 1].occurrenceAt <= item.occurrenceAt))
 })
 
+test("roundup occurrences group the main alliance first and sort within each alliance", () => {
+  const start = new Date("2028-02-28T00:00:00Z")
+  const end = new Date("2028-03-06T00:00:00Z")
+  const selected = buildRoundupOccurrences([
+    event({
+      id: "main-later",
+      alliance_id: "main",
+      alliance_name: "Zulu Main",
+      is_default_alliance: true,
+      event_name: "Foundry",
+      first_occurrence_date: "2028-03-05",
+      event_time_utc: "12:00",
+      recurrence_days: 7
+    }),
+    event({
+      id: "alpha-later",
+      alliance_id: "alpha",
+      alliance_name: "Alpha Sub",
+      is_default_alliance: false,
+      event_name: "SvS",
+      first_occurrence_date: "2028-03-04",
+      event_time_utc: "10:00",
+      recurrence_days: 7
+    }),
+    event({
+      id: "alpha-earlier",
+      alliance_id: "alpha",
+      alliance_name: "Alpha Sub",
+      is_default_alliance: false,
+      event_name: "Bear Trap",
+      first_occurrence_date: "2028-03-03",
+      event_time_utc: "18:00",
+      recurrence_days: 7
+    }),
+    event({
+      id: "beta-earlier",
+      alliance_id: "beta",
+      alliance_name: "Beta Sub",
+      is_default_alliance: false,
+      event_name: "Arena",
+      first_occurrence_date: "2028-03-01",
+      event_time_utc: "08:00",
+      recurrence_days: 7
+    })
+  ], start, end)
+
+  assert.deepEqual(selected.map(item => item.eventId), [
+    "main-later",
+    "alpha-earlier",
+    "alpha-later",
+    "beta-earlier"
+  ])
+  assert.deepEqual(selected.map(item => item.allianceName), [
+    "Zulu Main",
+    "Alpha Sub",
+    "Alpha Sub",
+    "Beta Sub"
+  ])
+})
+
 function configuration(overrides = {}) {
   return {
     source_guild_id: "guild-a",
@@ -213,7 +273,52 @@ test("state roundups show alliances, group days, split safely and suppress menti
     assert.deepEqual(message.allowedMentions, { parse: [], repliedUser: false })
     assert.equal(message.files, undefined)
   })
-  assert.match(messages[0].embeds[0].toJSON().description, /\*\*North\*\*|\*\*South\*\*/)
+  assert.match(
+    messages.map(message => message.embeds[0].toJSON().description).join("\n"),
+    /\*\*South\*\*/
+  )
+})
+
+test("alliance and state roundup presentation keep alliance sections together", () => {
+  const occurrences = [
+    {
+      eventId: "sub-early",
+      allianceId: "sub",
+      sourceGuildId: "guild-a",
+      allianceName: "Alpha Sub",
+      isMainAlliance: false,
+      eventName: "Bear Trap",
+      occurrenceAt: new Date("2028-03-03T18:00:00Z")
+    },
+    {
+      eventId: "main-late",
+      allianceId: "main",
+      sourceGuildId: "guild-a",
+      allianceName: "Zulu Main",
+      isMainAlliance: true,
+      eventName: "Foundry",
+      occurrenceAt: new Date("2028-03-05T12:00:00Z")
+    },
+    {
+      eventId: "sub-late",
+      allianceId: "sub",
+      sourceGuildId: "guild-a",
+      allianceName: "Alpha Sub",
+      isMainAlliance: false,
+      eventName: "SvS",
+      occurrenceAt: new Date("2028-03-04T10:00:00Z")
+    }
+  ]
+  for (const targetKind of ["alliance", "state"]) {
+    const messages = formatWeeklyRoundup(roundupPayload({
+      claim: { targetKind },
+      occurrences
+    }))
+    const description = messages.map(message => message.embeds[0].toJSON().description).join("\n")
+    assert.ok(description.indexOf("Zulu Main") < description.indexOf("Alpha Sub"))
+    assert.ok(description.indexOf("Bear Trap") < description.indexOf("SvS"))
+    assert.equal((description.match(/\*\*Alpha Sub\*\*/g) || []).length, 1)
+  }
 })
 
 test("event reminder claims carry the current schedule version", () => {

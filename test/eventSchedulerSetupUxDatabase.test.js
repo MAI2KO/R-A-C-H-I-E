@@ -5,6 +5,10 @@ const path = require("node:path")
 const { Pool } = require("pg")
 
 const { createEventSchedulerRepository } = require("../src/eventSchedulerRepository")
+const {
+  IDS,
+  handleEventSchedulerInteraction
+} = require("../src/eventSchedulerInteractions")
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const migrationsDirectory = path.join(__dirname, "..", "migrations")
@@ -337,6 +341,143 @@ test("roundup configuration changes preserve settings and sent history", {
     assert.equal(String(settings.weekly_roundup_time_utc).slice(0, 5), "18:00")
     assert.equal(settings.weekly_roundup_channel_id, channelId)
     assert.ok(settings.weekly_roundup_not_before instanceof Date)
+  } finally {
+    await pool.query("DELETE FROM weekly_roundup_claims WHERE source_guild_id = $1", [guildId])
+      .catch(() => {})
+    await pool.query(
+      "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile = 'wos'",
+      [guildId]
+    ).catch(() => {})
+    await pool.end()
+  }
+})
+
+test("roundup previews leave production delivery history unchanged", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const pool = new Pool({ connectionString: databaseUrl, max: 4 })
+  const guildId = "6888888888888901"
+  const channelId = "6888888888888902"
+  const repository = createEventSchedulerRepository(pool, "wos")
+  try {
+    await pool.query("DELETE FROM weekly_roundup_claims WHERE source_guild_id = $1", [guildId])
+    await pool.query(
+      "DELETE FROM event_guild_settings WHERE guild_id = $1 AND game_profile = 'wos'",
+      [guildId]
+    )
+    await repository.upsertGuildSettings({
+      guildId,
+      botInstanceName: "rachie-wos",
+      allianceName: "Preview Main",
+      eventChannelId: "6888888888888903"
+    })
+    await repository.configureWeeklyRoundup({
+      guildId,
+      enabled: true,
+      stateEnabled: false,
+      weekday: 5,
+      timeUtc: "15:20",
+      channelId,
+      postWhenEmpty: false
+    })
+    const alliance = (await repository.listAlliances(guildId)).alliances[0]
+    await repository.createEvent({
+      guildId,
+      createdByUserId: "6888888888888904",
+      createdByBotInstance: "rachie-wos",
+      event: {
+        allianceId: String(alliance.id),
+        allianceName: alliance.alliance_name,
+        eventName: "Preview Event",
+        firstOccurrenceDate: "2028-03-03",
+        eventTimeUtc: "18:00",
+        groups: [],
+        grouped: false,
+        recurrenceDays: 7,
+        advanceReminderMinutes: 30,
+        advanceReminderMessage: null,
+        reminderAtStart: true,
+        finalReminderMessage: null,
+        publishToAlliance: true,
+        publishToState: false,
+        includeInWeeklyRoundup: true,
+        image: null
+      }
+    })
+    await pool.query(
+      `INSERT INTO weekly_roundup_claims (
+         week_start_date, game_profile, target_kind, target_guild_id,
+         target_channel_id, source_guild_id, scheduled_for, status,
+         attempt_count, sent_at, sent_message_id
+       ) VALUES
+         ('2028-02-25', 'wos', 'alliance', $1, $2, $1,
+          '2028-02-25T15:20Z', 'sent', 1, '2028-02-25T15:20Z', 'production-roundup'),
+         ('2028-03-03', 'wos', 'alliance', $1, $2, $1,
+          '2028-03-03T15:20Z', 'pending', 0, NULL, NULL)`,
+      [guildId, channelId]
+    )
+
+    const before = (await pool.query(
+      `SELECT status, attempt_count, sent_at, sent_message_id
+         FROM weekly_roundup_claims WHERE source_guild_id = $1
+         ORDER BY week_start_date`,
+      [guildId]
+    )).rows
+    const first = await repository.getWeeklyRoundupPreview(guildId, {
+      now: new Date("2028-03-03T16:00:00Z")
+    })
+    const second = await repository.getWeeklyRoundupPreview(guildId, {
+      now: new Date("2028-03-03T16:05:00Z")
+    })
+    const sentTests = []
+    for (let index = 0; index < 2; index += 1) {
+      const interaction = {
+        commandName: null,
+        customId: IDS.roundupTestConfirm,
+        guildId,
+        user: { id: "6888888888888904" },
+        client: {},
+        deferred: false,
+        replied: false,
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        isStringSelectMenu: () => false,
+        isChannelSelectMenu: () => false,
+        isModalSubmit: () => false,
+        async deferUpdate() { this.deferred = true },
+        async editReply(payload) { this.edited = payload }
+      }
+      await handleEventSchedulerInteraction(interaction, {
+        healthProvider: () => ({
+          available: true,
+          gameProfile: "wos",
+          botInstanceName: "rachie-wos"
+        }),
+        userCanManageServer: async () => true,
+        repositoryProvider: () => repository,
+        roundupNow: () => new Date("2028-03-03T16:00:00Z"),
+        roundupTargetResolver: async () => ({
+          channel: {
+            async send(message) {
+              sentTests.push(message)
+              return { id: `test-${sentTests.length}` }
+            }
+          }
+        }),
+        logger: { error() {}, warn() {} }
+      })
+    }
+    const after = (await pool.query(
+      `SELECT status, attempt_count, sent_at, sent_message_id
+         FROM weekly_roundup_claims WHERE source_guild_id = $1
+         ORDER BY week_start_date`,
+      [guildId]
+    )).rows
+    assert.equal(first.occurrences.length, 1)
+    assert.equal(second.occurrences.length, 1)
+    assert.equal(sentTests.length, 2)
+    assert.ok(sentTests.every(message => /— TEST/.test(message.embeds[0].toJSON().title)))
+    assert.deepEqual(after, before)
   } finally {
     await pool.query("DELETE FROM weekly_roundup_claims WHERE source_guild_id = $1", [guildId])
       .catch(() => {})

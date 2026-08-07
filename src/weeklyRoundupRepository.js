@@ -208,6 +208,7 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
 
       const eventResult = await pool.query(
         `SELECT DISTINCT e.*, a.alliance_name AS alliance_name,
+                a.is_default AS is_default_alliance,
                 e.first_occurrence_date::text AS first_occurrence_date
            FROM scheduled_events e
            JOIN event_alliances a

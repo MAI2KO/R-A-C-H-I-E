@@ -40,6 +40,7 @@ const {
   safelyRespondToInteraction
 } = require("./interactionResponses")
 const { parseUtcTime } = require("./timeParsing")
+const { formatWeeklyRoundup } = require("./weeklyRoundupFormatting")
 const {
   CODE_TTL_MINUTES,
   generateStateLinkCode,
@@ -57,11 +58,15 @@ const IDS = Object.freeze({
   roundupEnable: "es:roundon",
   roundupDisable: "es:roundoff",
   roundupSchedule: "es:roundsched",
-  roundupDay: "es:roundday",
+  roundupDayPrefix: "es:roundday:",
+  roundupContinuePrefix: "es:roundcontinue:",
   roundupTimeModalPrefix: "es:roundtime:",
   roundupScheduleConfirmPrefix: "es:roundconfirm:",
   roundupChannelView: "es:roundchannel",
   roundupChannel: "es:roundch",
+  roundupPreview: "es:roundpreview",
+  roundupTest: "es:roundtest",
+  roundupTestConfirm: "es:roundtestconfirm",
   stateRoundupToggle: "es:stateroundtoggle",
   stateDestination: "es:statedest",
   stateDestinationChannel: "es:statedestch",
@@ -196,9 +201,13 @@ function buildChannelConfigurationView(settings) {
   }
 }
 
-function buildRoundupTimeModal(day, settings) {
+function buildRoundupTimeModal(day, settings, currentSchedule = null) {
+  const currentSuffix = currentSchedule
+    ? `:${currentSchedule.weekly_roundup_day}:${String(currentSchedule.weekly_roundup_time_utc)
+      .slice(0, 5).replace(":", "")}`
+    : ""
   return new ModalBuilder()
-    .setCustomId(`${IDS.roundupTimeModalPrefix}${day}`)
+    .setCustomId(`${IDS.roundupTimeModalPrefix}${day}${currentSuffix}`)
     .setTitle("Weekly roundup schedule")
     .addComponents(
       new ActionRowBuilder().addComponents(
@@ -243,34 +252,87 @@ function buildRoundupSettingsView(settings) {
         new ButtonBuilder().setCustomId(IDS.roundupChannelView).setLabel("Change channel")
           .setStyle(ButtonStyle.Primary),
         backButton()
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.roundupPreview).setLabel("Preview roundup")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(IDS.roundupTest).setLabel("Send test roundup")
+          .setStyle(ButtonStyle.Secondary).setDisabled(!settings?.weekly_roundup_channel_id)
       )
     ],
     allowedMentions: SAFE_MENTIONS
   }
 }
 
-function buildRoundupDayView(settings) {
+function buildRoundupDayView(settings, selectedDay = Number(settings?.weekly_roundup_day ?? 1)) {
+  const currentDay = Number(settings?.weekly_roundup_day ?? 1)
   const currentTime = String(settings?.weekly_roundup_time_utc || "09:00")
     .slice(0, 5)
-    .replace(":", "")
+  const compactTime = currentTime.replace(":", "")
   return {
-    content: `Change weekly roundup schedule\n\nCurrent schedule: ${roundupScheduleLabel(settings)}\n\nSelect a UTC weekday.`,
+    content:
+      `Change weekly roundup schedule\n\n` +
+      `Current schedule: ${roundupScheduleLabel(settings)}\n` +
+      `Selected weekday: ${WEEKDAYS[selectedDay]}\n\n` +
+      "Select a UTC weekday or keep the current selection, then continue.",
     components: [
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
-          .setCustomId(IDS.roundupDay)
+          .setCustomId(`${IDS.roundupDayPrefix}${currentDay}:${compactTime}`)
           .setPlaceholder("Select UTC weekday")
           .addOptions(WEEKDAYS.map((day, index) => ({
             label: day,
-            value: `${index}:${currentTime}`,
-            default: Number(settings?.weekly_roundup_day) === index
+            value: String(index),
+            default: selectedDay === index
           })))
       ),
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${IDS.roundupContinuePrefix}${selectedDay}:${currentDay}:${compactTime}`)
+          .setLabel("Continue")
+          .setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
           .setStyle(ButtonStyle.Secondary)
       )
     ]
+  }
+}
+
+function buildRoundupTestConfirmation(settings) {
+  return {
+    content:
+      `Send test weekly roundup\n\n` +
+      `Destination: <#${settings.weekly_roundup_channel_id}>\n` +
+      `Configured schedule: ${roundupScheduleLabel(settings)}\n\n` +
+      "This sends a clearly marked test and does not affect scheduled-roundup history.",
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(IDS.roundupTestConfirm).setLabel("Confirm test send")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary)
+    )]
+  }
+}
+
+function roundupPreviewResponse(payload, messages) {
+  if (!messages.length) {
+    return {
+      content: "Roundup preview\n\nNo eligible events are in the current configured weekly window.",
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
+          .setStyle(ButtonStyle.Secondary)
+      )]
+    }
+  }
+  return {
+    content: "Roundup preview - nothing has been sent.",
+    embeds: messages.map(message => message.embeds?.[0]).filter(Boolean).slice(0, 10),
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
+        .setStyle(ButtonStyle.Secondary)
+    )],
+    allowedMentions: SAFE_MENTIONS
   }
 }
 
@@ -291,12 +353,16 @@ function buildRoundupChannelView(settings) {
   }
 }
 
-function buildRoundupSchedulePreview(day, timeUtc) {
+function buildRoundupSchedulePreview(day, timeUtc, currentSchedule = null) {
   const normalized = String(timeUtc).replace(":", "")
+  const current = currentSchedule
+    ? `Current schedule: ${roundupScheduleLabel(currentSchedule)}\n`
+    : ""
   return {
     content:
       `Weekly roundup schedule preview\n\n` +
-      `${WEEKDAYS[day]} at ${timeUtc} UTC\n\n` +
+      current +
+      `Proposed schedule: ${WEEKDAYS[day]} at ${timeUtc} UTC\n\n` +
       "This takes effect from the next future scheduled roundup and will not replay an earlier roundup.",
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${IDS.roundupScheduleConfirmPrefix}${day}:${normalized}`)
@@ -414,13 +480,20 @@ async function handleSchedulerModalOpeningInteraction(interaction, { health }) {
     ))
     return true
   }
-  if (interaction.isStringSelectMenu?.() && interaction.customId === IDS.roundupDay) {
-    const [dayValue, compactTime = "0900"] = String(interaction.values?.[0] || "").split(":")
+  if (interaction.isButton?.()
+    && String(interaction.customId).startsWith(IDS.roundupContinuePrefix)) {
+    const [dayValue, currentDayValue, compactTime = "0900"] = String(interaction.customId)
+      .slice(IDS.roundupContinuePrefix.length)
+      .split(":")
     const day = Number(dayValue)
-    if (!Number.isInteger(day) || day < 0 || day > 6) {
+    const currentDay = Number(currentDayValue)
+    if (![day, currentDay].every(value => Number.isInteger(value) && value >= 0 && value <= 6)) {
       throw new SchedulerValidationError("Select a valid UTC weekday.")
     }
     await interaction.showModal(buildRoundupTimeModal(day, {
+      weekly_roundup_time_utc: parseUtcTime(compactTime)
+    }, {
+      weekly_roundup_day: currentDay,
       weekly_roundup_time_utc: parseUtcTime(compactTime)
     }))
     return true
@@ -440,6 +513,9 @@ async function handleEventSchedulerInteraction(
     userCanManageServer,
     healthProvider = getEventSchedulerHealth,
     repositoryProvider = health => createEventSchedulerRepository(getPool(), health.gameProfile),
+    roundupNow = () => new Date(),
+    roundupFormatter = formatWeeklyRoundup,
+    roundupTargetResolver = resolveSendableChannel,
     logger = console
   } = {}
 ) {
@@ -610,19 +686,95 @@ async function handleEventSchedulerInteraction(
       return true
     }
 
-    if (interaction.isStringSelectMenu?.() && interaction.customId === IDS.roundupDay) {
-      return false
+    if (interaction.isStringSelectMenu?.()
+      && String(interaction.customId).startsWith(IDS.roundupDayPrefix)) {
+      const [currentDayValue, compactTime = "0900"] = String(interaction.customId)
+        .slice(IDS.roundupDayPrefix.length)
+        .split(":")
+      const currentDay = Number(currentDayValue)
+      const selectedDay = Number(interaction.values?.[0])
+      if (![currentDay, selectedDay].every(day => Number.isInteger(day) && day >= 0 && day <= 6)) {
+        throw new SchedulerValidationError("Select a valid UTC weekday.")
+      }
+      await interaction.editReply(buildRoundupDayView({
+        weekly_roundup_day: currentDay,
+        weekly_roundup_time_utc: parseUtcTime(compactTime)
+      }, selectedDay))
+      return true
     }
 
     if (interaction.isModalSubmit?.()
       && String(interaction.customId).startsWith(IDS.roundupTimeModalPrefix)) {
       await acknowledgeSchedulerInteraction(interaction)
-      const day = Number(String(interaction.customId).slice(IDS.roundupTimeModalPrefix.length))
+      const [dayValue, currentDayValue, compactTime] = String(interaction.customId)
+        .slice(IDS.roundupTimeModalPrefix.length)
+        .split(":")
+      const day = Number(dayValue)
       if (!Number.isInteger(day) || day < 0 || day > 6) {
         throw new SchedulerValidationError("Select a valid UTC weekday.")
       }
       const timeUtc = parseUtcTime(interaction.fields.getTextInputValue("t"))
-      await interaction.editReply(buildRoundupSchedulePreview(day, timeUtc))
+      const currentDay = Number(currentDayValue)
+      const currentSchedule = Number.isInteger(currentDay) && compactTime
+        ? {
+            weekly_roundup_day: currentDay,
+            weekly_roundup_time_utc: parseUtcTime(compactTime)
+          }
+        : null
+      await interaction.editReply(buildRoundupSchedulePreview(day, timeUtc, currentSchedule))
+      return true
+    }
+
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupPreview) {
+      const payload = await repository.getWeeklyRoundupPreview(guildId, { now: roundupNow() })
+      if (!payload) throw new SchedulerValidationError("Configure the event scheduler first.")
+      const messages = roundupFormatter(payload)
+      await interaction.editReply(roundupPreviewResponse(payload, messages))
+      return true
+    }
+
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupTest) {
+      const settings = await repository.getGuildSettings(guildId)
+      if (!settings?.weekly_roundup_channel_id) {
+        throw new SchedulerValidationError("Choose the alliance roundup channel first.")
+      }
+      await interaction.editReply(buildRoundupTestConfirmation(settings))
+      return true
+    }
+
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupTestConfirm) {
+      const settings = await repository.getGuildSettings(guildId)
+      if (!settings?.weekly_roundup_channel_id) {
+        throw new SchedulerValidationError("Choose the alliance roundup channel first.")
+      }
+      const payload = await repository.getWeeklyRoundupPreview(guildId, { now: roundupNow() })
+      if (!payload) throw new SchedulerValidationError("Configure the event scheduler first.")
+      const messages = roundupFormatter({
+        ...payload,
+        claim: { ...payload.claim, isTest: true }
+      })
+      if (!messages.length) {
+        throw new SchedulerValidationError(
+          "No eligible events are in the current configured weekly window."
+        )
+      }
+      const target = await roundupTargetResolver(
+        interaction.client,
+        guildId,
+        settings.weekly_roundup_channel_id,
+        { requireAttachments: false }
+      )
+      for (const message of messages) await target.channel.send(message)
+      await interaction.editReply({
+        content:
+          `Sent ${messages.length} test roundup message${messages.length === 1 ? "" : "s"} ` +
+          `to <#${settings.weekly_roundup_channel_id}>. Scheduled history was not changed.`,
+        embeds: [],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
+            .setStyle(ButtonStyle.Secondary)
+        )]
+      })
       return true
     }
 
@@ -788,6 +940,8 @@ module.exports = {
   buildRoundupDayView,
   buildRoundupChannelView,
   buildRoundupSchedulePreview,
+  buildRoundupTestConfirmation,
+  roundupPreviewResponse,
   buildStateDestinationView,
   buildStateSharingView,
   buildStateLinkModal,
