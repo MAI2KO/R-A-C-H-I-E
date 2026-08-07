@@ -30,6 +30,13 @@ function token() {
   return crypto.randomBytes(6).toString("base64url")
 }
 
+function uniqueToken(tokenMap) {
+  let value
+  do value = token()
+  while (Object.hasOwn(tokenMap, value))
+  return value
+}
+
 function eventDraft(event) {
   return {
     mode: "edit",
@@ -63,31 +70,31 @@ function eventDraft(event) {
   }
 }
 
-function actionOptions(event, eventToken) {
+function actionOptions(event) {
   return [
-    { label: "Preview", value: `preview:${eventToken}` },
-    { label: "Edit details", value: `edit:${eventToken}` },
-    { label: "Change alliance", value: `alliance:${eventToken}` },
-    { label: "Manage image", value: `image:${eventToken}` },
+    { label: "Preview", value: "preview" },
+    { label: "Edit details", value: "edit" },
+    { label: "Change alliance", value: "alliance" },
+    { label: "Manage image", value: "image" },
     {
       label: event.status === "paused" ? "Resume" : "Pause",
-      value: `${event.status === "paused" ? "resume" : "pause"}:${eventToken}`
+      value: event.status === "paused" ? "resume" : "pause"
     },
-    { label: "Delete", value: `delete:${eventToken}` }
+    { label: "Delete", value: "delete" }
   ]
 }
 
 function listView(events, page, total, sessionId, eventMap, eventDraftMap = {}) {
   const totalPages = Math.max(1, Math.ceil(total / EVENTS_PER_PAGE))
   const components = events.map((event, index) => {
-    const eventToken = token()
+    const eventToken = uniqueToken(eventMap)
     eventMap[eventToken] = String(event.id)
     eventDraftMap[eventToken] = eventDraft(event)
     return new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
-        .setCustomId(`${MANAGEMENT_PREFIX}a:${sessionId}`)
+        .setCustomId(`${MANAGEMENT_PREFIX}a:${sessionId}:${eventToken}`)
         .setPlaceholder(`${index + 1}. ${event.event_name}`.slice(0, 100))
-        .addOptions(actionOptions(event, eventToken))
+        .addOptions(actionOptions(event))
     )
   })
   components.push(new ActionRowBuilder().addComponents(
@@ -122,13 +129,16 @@ async function handleEventManagementModalOpeningInteraction(interaction, { healt
   const customId = String(interaction.customId || "")
   if (!(interaction.isStringSelectMenu?.()
     && customId.startsWith(`${MANAGEMENT_PREFIX}a:`))) return false
-  const [action, eventToken] = String(interaction.values?.[0] || "").split(":")
+  const [, , sessionId, eventToken] = customId.split(":")
+  const action = String(interaction.values?.[0] || "")
   if (action !== "edit") return false
   const context = sessionContext(interaction, health)
-  const sessionId = customId.split(":")[2]
   const session = managementSessions.get(sessionId, context)
+  const eventId = session.data.eventMap?.[eventToken]
   const draft = session.data.eventDraftMap?.[eventToken]
-  if (!draft) throw new InteractionSessionError("That event control is no longer valid.")
+  if (!eventId || !draft || String(draft.eventId) !== String(eventId) || !draft.allianceId) {
+    throw new InteractionSessionError("That event control is no longer valid.")
+  }
   const editSessionId = creationSessions.create(context, draft)
   await interaction.showModal(buildCoreModal(editSessionId, draft))
   return true
@@ -178,9 +188,9 @@ async function handleEventManagementInteraction(
   }
 
   if (interaction.isStringSelectMenu?.() && customId.startsWith(`${MANAGEMENT_PREFIX}a:`)) {
-    const sessionId = customId.split(":")[2]
+    const [, , sessionId, eventToken] = customId.split(":")
     const session = managementSessions.get(sessionId, context)
-    const [action, eventToken] = String(interaction.values[0]).split(":")
+    const action = String(interaction.values[0])
     if (!["preview", "edit", "alliance", "image", "pause", "resume", "delete"].includes(action)) {
       throw new InteractionSessionError("That event action is invalid.")
     }

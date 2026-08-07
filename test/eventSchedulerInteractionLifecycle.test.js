@@ -1,6 +1,8 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const { ChannelType } = require("discord.js")
+const fs = require("node:fs")
+const path = require("node:path")
+const { ChannelType, MessageFlags } = require("discord.js")
 
 const {
   handleEventSchedulerInteraction
@@ -82,7 +84,7 @@ test("scheduler slash command acknowledges before authorization and database loa
   }
   assert.equal(await handleEventSchedulerInteraction(interaction, options(repository)), true)
   assert.equal(interaction.acknowledgedWith, "deferReply")
-  assert.equal(interaction.deferOptions.ephemeral, true)
+  assert.equal(interaction.deferOptions.flags, MessageFlags.Ephemeral)
   assert.match(interaction.edited.content, /Event scheduler/)
   assert.equal(interaction.replyCount || 0, 0)
 })
@@ -237,5 +239,45 @@ test("unexpected interaction errors remain logged and receive one safe response"
   })
   assert.equal(errors.length, 1)
   assert.equal(interaction.replyCount, 1)
+  assert.equal(interaction.replyPayload.flags, MessageFlags.Ephemeral)
   assert.match(errors[0][1].message, /unexpected/)
+})
+
+test("scheduler interaction sources do not use the deprecated ephemeral option", () => {
+  for (const filename of [
+    "interactionResponses.js",
+    "eventSchedulerInteractions.js",
+    "eventSchedulerHelp.js",
+    "eventCreationInteractions.js",
+    "eventManagementInteractions.js",
+    "allianceManagementInteractions.js"
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, "..", "src", filename), "utf8")
+    assert.doesNotMatch(source, /ephemeral\s*:\s*true/, filename)
+  }
+})
+
+test("Discord component validation errors are logged without request secrets", async () => {
+  const errors = []
+  const interaction = schedulerInteraction("button", { customId: "el:0" })
+  await handleInteractionFailure(interaction, {
+    code: 50035,
+    message: "Invalid Form Body https://discord.com/api/webhooks/secret-token",
+    rawError: {
+      errors: {
+        components: {
+          _errors: [{ code: "COMPONENT_CUSTOM_ID_DUPLICATED" }]
+        }
+      }
+    },
+    requestBody: { token: "secret-token" }
+  }, {
+    logger: { warn() {}, error: message => errors.push(message) }
+  })
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /Discord API error 50035/)
+  assert.match(errors[0], /button el:0/)
+  assert.match(errors[0], /duplicate custom_id/)
+  assert.doesNotMatch(errors[0], /secret-token|webhooks|requestBody/)
+  assert.equal(interaction.replyCount, 1)
 })

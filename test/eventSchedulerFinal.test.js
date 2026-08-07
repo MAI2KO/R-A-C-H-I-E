@@ -1,5 +1,6 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const { MessageFlags } = require("discord.js")
 
 const {
   HELP_IDS,
@@ -71,7 +72,7 @@ test("scheduler help is acknowledged immediately and remains available when data
   }), true)
   assert.equal(healthChecked, false)
   assert.equal(authorizationChecked, false)
-  assert.equal(deferred.ephemeral, true)
+  assert.equal(deferred.flags, MessageFlags.Ephemeral)
   assert.match(reply.content, /Getting started/i)
 })
 

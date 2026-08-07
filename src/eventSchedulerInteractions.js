@@ -35,6 +35,7 @@ const { handleEventSchedulerHelpInteraction } = require("./eventSchedulerHelp")
 const {
   acknowledgeSchedulerInteraction,
   isExpectedInteractionResponseError,
+  logDiscordApiError,
   logExpectedInteractionResponseError,
   safelyRespondToInteraction
 } = require("./interactionResponses")
@@ -750,7 +751,9 @@ async function handleEventSchedulerInteraction(
       "OccurrenceValidationError"
     ])
     const isUserFacing = error instanceof SchedulerValidationError || userFacingErrors.has(error.name)
-    if (!isUserFacing) logger.error("[Event scheduler] Interaction failed:", error)
+    if (!isUserFacing && !logDiscordApiError(error, interaction, logger)) {
+      logger.error("[Event scheduler] Interaction failed:", error)
+    }
     const message = isUserFacing
       ? error.message
       : "The event scheduler could not complete that action."

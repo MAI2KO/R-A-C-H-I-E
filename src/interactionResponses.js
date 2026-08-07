@@ -25,10 +25,39 @@ function logExpectedInteractionResponseError(error, interaction, logger = consol
   }
 }
 
+function interactionType(interaction) {
+  if (interaction?.isChatInputCommand?.()) return "slash command"
+  if (interaction?.isModalSubmit?.()) return "modal submission"
+  if (interaction?.isChannelSelectMenu?.()) return "channel selector"
+  if (interaction?.isStringSelectMenu?.()) return "string selector"
+  if (interaction?.isButton?.()) return "button"
+  return "interaction"
+}
+
+function logDiscordApiError(error, interaction, logger = console) {
+  const code = interactionErrorCode(error)
+  if (!code) return false
+
+  let details = ""
+  try {
+    details = JSON.stringify(error?.rawError?.errors || error?.data?.errors || {})
+  } catch {
+    // Diagnostic formatting must not obscure the original Discord API failure.
+  }
+  const message = code === 50035 && details.includes("COMPONENT_CUSTOM_ID_DUPLICATED")
+    ? "duplicate custom_id in rendered components"
+    : "Discord rejected the interaction response"
+  logger.error(
+    `[Event scheduler] Discord API error ${code} during ${interactionType(interaction)} ` +
+    `${interactionLabel(interaction)}: ${message}`
+  )
+  return true
+}
+
 async function acknowledgeSchedulerInteraction(interaction) {
   if (interaction.deferred || interaction.replied) return false
   if (interaction.isChatInputCommand?.() || interaction.isModalSubmit?.()) {
-    await interaction.deferReply({ ephemeral: true })
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
   } else {
     await interaction.deferUpdate()
   }
@@ -73,7 +102,9 @@ async function handleInteractionFailure(
     return
   }
 
-  logger.error("Interaction handler error:", error)
+  if (!logDiscordApiError(error, interaction, logger)) {
+    logger.error("Interaction handler error:", error)
+  }
   try {
     await safelyRespondToInteraction(interaction, {
       content: message,
@@ -96,6 +127,8 @@ module.exports = {
   isExpectedInteractionResponseError,
   interactionLabel,
   logExpectedInteractionResponseError,
+  interactionType,
+  logDiscordApiError,
   acknowledgeSchedulerInteraction,
   editOrReply,
   safelyRespondToInteraction,
