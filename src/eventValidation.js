@@ -32,7 +32,7 @@ function normalizeCustomMessage(value, label) {
   return normalized
 }
 
-function validateEventDraft(draft, { stateLinkEnabled = false } = {}) {
+function validateEventDraft(draft) {
   const allianceId = String(draft.allianceId || "").trim()
   if (!/^\d+$/.test(allianceId) || allianceId === "0") {
     throw new EventValidationError("Select a valid alliance or sub-alliance.")
@@ -76,10 +76,6 @@ function validateEventDraft(draft, { stateLinkEnabled = false } = {}) {
     names.add(key)
     return { ...group, groupName, sortOrder: group.sortOrder ?? index }
   })
-
-  if (draft.publishToState && !stateLinkEnabled) {
-    throw new EventValidationError("State roundup inclusion requires an enabled state link.")
-  }
 
   return {
     ...draft,

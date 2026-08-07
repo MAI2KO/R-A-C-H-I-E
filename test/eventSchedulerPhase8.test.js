@@ -166,6 +166,7 @@ function configuration(overrides = {}) {
     weekly_roundup_channel_id: "alliance-channel",
     weekly_roundup_enabled: true,
     state_roundup_enabled: true,
+    destination_enabled: true,
     weekly_roundup_not_before: "2028-02-27T00:00:00Z",
     roundup_when_empty: false,
     sharing_enabled: true,
@@ -205,6 +206,17 @@ test("alliance and state roundup enablement are independent", () => {
     state_roundup_enabled: false
   })], { gameProfile: "wos", now, graceMinutes: 60 })
   assert.deepEqual(allianceOnly.map(claim => claim.targetKind), ["alliance"])
+})
+
+test("state claim eligibility follows sharing and the enabled destination", () => {
+  const now = new Date("2028-02-28T09:10:00Z")
+  const targetKinds = overrides => claimsForConfigurations([
+    configuration({ weekly_roundup_enabled: false, ...overrides })
+  ], { gameProfile: "wos", now, graceMinutes: 60 }).map(claim => claim.targetKind)
+
+  assert.deepEqual(targetKinds({ sharing_enabled: true }), ["state"])
+  assert.deepEqual(targetKinds({ sharing_enabled: false }), [])
+  assert.deepEqual(targetKinds({ destination_enabled: false }), [])
 })
 
 test("a changed or re-enabled schedule does not replay the elapsed roundup", () => {

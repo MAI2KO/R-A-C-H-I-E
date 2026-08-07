@@ -322,8 +322,9 @@ test("creation controls expose all offsets and optional custom-message fields", 
   assert.match(preview, /Advance custom/)
   assert.match(preview, /Final custom/)
   assert.match(preview, /not posted while the advance reminder is disabled/)
-  assert.match(preview, /Alliance weekly roundup: Yes/)
-  assert.match(preview, /State weekly roundup: Yes/)
+  assert.match(preview, /Weekly roundup: Yes/)
+  assert.match(preview, /State roundup: Automatic/)
+  assert.doesNotMatch(preview, /State weekly roundup|State-roundup eligibility/)
 })
 
 test("migration transaction guard ignores function bodies but rejects top-level control", () => {

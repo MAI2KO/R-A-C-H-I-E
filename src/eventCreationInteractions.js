@@ -61,7 +61,6 @@ const CREATION_IDS = Object.freeze({
   messagesModalPrefix: "ec:cmm:",
   optionsPrefix: "ec:n:",
   alliancePrefix: "ec:pa:",
-  statePrefix: "ec:ps:",
   roundupPrefix: "ec:pr:",
   previewPrefix: "ec:pv:",
   createPrefix: "ec:ok:",
@@ -494,21 +493,15 @@ function buildPublishingView(sessionId, data) {
     content:
       `Publishing options\n\n` +
       `Alliance reminders: ${data.publishToAlliance ? "Yes" : "No"}\n` +
-      `Alliance weekly roundup: ${data.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
-      `State-roundup eligibility: ${data.publishToState ? "Yes" : "No"}\n` +
-      `State weekly roundup: ${data.includeInWeeklyRoundup && data.publishToState ? "Yes" : "No"}\n\n` +
-      "State eligibility includes this event in the combined state weekly roundup. " +
-      "It never sends an individual state reminder.",
+      `Weekly roundup: ${data.includeInWeeklyRoundup ? "Yes" : "No"}\n\n` +
+      "State roundup: Automatically included when Weekly roundup is enabled and " +
+      "this alliance has state sharing enabled.",
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.alliancePrefix}${sessionId}`)
           .setLabel(data.publishToAlliance ? "Alliance: On" : "Alliance: Off")
           .setStyle(data.publishToAlliance ? ButtonStyle.Success : ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(`${CREATION_IDS.statePrefix}${sessionId}`)
-          .setLabel(data.publishToState ? "State eligible: On" : "State eligible: Off")
-          .setStyle(data.publishToState ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`${CREATION_IDS.roundupPrefix}${sessionId}`)
           .setLabel(data.includeInWeeklyRoundup ? "Roundup: On" : "Roundup: Off")
@@ -609,11 +602,6 @@ function buildOccurrencePreviewView(event, occurrences, page) {
   }
 }
 
-async function stateLinkIsEnabled(repository, guildId) {
-  const link = await repository.getStateLink(guildId)
-  return Boolean(link?.sharing_enabled)
-}
-
 async function validateSessionEvent(repository, guildId, draft) {
   const alliance = await repository.getAlliance(guildId, draft.allianceId)
   if (!alliance) throw new EventValidationError("Select a valid alliance or sub-alliance.")
@@ -621,8 +609,6 @@ async function validateSessionEvent(repository, guildId, draft) {
     ...draft,
     allianceId: String(alliance.id),
     allianceName: alliance.alliance_name
-  }, {
-    stateLinkEnabled: await stateLinkIsEnabled(repository, guildId)
   })
 }
 
@@ -961,19 +947,6 @@ async function handleEventCreationInteraction(
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.alliancePrefix) {
     sessionStore.update(sessionId, context, { publishToAlliance: !session.data.publishToAlliance })
-    await acknowledgeSchedulerInteraction(interaction)
-    await interaction.editReply(buildPublishingView(sessionId, session.data))
-    return true
-  }
-  if (interaction.isButton?.() && prefix === CREATION_IDS.statePrefix) {
-    if (!session.data.publishToState && !(await stateLinkIsEnabled(repository, interaction.guildId))) {
-      await interaction.editReply({
-        content: "Enable a valid state roundup link before including this event in state roundups.",
-        components: []
-      })
-      return true
-    }
-    sessionStore.update(sessionId, context, { publishToState: !session.data.publishToState })
     await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildPublishingView(sessionId, session.data))
     return true

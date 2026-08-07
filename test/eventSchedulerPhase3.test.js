@@ -123,17 +123,13 @@ test("event validation rejects structural and option errors", () => {
       ]
     },
     { ...validDraft, recurrenceDays: 5 },
-    { ...validDraft, advanceReminderMinutes: 25 },
-    { ...validDraft, publishToState: true }
+    { ...validDraft, advanceReminderMinutes: 25 }
   ]
   for (const draft of invalidDrafts) {
     assert.throws(() => validateEventDraft(draft), EventValidationError)
   }
-  assert.equal(
-    validateEventDraft({ ...validDraft, publishToState: true }, { stateLinkEnabled: true })
-      .publishToState,
-    true
-  )
+  assert.equal(validateEventDraft({ ...validDraft, publishToState: true }).publishToState, true)
+  assert.equal(validateEventDraft({ ...validDraft, publishToState: false }).publishToState, false)
 })
 
 test("image download validates metadata, signature and bounded response", async () => {

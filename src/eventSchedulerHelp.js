@@ -34,7 +34,7 @@ const HELP_SECTIONS = Object.freeze([
       "**Creating an event**\n\n" +
       "Choose **Create event**, select the main alliance or sub-alliance, then enter the event name and first occurrence date. Under **Event timing**, choose **Single time** for one UTC time or **Multiple groups** to add each group name and UTC time through a guided modal. Groups may share a time.\n\n" +
       "Choose recurrence every 3, 7, 14 or 28 days; one optional advance reminder; the optional one-minute final announcement; and optional advance/final custom messages. Use **Manage image** to add, replace or remove one supported image.\n\n" +
-      "Publishing controls cover alliance reminders, alliance weekly-roundup inclusion, and state weekly-roundup eligibility. Review the clearly labelled UTC and local-time preview before final confirmation. Nothing is saved before confirmation."
+      "Publishing controls cover alliance reminders and weekly-roundup inclusion. When Weekly roundup is enabled, state inclusion is automatic while the alliance's state link is enabled. Review the clearly labelled UTC and local-time preview before final confirmation. Nothing is saved before confirmation."
   }),
   Object.freeze({
     id: "accepted-times",
@@ -81,7 +81,7 @@ const HELP_SECTIONS = Object.freeze([
       "**Alliance weekly roundups**\n\n" +
       "Open **Weekly roundup settings** at any time, including while disabled. Enable or disable the alliance roundup, independently enable state publishing, change the roundup channel, or preview and save any UTC weekday/time. Disabled settings retain their channel and schedule. Re-enabling starts at the next future schedule and does not replay missed roundups.\n\n" +
       "An active event appears when weekly-roundup inclusion is enabled and an occurrence falls inside the configured weekly window for the same Discord guild and game profile.\n\n" +
-      "Main-alliance and sub-alliance entries are labelled separately. Alliance inclusion does not depend on state eligibility. Paused or deleted events are excluded. Roundups never include event images."
+      "Main-alliance and sub-alliance entries are labelled separately. Paused or deleted events are excluded. Roundups never include event images."
   }),
   Object.freeze({
     id: "state-setup",
@@ -101,7 +101,7 @@ const HELP_SECTIONS = Object.freeze([
     content:
       "**State behaviour**\n\n" +
       "A linked state Discord receives one combined weekly roundup containing eligible events from enabled links for the same game profile. WOS and Kingshot data never mix.\n\n" +
-      "`publish_to_state` means the event may appear in that state roundup when weekly-roundup inclusion is also enabled. It never creates an individual state reminder. Advance reminders, final announcements, grouped reminders and images remain alliance-only."
+      "Active events with Weekly roundup enabled are included automatically while their alliance's state link is enabled. There is no separate per-event state setting, and state sharing never creates an individual state reminder. Advance reminders, final announcements, grouped reminders and images remain alliance-only."
   }),
   Object.freeze({
     id: "troubleshooting",
@@ -116,7 +116,7 @@ const HELP_SECTIONS = Object.freeze([
       "- Missing permission: grant View Channel, Send Messages and Embed Links; alliance image channels also need Attach Files.\n" +
       "- Invalid date/time: use `YYYY-MM-DD` and a documented UTC format.\n" +
       "- Reminder missing: check event status, publishing, reminder choice, channel and grace window.\n" +
-      "- Roundup missing: check active status, roundup inclusion, weekly window/channel, and state eligibility/link where applicable. Paused or deleted events do not publish."
+      "- Roundup missing: check active status, roundup inclusion, weekly window/channel, and the state link where applicable. Paused or deleted events do not publish."
   })
 ])
 

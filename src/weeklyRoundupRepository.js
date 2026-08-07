@@ -32,10 +32,14 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
                 s.weekly_roundup_channel_id, s.roundup_when_empty,
                 s.weekly_roundup_enabled, s.state_roundup_enabled,
                 s.weekly_roundup_not_before,
-                l.state_guild_id, l.state_event_channel_id, l.sharing_enabled
+                l.state_guild_id, l.state_event_channel_id, l.sharing_enabled,
+                d.enabled AS destination_enabled
            FROM event_guild_settings s
            LEFT JOIN event_state_links l
              ON l.alliance_guild_id = s.guild_id AND l.game_profile = s.game_profile
+           LEFT JOIN event_state_destinations d
+             ON d.state_guild_id = l.state_guild_id AND d.game_profile = l.game_profile
+            AND d.state_roundup_channel_id = l.state_event_channel_id
           WHERE s.game_profile = $1
             AND (s.weekly_roundup_enabled = true OR s.state_roundup_enabled = true)
           ORDER BY s.guild_id`,
@@ -109,9 +113,14 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
                   JOIN event_state_links l
                     ON l.alliance_guild_id = s.guild_id
                    AND l.game_profile = s.game_profile
+                  JOIN event_state_destinations d
+                    ON d.state_guild_id = l.state_guild_id
+                   AND d.game_profile = l.game_profile
+                   AND d.state_roundup_channel_id = l.state_event_channel_id
                  WHERE s.game_profile = r.game_profile
                    AND s.state_roundup_enabled = true
                    AND l.sharing_enabled = true
+                   AND d.enabled = true
                    AND l.state_guild_id = r.target_guild_id
                    AND l.state_event_channel_id = r.target_channel_id
               ))
@@ -189,8 +198,12 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
                     SELECT 1 FROM event_guild_settings s
                     JOIN event_state_links l
                       ON l.alliance_guild_id = s.guild_id AND l.game_profile = s.game_profile
+                    JOIN event_state_destinations d
+                      ON d.state_guild_id = l.state_guild_id AND d.game_profile = l.game_profile
+                     AND d.state_roundup_channel_id = l.state_event_channel_id
                      WHERE s.game_profile = r.game_profile
                        AND s.state_roundup_enabled = true AND l.sharing_enabled = true
+                       AND d.enabled = true
                        AND l.state_guild_id = r.target_guild_id
                        AND l.state_event_channel_id = r.target_channel_id
                   )
@@ -215,12 +228,15 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
              ON a.id = e.alliance_id AND a.guild_id = e.guild_id
             AND a.game_profile = e.game_profile
            ${row.target_kind === "state" ? `JOIN event_state_links l
-             ON l.alliance_guild_id = e.guild_id AND l.game_profile = e.game_profile` : ""}
+             ON l.alliance_guild_id = e.guild_id AND l.game_profile = e.game_profile
+           JOIN event_state_destinations d
+             ON d.state_guild_id = l.state_guild_id AND d.game_profile = l.game_profile
+            AND d.state_roundup_channel_id = l.state_event_channel_id` : ""}
           WHERE e.game_profile = $1 AND e.status = 'active'
             AND e.include_in_weekly_roundup = true
             ${row.target_kind === "alliance"
               ? "AND e.guild_id = $2"
-              : `AND e.publish_to_state = true AND l.sharing_enabled = true
+              : `AND l.sharing_enabled = true AND d.enabled = true
                  AND l.state_guild_id = $2 AND l.state_event_channel_id = $3`}
           ORDER BY e.id`,
         row.target_kind === "alliance"

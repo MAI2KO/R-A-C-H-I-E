@@ -28,6 +28,7 @@ function claimsForConfigurations(configurations, { gameProfile, now, graceMinute
     if (
       config.state_roundup_enabled === true
       && config.sharing_enabled === true
+      && config.destination_enabled === true
       && String(config.state_guild_id || "").trim()
       && String(config.state_event_channel_id || "").trim()
     ) {

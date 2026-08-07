@@ -111,7 +111,10 @@ test("main and context-sensitive scheduler views explain consequential controls"
   }
   assert.match(buildTimingView("session", draft).content, /one alliance reminder/i)
   assert.match(buildTimingView("session", draft).content, /About to start/i)
-  assert.match(buildPublishingView("session", draft).content, /never sends an individual state reminder/i)
+  const publishing = buildPublishingView("session", draft)
+  assert.match(publishing.content, /Automatically included.*has state sharing enabled/is)
+  assert.doesNotMatch(publishing.content, /State-roundup eligibility|State weekly roundup/i)
+  assert.doesNotMatch(JSON.stringify(publishing.components.map(row => row.toJSON())), /ec:ps:|State eligible/i)
 
   const event = { event_name: "Foundry" }
   assert.match(confirmationView("s", "pause", "e", event).content, /preserving the recurrence schedule/i)

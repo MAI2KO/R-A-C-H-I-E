@@ -52,6 +52,10 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
       [[guildA, guildB]]
     )
     await pool.query(
+      "DELETE FROM event_state_destinations WHERE state_guild_id = $1",
+      [stateGuild]
+    )
+    await pool.query(
       `INSERT INTO event_guild_settings (
          guild_id, game_profile, bot_instance_name, alliance_name, event_channel_id,
          weekly_roundup_enabled, weekly_roundup_day, weekly_roundup_time_utc,
@@ -84,6 +88,15 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
       allianceId: String(northAlliance.id),
       allianceName: northAlliance.alliance_name
     })
+    await pool.query(
+      `INSERT INTO event_state_destinations (
+         state_guild_id, game_profile, configured_by_bot_instance,
+         state_roundup_channel_id, enabled
+       ) VALUES
+         ($1, 'wos', 'rachie-wos', $2, true),
+         ($1, 'kingshot', 'peggie-kingshot', $2, true)`,
+      [stateGuild, stateChannel]
+    )
     await pool.query(
       `INSERT INTO event_state_links (
          alliance_guild_id, game_profile, configured_by_bot_instance,
@@ -124,6 +137,16 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
       createdByUserId: userId,
       createdByBotInstance: "rachie-wos",
       event: { ...northDraft("Alliance Only"), publishToState: false }
+    })
+    const roundupOff = await wosA.createEvent({
+      guildId: guildA,
+      createdByUserId: userId,
+      createdByBotInstance: "rachie-wos",
+      event: {
+        ...northDraft("Roundup Off"),
+        publishToState: true,
+        includeInWeeklyRoundup: false
+      }
     })
     await kingshot.createEvent({
       guildId: guildA,
@@ -294,6 +317,9 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     assert.ok(alliancePayload.occurrences.some(item =>
       String(item.eventId) === String(allianceOnly.id)
     ))
+    assert.equal(alliancePayload.occurrences.some(item =>
+      String(item.eventId) === String(roundupOff.id)
+    ), false)
     assert.equal((await roundupRepository.claimDue({
       now, batchSize: 10, leaseSeconds: 60,
       botInstanceName: "rachie-wos", workerId: "lease-observer"
@@ -349,6 +375,16 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     assert.deepEqual(exhausted.rows[0], { status: "failed", next_attempt_at: null })
 
     const stateClaim = claimed.find(row => row.target_kind === "state")
+    await wosB.setStateSharing(guildB, false)
+    const sharingDisabledPayload = await roundupRepository.getClaimPayload({
+      claimId: stateClaim.id,
+      botInstanceName: "rachie-wos",
+      workerId: owner
+    })
+    assert.ok(sharingDisabledPayload.occurrences.some(item => item.allianceName === "North"))
+    assert.equal(sharingDisabledPayload.occurrences.some(item => item.allianceName === "South"), false)
+
+    await wosB.setStateSharing(guildB, true)
     const statePayload = await roundupRepository.getClaimPayload({
       claimId: stateClaim.id,
       botInstanceName: "rachie-wos",
@@ -360,6 +396,9 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     assert.equal(statePayload.occurrences.some(item => item.allianceName === "Kingshot North"), false)
     assert.equal(statePayload.occurrences.some(item =>
       String(item.eventId) === String(allianceOnly.id)
+    ), true)
+    assert.equal(statePayload.occurrences.some(item =>
+      String(item.eventId) === String(roundupOff.id)
     ), false)
 
     assert.equal(await roundupRepository.setPartCount({

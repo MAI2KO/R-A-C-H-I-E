@@ -42,7 +42,6 @@ function imageBehaviour(event) {
 function publishingLabel(event) {
   const targets = []
   if (event.publish_to_alliance ?? event.publishToAlliance) targets.push("alliance reminders")
-  if (event.publish_to_state ?? event.publishToState) targets.push("state weekly roundup")
   return targets.length ? targets.join(" and ") : "none"
 }
 
@@ -96,8 +95,8 @@ function formatEventPreview(event, { now = new Date() } = {}) {
     `Final message: ${previewText(event.finalReminderMessage)}\n` +
     `Image delivery: ${imageBehaviour(event)}\n` +
     `Alliance reminders: ${event.publishToAlliance ? "Yes" : "No"}\n` +
-    `Alliance weekly roundup: ${event.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
-    `State weekly roundup: ${event.includeInWeeklyRoundup && event.publishToState ? "Yes" : "No"}`
+    `Weekly roundup: ${event.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
+    "State roundup: Automatic when Weekly roundup is enabled and state sharing is enabled"
   ).slice(0, 1950)
 }
 
