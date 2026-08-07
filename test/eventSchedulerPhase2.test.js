@@ -3,7 +3,8 @@ const assert = require("node:assert/strict")
 const { ChannelType, PermissionFlagsBits } = require("discord.js")
 
 const {
-  getEventSchedulerCommandData
+  getEventSchedulerCommandData,
+  getEventSchedulerHelpCommandData
 } = require("../src/eventSchedulerCommands")
 const {
   createEventSchedulerRepository
@@ -16,10 +17,16 @@ const {
 
 test("scheduler command is registered only when exactly enabled", () => {
   assert.equal(getEventSchedulerCommandData({}), null)
+  assert.equal(getEventSchedulerHelpCommandData({}), null)
   assert.equal(getEventSchedulerCommandData({ EVENT_SCHEDULER_ENABLED: "TRUE" }), null)
+  assert.equal(getEventSchedulerHelpCommandData({ EVENT_SCHEDULER_ENABLED: "TRUE" }), null)
   assert.equal(
     getEventSchedulerCommandData({ EVENT_SCHEDULER_ENABLED: "true" }).name,
     "event-scheduler"
+  )
+  assert.equal(
+    getEventSchedulerHelpCommandData({ EVENT_SCHEDULER_ENABLED: "true" }).name,
+    "event-scheduler-help"
   )
 })
 
@@ -109,5 +116,19 @@ test("Discord target validation requires an accessible sendable channel", async 
   await assert.rejects(
     resolveSendableChannel(client, "1234567890123456", "2345678901234567"),
     /Embed Links/
+  )
+
+  permissions.has = permission => permission !== PermissionFlagsBits.AttachFiles
+  await assert.rejects(
+    resolveSendableChannel(client, "1234567890123456", "2345678901234567"),
+    /Attach Files/
+  )
+  await assert.doesNotReject(
+    resolveSendableChannel(
+      client,
+      "1234567890123456",
+      "2345678901234567",
+      { requireAttachments: false }
+    )
   )
 })

@@ -4,10 +4,12 @@
 
 Run `/event-scheduler` as a user accepted by `userCanManageServer(interaction)`.
 
+Run `/event-scheduler-help` for private setup, creation, reminder, management, roundup, state-link and troubleshooting pages. Help is also available from the scheduler management home and does not require a healthy database connection.
+
 1. Configure the shared alliance reminder channel. The first setup also creates the main alliance.
 2. Open **Alliances** to add, list, rename, or delete sub-alliances.
 3. Configure the alliance weekly roundup channel, UTC weekday, UTC time, and empty-post behavior.
-4. Optionally configure the scheduler's state Discord and state roundup channel.
+4. Optionally configure the scheduler's state Discord and state roundup channel. Invite the profile's bot first, enable Discord Developer Mode if needed, copy the state server/channel IDs, then submit them through **State roundup**. The bot validates membership, channel ownership/type, View Channel, Send Messages and Embed Links before enabling the profile-scoped link.
 
 The scheduler state link is Postgres-backed and separate from existing Apps Script state linking. Alliance and state channels here do not reuse the existing Apps Script announcement channel.
 
@@ -35,6 +37,8 @@ The private flow is:
 
 No event is saved before final confirmation. Editing additionally offers image retain, replace, or remove. Invalid image replacement rolls back the complete edit and retains the prior image.
 
+Selecting no advance reminder cancels future advance claims. Disabling the final announcement cancels future final claims. Clearing either optional message restores default wording. These edits increment `schedule_version`, invalidate unsent claims from the previous version, and preserve sent history.
+
 Accepted time forms include `18:30`, `1830`, `1800`, `6:30pm`, and `6.30 PM`. Times are normalized to UTC. Ambiguous or invalid values are rejected rather than guessed.
 
 ## Reminder Semantics
@@ -58,6 +62,10 @@ If no advance reminder is selected, the image remains stored but produces no ima
 Individual advance, final, grouped, and image deliveries are alliance-only. No state event delivery claim is generated. Historical sent state and exact-start rows remain unchanged; unsent legacy rows are terminally failed and never redirected.
 
 `publish_to_state` means eligibility for the combined state weekly roundup. It does not mean individual state publishing.
+
+## Help
+
+`/event-scheduler-help` uses one select menu to keep every page inside Discord's message and component limits. Sections cover getting started, event creation, accepted UTC formats, reminders/images, event management and cancellation, alliance roundups, state setup, state-only-roundup behavior, and troubleshooting. Help responses disable mention parsing and are always ephemeral.
 
 ## Weekly Roundups
 

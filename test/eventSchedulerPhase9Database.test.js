@@ -203,6 +203,19 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       stateEventChannelId: stateChannel,
       sharingEnabled: true
     })
+    assert.equal(await kingshot.getStateLink(guildId), null)
+    await kingshot.upsertStateLink({
+      allianceGuildId: guildId,
+      configuredByBotInstance: "peggie-kingshot",
+      stateGuildId,
+      stateEventChannelId: "777777777777777715",
+      sharingEnabled: true
+    })
+    assert.equal((await wos.getStateLink(guildId)).state_event_channel_id, stateChannel)
+    assert.equal(
+      (await kingshot.getStateLink(guildId)).state_event_channel_id,
+      "777777777777777715"
+    )
 
     const wosDefault = (await wos.listAlliances(guildId)).alliances[0]
     const kingshotDefault = (await kingshot.listAlliances(guildId)).alliances[0]
@@ -364,6 +377,63 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
     )).rows[0]
     assert.notEqual(String(replacementGroup.id), String(originalGroup.id))
     assert.equal(replacementGroup.event_time_utc, "14:30:00")
+
+    const groupedDeliveryRepository = createEventDeliveryRepository(pool, "wos", {
+      targetKind: "alliance"
+    })
+    const versionTwoDefinition = (await groupedDeliveryRepository.listActiveEventDefinitions({
+      rangeEnd: new Date("2028-02-28T15:00:00Z")
+    })).find(event => String(event.id) === String(groupedEvent.id))
+    const versionTwoClaims = buildDeliveryClaims([versionTwoDefinition], {
+      gameProfile: "wos",
+      windowStart: new Date("2028-02-28T13:00:00Z"),
+      windowEnd: new Date("2028-02-28T15:00:00Z")
+    })
+    assert.deepEqual(versionTwoClaims.map(claim => claim.deliveryKind), [
+      "advance_reminder",
+      "final_reminder"
+    ])
+    assert.equal(
+      await groupedDeliveryRepository.insertMissingDeliveryClaims(versionTwoClaims),
+      2
+    )
+
+    const cancelled = await wos.updateEvent({
+      guildId,
+      eventId: groupedEvent.id,
+      event: {
+        ...groupedDraft,
+        groups: [{ groupName: "Alpha", eventTimeUtc: "14:30", sortOrder: 0 }],
+        advanceReminderMinutes: null,
+        advanceReminderMessage: null,
+        reminderAtStart: false,
+        finalReminderMessage: null
+      },
+      imageAction: "retain"
+    })
+    assert.equal(cancelled.schedule_version, 3)
+    const cancelledStored = await wos.getEvent(guildId, groupedEvent.id)
+    assert.equal(cancelledStored.advance_reminder_minutes, null)
+    assert.equal(cancelledStored.advance_reminder_message, null)
+    assert.equal(cancelledStored.reminder_at_start, false)
+    assert.equal(cancelledStored.final_reminder_message, null)
+    const cancelledClaims = (await pool.query(
+      `SELECT schedule_version, delivery_kind, status, sent_message_id
+         FROM event_delivery_claims
+        WHERE event_id = $1 ORDER BY id`,
+      [groupedEvent.id]
+    )).rows
+    assert.equal(cancelledClaims[0].status, "sent")
+    assert.equal(cancelledClaims[0].sent_message_id, "group-sent-history")
+    assert.ok(cancelledClaims.slice(1).every(claim => claim.status === "failed"))
+    const cancelledDefinition = (await groupedDeliveryRepository.listActiveEventDefinitions({
+      rangeEnd: new Date("2028-02-28T15:00:00Z")
+    })).find(event => String(event.id) === String(groupedEvent.id))
+    assert.deepEqual(buildDeliveryClaims([cancelledDefinition], {
+      gameProfile: "wos",
+      windowStart: new Date("2028-02-28T13:00:00Z"),
+      windowEnd: new Date("2028-02-28T15:00:00Z")
+    }), [])
 
     const renamed = await wos.renameAlliance({
       guildId,

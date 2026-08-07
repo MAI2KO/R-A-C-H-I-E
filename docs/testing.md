@@ -25,6 +25,8 @@ npm test
 
 Run `npm run migrate` again with the same scheduler variables and require `applied 0`. Recreate the database from empty whenever a not-yet-deployed migration changes during development.
 
+The database suite starts two `runMigrations` calls concurrently against one isolated schema and a deliberately slow probe migration. The advisory lock must allow exactly one application; the other runner must finish after observing the recorded version. The test then requires one migration row and one probe row.
+
 ## Coverage Areas
 
 - Apps Script-independent startup and scheduler degraded mode.
@@ -35,9 +37,12 @@ Run `npm run migrate` again with the same scheduler variables and require `appli
 - Image validation and advance-only attachment behavior.
 - Alliance-only individual delivery and terminal legacy-state reconciliation.
 - Main/sub-alliance ownership, duplicate names, opaque controls, editing, and deletion blocks.
+- Reminder cancellation through editing, custom-message clearing, and sent-history preservation.
 - Alliance and combined state roundup eligibility, ordering, splitting, and profile isolation.
 - Transactional claiming, idempotency, leases, retries, stale-worker rejection, and multipart recovery.
 - Migration 006 backfill and old-writer compatibility.
+- Ephemeral scheduler help content, controls, limits, degraded-mode availability, and accurate state policy.
+- Concurrent migration-runner serialization and exactly-once migration application.
 
 ## Test Safety
 

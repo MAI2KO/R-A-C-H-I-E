@@ -616,6 +616,8 @@ test("index startup wiring preserves registration, login and Apps Script contrac
   assert.ok(registration > 0 && login > registration)
   assert.match(source, /client\.once\("clientReady"/)
   assert.match(source, /allianceEventDeliveryRuntime\?\.start\(\)/)
+  assert.match(source, /getEventSchedulerHelpCommandData/)
+  assert.match(source, /commands\.push\(eventSchedulerHelpCommand\)/)
   assert.match(source, /axios\.post\(\s*process\.env\.APPS_SCRIPT_URL/)
   assert.match(source, /announcement_channel_id/)
   assert.doesNotMatch(source, /await initializeEventSchedulerSubsystem\(\)/)

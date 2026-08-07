@@ -34,24 +34,26 @@ Every variable read by the repository is listed in [`.env.example`](../.env.exam
 4. Apply all migrations to a clean disposable PostgreSQL database.
 5. Run the migration command a second time and verify `applied 0`.
 6. Run the full suite with `TEST_DATABASE_URL` pointing only to that disposable database.
-7. Confirm `.env` is ignored, `.env.example` contains placeholders, and `git status --short` is clean.
-8. Confirm no test used live Discord, Railway, Apps Script, or production Postgres.
+7. Confirm the concurrent migration-runner test passes: one runner applies and both finish with one valid migration record.
+8. Confirm `.env` is ignored, `.env.example` contains placeholders, and `git status --short` is clean.
+9. Confirm no test used live Discord, Railway, Apps Script, or production Postgres.
 
 ## Startup And Degraded Mode
 
 `EVENT_SCHEDULER_ENABLED` is checked before `DATABASE_URL`. When it is not exactly `true`, the scheduler remains disabled and no Postgres pool is created.
 
-When enabled, scheduler initialization validates `GAME_PROFILE` and `BOT_INSTANCE_NAME`, checks Postgres, and runs migrations under an advisory lock. A failure marks only the scheduler unavailable and closes its pool. Discord login and existing bot behavior continue. Scheduler interactions return a private unavailable message; the polling worker does not start.
+When enabled, scheduler initialization validates `GAME_PROFILE` and `BOT_INSTANCE_NAME`, checks Postgres, and runs migrations under an advisory lock. The lock encloses migration-state creation/checking, transactional application, and version recording, so simultaneous services serialize safely. A failure marks only database-backed scheduler management unavailable and closes its pool. Discord login and existing bot behavior continue; `/event-scheduler-help` remains available and the polling worker does not start.
 
 ## Safe Rollout
 
 1. Deploy the committed code without changing Apps Script or existing bot variables.
 2. Deploy one service first and inspect scheduler health/migration logs.
 3. Verify `/event-scheduler` privately in a test guild/channel for that profile.
-4. Deploy the second service and verify it sees only its own profile data.
-5. Configure main/sub-alliances, alliance reminder channel, weekly roundup, and optional state roundup link.
-6. Create a test event far enough ahead to observe the chosen advance reminder and one-minute final announcement.
-7. Verify no exact-start or individual state message appears.
+4. Verify `/event-scheduler-help` and the management **Help** control are private and complete.
+5. Deploy the second service and verify it sees only its own profile data.
+6. Configure main/sub-alliances, alliance reminder channel, weekly roundup, and optional state roundup link.
+7. Create a test event far enough ahead to observe the chosen advance reminder and one-minute final announcement.
+8. Verify no exact-start or individual state message appears.
 
 Migration 006 includes an old-writer compatibility trigger: an overlapping older process that omits `alliance_id` is assigned the profile's default alliance. New code always selects an explicit alliance.
 

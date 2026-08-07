@@ -11,13 +11,13 @@ They are separate Discord applications and separate Railway services. Each has i
 
 Apps Script continues to own existing booking, state-linking, booking announcements, administration, and related sheet-backed behavior. The scheduler does not change those actions, URLs, sheets, or announcement channels.
 
-Postgres owns only scheduler guild settings, alliance identities, events, images, delivery claims, scheduler state links, and weekly roundups. If Postgres is disabled or unavailable, the Discord bot still starts and existing Apps Script-backed features continue to operate. Scheduler commands and polling remain unavailable until scheduler health recovers on a later restart.
+Postgres owns only scheduler guild settings, alliance identities, events, images, delivery claims, scheduler state links, and weekly roundups. If Postgres is disabled or unavailable, the Discord bot still starts and existing Apps Script-backed features continue to operate. Scheduler management and polling remain unavailable until scheduler health recovers on a later restart; the static `/event-scheduler-help` command remains available when the subsystem is enabled.
 
 See [Architecture](docs/architecture.md) for the complete boundary and data model.
 
 ## Event Scheduler
 
-Administrators use `/event-scheduler`; authorization uses the existing `userCanManageServer(interaction)` behavior.
+Administrators use `/event-scheduler`; authorization uses the existing `userCanManageServer(interaction)` behavior. `/event-scheduler-help` provides private, database-independent setup, creation, reminder, management, roundup, state-link and troubleshooting pages. The management home also includes a **Help** control.
 
 A Discord guild and game profile can contain one main alliance and multiple sub-alliances, such as `YOU`, `YOU2`, and `YOU Academy`. Events select an alliance through an ephemeral opaque control. Alliance channels, weekly-roundup channels, and state links remain guild/profile settings and may be shared by every alliance in that guild.
 
@@ -33,6 +33,7 @@ Events support:
 - Alliance-only individual reminders.
 - Alliance weekly roundups and combined state weekly roundups.
 - Editing, image retain/replace/remove, pause, resume, and soft deletion.
+- Reminder cancellation by selecting no advance reminder or disabling the final announcement.
 
 Accepted UTC time examples include `18:30`, `1830`, `1800`, `6:30pm`, and `6.30 PM`. Ambiguous values are rejected. The legacy database column `reminder_at_start` now means the one-minute final announcement; no exact-start delivery is created.
 
@@ -70,7 +71,7 @@ Invalid scheduler tuning values safely fall back to code defaults. `EVENT_SCHEDU
 
 ## Migrations
 
-Migrations run during scheduler initialization under a Postgres advisory lock. They can also be checked explicitly:
+Migrations run during scheduler initialization under a session-level Postgres advisory lock. The lock covers creating/checking `schema_migrations`, applying each pending migration transactionally, and recording its completed version. Concurrent services therefore serialize the complete migration decision and application path. Migrations can also be checked explicitly:
 
 ```bash
 EVENT_SCHEDULER_ENABLED=true npm run migrate
@@ -85,7 +86,7 @@ npm run check
 npm test
 ```
 
-Database tests use `TEST_DATABASE_URL` and must point only to a disposable PostgreSQL database:
+Database tests use `TEST_DATABASE_URL` and must point only to a disposable PostgreSQL database. The suite includes two simultaneous migration runners and verifies that one applies the probe migration, the other observes it, and both finish with one valid schema record:
 
 ```bash
 TEST_DATABASE_URL=postgresql://user:password@127.0.0.1:5432/disposable npm test
@@ -113,7 +114,7 @@ The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables schedul
 
 ## Troubleshooting
 
-- Scheduler says unavailable: inspect startup logs for missing `DATABASE_URL`, invalid `GAME_PROFILE`, missing `BOT_INSTANCE_NAME`, authentication, network, or migration errors.
+- Scheduler says unavailable: use `/event-scheduler-help`, then inspect startup logs for missing `DATABASE_URL`, invalid `GAME_PROFILE`, missing `BOT_INSTANCE_NAME`, authentication, network, or migration errors.
 - Commands are absent: confirm `EVENT_SCHEDULER_ENABLED=true` and that global command registration completed for that service's `CLIENT_ID`.
 - Messages are not delivered: verify the configured guild/channel, bot membership, View Channel, Send Messages, Embed Links, and Attach Files permissions.
 - State roundup is empty: verify the profile-scoped scheduler state link, sharing status, event `publish_to_state`, roundup inclusion, active status, and weekly window.

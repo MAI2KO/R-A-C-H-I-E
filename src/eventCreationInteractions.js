@@ -231,7 +231,9 @@ function buildTimingView(sessionId, data) {
       `Advance reminder: ${data.advanceReminderMinutes ?? "none"}\n` +
       `Advance custom message: ${data.advanceReminderMessage ? "Yes" : "No"}\n` +
       `Final announcement (1 minute before): ${data.reminderAtStart ? "Yes" : "No"}\n` +
-      `Final custom message: ${data.finalReminderMessage ? "Yes" : "No"}`,
+      `Final custom message: ${data.finalReminderMessage ? "Yes" : "No"}\n\n` +
+      "Advance sends one alliance reminder at the selected offset. " +
+      "Final says About to start one minute before the event.",
     components: [
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -286,7 +288,9 @@ function buildPublishingView(sessionId, data) {
       `Alliance reminders: ${data.publishToAlliance ? "Yes" : "No"}\n` +
       `Alliance weekly roundup: ${data.includeInWeeklyRoundup ? "Yes" : "No"}\n` +
       `State-roundup eligibility: ${data.publishToState ? "Yes" : "No"}\n` +
-      `State weekly roundup: ${data.includeInWeeklyRoundup && data.publishToState ? "Yes" : "No"}`,
+      `State weekly roundup: ${data.includeInWeeklyRoundup && data.publishToState ? "Yes" : "No"}\n\n` +
+      "State eligibility includes this event in the combined state weekly roundup. " +
+      "It never sends an individual state reminder.",
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()

@@ -18,7 +18,10 @@ const {
 
 const axios = require("axios")
 const OpenAI = require("openai")
-const { getEventSchedulerCommandData } = require("./src/eventSchedulerCommands")
+const {
+  getEventSchedulerCommandData,
+  getEventSchedulerHelpCommandData
+} = require("./src/eventSchedulerCommands")
 const { handleEventSchedulerInteraction } = require("./src/eventSchedulerInteractions")
 
 console.log("Starting bot...")
@@ -1703,6 +1706,8 @@ const commands = [
 
 const eventSchedulerCommand = getEventSchedulerCommandData()
 if (eventSchedulerCommand) commands.push(eventSchedulerCommand)
+const eventSchedulerHelpCommand = getEventSchedulerHelpCommandData()
+if (eventSchedulerHelpCommand) commands.push(eventSchedulerHelpCommand)
 
 /* -------------------- COMMAND REGISTRATION -------------------- */
 

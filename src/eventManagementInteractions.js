@@ -127,8 +127,13 @@ function imageChoiceView(editSessionId, draft) {
 
 function confirmationView(sessionId, action, eventToken, event) {
   const verb = action === "delete" ? "Delete" : action === "pause" ? "Pause" : "Resume"
+  const effect = action === "delete"
+    ? "Delete softly removes future reminders and roundups while preserving history."
+    : action === "pause"
+      ? "Pause stops future reminders and roundups while preserving the recurrence schedule."
+      : "Resume restores future eligible reminders from the original recurrence schedule."
   return {
-    content: `${verb} ${event.event_name}? This change requires confirmation.`,
+    content: `${verb} ${event.event_name}?\n\n${effect}\n\nThis change requires confirmation.`,
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`${MANAGEMENT_PREFIX}c:${sessionId}:${action}:${eventToken}`)

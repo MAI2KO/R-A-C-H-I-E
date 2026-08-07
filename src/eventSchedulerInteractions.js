@@ -20,6 +20,7 @@ const {
 const { handleEventCreationInteraction } = require("./eventCreationInteractions")
 const { handleEventManagementInteraction } = require("./eventManagementInteractions")
 const { handleAllianceManagementInteraction } = require("./allianceManagementInteractions")
+const { handleEventSchedulerHelpInteraction } = require("./eventSchedulerHelp")
 const { parseUtcTime } = require("./timeParsing")
 
 const IDS = Object.freeze({
@@ -36,12 +37,14 @@ const IDS = Object.freeze({
 
 function isSchedulerInteraction(interaction) {
   return interaction.commandName === "event-scheduler"
+    || interaction.commandName === "event-scheduler-help"
     || String(interaction.customId || "").startsWith(IDS.prefix)
     || String(interaction.customId || "").startsWith("ec:")
     || String(interaction.customId || "").startsWith("el:")
     || String(interaction.customId || "").startsWith("ep:")
     || String(interaction.customId || "").startsWith("mg:")
     || String(interaction.customId || "").startsWith("am:")
+    || String(interaction.customId || "").startsWith("eh:")
 }
 
 function buildHomeView(settings, stateLink) {
@@ -97,7 +100,11 @@ function buildHomeView(settings, stateLink) {
         new ButtonBuilder()
           .setCustomId(IDS.roundup)
           .setLabel("Weekly roundup")
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("eh:home")
+          .setLabel("Help")
+          .setStyle(ButtonStyle.Secondary)
       )
     ]
   }
@@ -224,6 +231,8 @@ async function handleEventSchedulerInteraction(
 ) {
   if (!isSchedulerInteraction(interaction)) return false
 
+  if (await handleEventSchedulerHelpInteraction(interaction)) return true
+
   const health = healthProvider()
   if (!health.available) {
     await replyUnavailable(interaction)
@@ -330,7 +339,8 @@ async function handleEventSchedulerInteraction(
       const target = await resolveSendableChannel(
         interaction.client,
         stateGuildId,
-        stateChannelId
+        stateChannelId,
+        { requireAttachments: false }
       )
 
       await repository.upsertStateLink({

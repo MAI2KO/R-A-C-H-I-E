@@ -15,11 +15,12 @@ The Railway services may share Postgres. `game_profile` is included in settings,
 
 `index.js` retains the existing Apps Script client and actions for booking, sheet-backed state behavior, administration, announcements, and related commands. The scheduler neither calls those actions nor reuses their channel fields. Each bot keeps its own `APPS_SCRIPT_URL` and sheet.
 
-Scheduler failure is isolated. Discord login and existing slash-command registration do not wait for Postgres. When enabled, scheduler initialization validates ownership, connects, runs migrations, and records health. Failure closes the scheduler pool and leaves the rest of the bot running.
+Scheduler failure is isolated. Discord login and existing slash-command registration do not wait for Postgres. When enabled, scheduler initialization validates ownership, connects, runs migrations, and records health. Failure closes the scheduler pool and leaves the rest of the bot running. Database-backed management returns a private unavailable response; static scheduler help remains usable.
 
 ## Scheduler Components
 
 - `eventSchedulerInteractions.js`: authorised ephemeral entry point and guild/channel configuration.
+- `eventSchedulerHelp.js`: database-independent, ephemeral help pages and controls.
 - `allianceManagementInteractions.js`: opaque, profile-scoped alliance add/list/rename/delete flows.
 - `eventCreationInteractions.js`: alliance selection, modal input, options, preview, and confirmation.
 - `eventSchedulerRepository.js`: transactional event/alliance writes and claim reconciliation.
@@ -42,6 +43,8 @@ Event groups and images retain event/profile foreign keys. Delivery claims inclu
 ## Delivery Guarantees
 
 Claim uniqueness prevents duplicate database rows. Pollers claim transactionally with leases and `SKIP LOCKED`, so restarts, overlapping ticks, and multiple instances do not concurrently own one row. A sender revalidates event status, schedule version, target channel, profile, and final-announcement window before sending.
+
+Migration runners acquire the same session-level PostgreSQL advisory lock before creating or reading `schema_migrations`. The lock remains held while pending files are checked, each migration and version record commit in one transaction, and final state is returned. It is released in `finally`, including failures. Simultaneous R.A.C.H.I.E and P.E.G.G.I.E startups therefore cannot both apply the same migration.
 
 Sent history is never deleted by edits. Schedule-affecting changes increment `schedule_version` and terminally fail every unsent old claim. Grouped claims retain immutable group identity/name snapshots when group rows are replaced. State individual and exact-start claims are blocked by migration 005's policy constraint; historical sent rows remain readable.
 

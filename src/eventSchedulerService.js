@@ -23,7 +23,12 @@ function normalizeAllianceName(value) {
   return normalized
 }
 
-async function resolveSendableChannel(client, guildIdInput, channelIdInput) {
+async function resolveSendableChannel(
+  client,
+  guildIdInput,
+  channelIdInput,
+  { requireAttachments = true } = {}
+) {
   const guildId = normalizeSnowflake(guildIdInput, "Guild ID")
   const channelId = normalizeSnowflake(channelIdInput, "Channel ID")
 
@@ -51,15 +56,20 @@ async function resolveSendableChannel(client, guildIdInput, channelIdInput) {
   const botMember = guild.members.me || await guild.members.fetchMe()
   const permissions = channel.permissionsFor?.(botMember)
   const required = [
-    PermissionFlagsBits.ViewChannel,
-    PermissionFlagsBits.SendMessages,
-    PermissionFlagsBits.EmbedLinks,
-    PermissionFlagsBits.AttachFiles
+    [PermissionFlagsBits.ViewChannel, "View Channel"],
+    [PermissionFlagsBits.SendMessages, "Send Messages"],
+    [PermissionFlagsBits.EmbedLinks, "Embed Links"]
   ]
+  if (requireAttachments) {
+    required.push([PermissionFlagsBits.AttachFiles, "Attach Files"])
+  }
 
-  if (!permissions || !required.every(permission => permissions.has(permission))) {
+  const missing = required
+    .filter(([permission]) => !permissions?.has(permission))
+    .map(([, label]) => label)
+  if (missing.length) {
     throw new SchedulerValidationError(
-      "The bot needs View Channel, Send Messages, Embed Links and Attach Files in that channel."
+      `The bot is missing ${missing.join(", ")} in that channel.`
     )
   }
 
