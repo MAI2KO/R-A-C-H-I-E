@@ -23,6 +23,10 @@ const {
   getEventSchedulerHelpCommandData
 } = require("./src/eventSchedulerCommands")
 const { handleEventSchedulerInteraction } = require("./src/eventSchedulerInteractions")
+const {
+  handleInteractionFailure,
+  schedulerInteractionWasHandled
+} = require("./src/interactionResponses")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -1745,7 +1749,11 @@ client.once("clientReady", () => {
 
 client.on("interactionCreate", async interaction => {
   try {
-    if (await handleEventSchedulerInteraction(interaction, { userCanManageServer })) return
+    if (await schedulerInteractionWasHandled(
+      interaction,
+      handleEventSchedulerInteraction,
+      { userCanManageServer }
+    )) return
 
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "settings_max_bookings_select") {
@@ -3830,17 +3838,7 @@ if (interaction.commandName === "admin-remove-reserved") {
       return
     }
   } catch (error) {
-    console.error(error)
-
-    try {
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply("Something went wrong")
-      } else {
-        await interaction.reply({ content: "Something went wrong", flags: 64 })
-      }
-    } catch (replyError) {
-      console.error(replyError)
-    }
+    await handleInteractionFailure(interaction, error)
   }
 })
 

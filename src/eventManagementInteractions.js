@@ -8,6 +8,7 @@ const {
 } = require("discord.js")
 
 const { InteractionSessionError, InteractionSessionStore } = require("./interactionSessions")
+const { acknowledgeSchedulerInteraction } = require("./interactionResponses")
 const {
   creationSessions,
   sessionContext,
@@ -76,11 +77,12 @@ function actionOptions(event, eventToken) {
   ]
 }
 
-function listView(events, page, total, sessionId, eventMap) {
+function listView(events, page, total, sessionId, eventMap, eventDraftMap = {}) {
   const totalPages = Math.max(1, Math.ceil(total / EVENTS_PER_PAGE))
   const components = events.map((event, index) => {
     const eventToken = token()
     eventMap[eventToken] = String(event.id)
+    eventDraftMap[eventToken] = eventDraft(event)
     return new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId(`${MANAGEMENT_PREFIX}a:${sessionId}`)
@@ -109,10 +111,27 @@ async function renderList(interaction, repository, health, page, sessionId = nul
   })
   const id = sessionId || managementSessions.create(context, {})
   const eventMap = {}
-  managementSessions.update(id, context, { page: safePage, eventMap })
-  const view = listView(result.events, safePage, result.total, id, eventMap)
+  const eventDraftMap = {}
+  managementSessions.update(id, context, { page: safePage, eventMap, eventDraftMap })
+  const view = listView(result.events, safePage, result.total, id, eventMap, eventDraftMap)
   if (interaction.deferred || interaction.replied) await interaction.editReply(view)
   else await interaction.reply({ ...view, flags: MessageFlags.Ephemeral })
+}
+
+async function handleEventManagementModalOpeningInteraction(interaction, { health }) {
+  const customId = String(interaction.customId || "")
+  if (!(interaction.isStringSelectMenu?.()
+    && customId.startsWith(`${MANAGEMENT_PREFIX}a:`))) return false
+  const [action, eventToken] = String(interaction.values?.[0] || "").split(":")
+  if (action !== "edit") return false
+  const context = sessionContext(interaction, health)
+  const sessionId = customId.split(":")[2]
+  const session = managementSessions.get(sessionId, context)
+  const draft = session.data.eventDraftMap?.[eventToken]
+  if (!draft) throw new InteractionSessionError("That event control is no longer valid.")
+  const editSessionId = creationSessions.create(context, draft)
+  await interaction.showModal(buildCoreModal(editSessionId, draft))
+  return true
 }
 
 function confirmationView(sessionId, action, eventToken, event) {
@@ -145,7 +164,7 @@ async function handleEventManagementInteraction(
   const context = sessionContext(interaction, health)
 
   if (interaction.isButton?.() && customId.startsWith("el:")) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await renderList(interaction, repository, health, Number(customId.slice(3)))
     return true
   }
@@ -153,7 +172,7 @@ async function handleEventManagementInteraction(
   if (interaction.isButton?.() && customId.startsWith(`${MANAGEMENT_PREFIX}l:`)) {
     const [, , sessionId, page] = customId.split(":")
     managementSessions.get(sessionId, context)
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await renderList(interaction, repository, health, Number(page), sessionId)
     return true
   }
@@ -171,7 +190,7 @@ async function handleEventManagementInteraction(
     if (!event) throw new Error("That event is no longer available.")
 
     if (action === "preview") {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const occurrences = getNextOccurrences(event, new Date(), 5)
       await interaction.editReply({
         content: formatUpcomingOccurrencePreview(event, occurrences),
@@ -184,15 +203,12 @@ async function handleEventManagementInteraction(
       return true
     }
     if (action === "edit") {
-      const draft = eventDraft(event)
-      const editSessionId = creationSessions.create(context, draft)
-      await interaction.showModal(buildCoreModal(editSessionId, draft))
-      return true
+      return false
     }
     if (action === "alliance") {
       const draft = { ...eventDraft(event), allianceChangeOnly: true }
       const editSessionId = creationSessions.create(context, draft)
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await renderAllianceSelection(
         interaction,
         repository,
@@ -206,12 +222,12 @@ async function handleEventManagementInteraction(
     if (action === "image") {
       const draft = { ...eventDraft(event), imageReturnView: "preview" }
       const editSessionId = creationSessions.create(context, draft)
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(buildImageChoiceView(editSessionId, draft))
       return true
     }
     if (["pause", "resume", "delete"].includes(action)) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(confirmationView(sessionId, action, eventToken, event))
       return true
     }
@@ -226,7 +242,7 @@ async function handleEventManagementInteraction(
     const eventId = session.data.eventMap[eventToken]
     if (!eventId) throw new Error("That event control is no longer valid.")
     const status = action === "pause" ? "paused" : action === "resume" ? "active" : "deleted"
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     const changed = await repository.setEventStatus({
       guildId: interaction.guildId,
       eventId,
@@ -251,5 +267,6 @@ module.exports = {
   listView,
   imageChoiceView: buildImageChoiceView,
   confirmationView,
+  handleEventManagementModalOpeningInteraction,
   handleEventManagementInteraction
 }

@@ -19,10 +19,25 @@ const {
   normalizeAllianceName,
   resolveSendableChannel
 } = require("./eventSchedulerService")
-const { handleEventCreationInteraction } = require("./eventCreationInteractions")
-const { handleEventManagementInteraction } = require("./eventManagementInteractions")
-const { handleAllianceManagementInteraction } = require("./allianceManagementInteractions")
+const {
+  handleEventCreationModalOpeningInteraction,
+  handleEventCreationInteraction
+} = require("./eventCreationInteractions")
+const {
+  handleEventManagementModalOpeningInteraction,
+  handleEventManagementInteraction
+} = require("./eventManagementInteractions")
+const {
+  handleAllianceManagementModalOpeningInteraction,
+  handleAllianceManagementInteraction
+} = require("./allianceManagementInteractions")
 const { handleEventSchedulerHelpInteraction } = require("./eventSchedulerHelp")
+const {
+  acknowledgeSchedulerInteraction,
+  isExpectedInteractionResponseError,
+  logExpectedInteractionResponseError,
+  safelyRespondToInteraction
+} = require("./interactionResponses")
 const { parseUtcTime } = require("./timeParsing")
 const {
   CODE_TTL_MINUTES,
@@ -59,6 +74,7 @@ const IDS = Object.freeze({
 const TEXT_CHANNEL_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement]
 const SAFE_MENTIONS = Object.freeze({ parse: [], repliedUser: false })
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+const guildSettingsCache = new Map()
 
 function isSchedulerInteraction(interaction) {
   return interaction.commandName === "event-scheduler"
@@ -233,6 +249,9 @@ function buildRoundupSettingsView(settings) {
 }
 
 function buildRoundupDayView(settings) {
+  const currentTime = String(settings?.weekly_roundup_time_utc || "09:00")
+    .slice(0, 5)
+    .replace(":", "")
   return {
     content: `Change weekly roundup schedule\n\nCurrent schedule: ${roundupScheduleLabel(settings)}\n\nSelect a UTC weekday.`,
     components: [
@@ -242,7 +261,7 @@ function buildRoundupDayView(settings) {
           .setPlaceholder("Select UTC weekday")
           .addOptions(WEEKDAYS.map((day, index) => ({
             label: day,
-            value: String(index),
+            value: `${index}:${currentTime}`,
             default: Number(settings?.weekly_roundup_day) === index
           })))
       ),
@@ -373,6 +392,8 @@ async function loadHome(repository, guildId, client) {
     repository.getStateLink(guildId),
     repository.getStateDestination(guildId)
   ])
+  if (settings) guildSettingsCache.set(String(guildId), settings)
+  else guildSettingsCache.delete(String(guildId))
   const stateLink = await describeStateLink(client, rawStateLink)
   return buildHomeView(settings, stateLink, stateDestination)
 }
@@ -382,11 +403,34 @@ async function replyUnavailable(interaction) {
     content: "The event scheduler is temporarily unavailable. Existing bot features are unaffected.",
     flags: MessageFlags.Ephemeral
   }
-  if (interaction.deferred || interaction.replied) {
-    await interaction.editReply({ content: payload.content, components: [] })
-  } else {
-    await interaction.reply(payload)
+  await safelyRespondToInteraction(interaction, payload)
+}
+
+async function handleSchedulerModalOpeningInteraction(interaction, { health }) {
+  if (interaction.isButton?.() && interaction.customId === IDS.identity) {
+    await interaction.showModal(buildAllianceIdentityModal(
+      guildSettingsCache.get(String(interaction.guildId)) || null
+    ))
+    return true
   }
+  if (interaction.isStringSelectMenu?.() && interaction.customId === IDS.roundupDay) {
+    const [dayValue, compactTime = "0900"] = String(interaction.values?.[0] || "").split(":")
+    const day = Number(dayValue)
+    if (!Number.isInteger(day) || day < 0 || day > 6) {
+      throw new SchedulerValidationError("Select a valid UTC weekday.")
+    }
+    await interaction.showModal(buildRoundupTimeModal(day, {
+      weekly_roundup_time_utc: parseUtcTime(compactTime)
+    }))
+    return true
+  }
+  if (interaction.isButton?.() && interaction.customId === IDS.stateLink) {
+    await interaction.showModal(buildStateLinkModal())
+    return true
+  }
+  if (await handleAllianceManagementModalOpeningInteraction(interaction, { health })) return true
+  if (await handleEventManagementModalOpeningInteraction(interaction, { health })) return true
+  return handleEventCreationModalOpeningInteraction(interaction, { health })
 }
 
 async function handleEventSchedulerInteraction(
@@ -394,29 +438,34 @@ async function handleEventSchedulerInteraction(
   {
     userCanManageServer,
     healthProvider = getEventSchedulerHealth,
-    repositoryProvider = health => createEventSchedulerRepository(getPool(), health.gameProfile)
+    repositoryProvider = health => createEventSchedulerRepository(getPool(), health.gameProfile),
+    logger = console
   } = {}
 ) {
   if (!isSchedulerInteraction(interaction)) return false
-  if (await handleEventSchedulerHelpInteraction(interaction)) return true
-
-  const health = healthProvider()
-  if (!health.available) {
-    await replyUnavailable(interaction)
-    return true
-  }
-  if (!(await userCanManageServer(interaction))) {
-    await interaction.reply({
-      content: "You do not have permission to manage the event scheduler.",
-      flags: MessageFlags.Ephemeral
-    })
-    return true
-  }
-
-  const repository = repositoryProvider(health)
-  const guildId = interaction.guildId
 
   try {
+    if (await handleEventSchedulerHelpInteraction(interaction)) return true
+
+    const health = healthProvider()
+    if (await handleSchedulerModalOpeningInteraction(interaction, { health })) return true
+
+    await acknowledgeSchedulerInteraction(interaction)
+    if (!health.available) {
+      await replyUnavailable(interaction)
+      return true
+    }
+    if (!(await userCanManageServer(interaction))) {
+      await safelyRespondToInteraction(interaction, {
+        content: "You do not have permission to manage the event scheduler.",
+        flags: MessageFlags.Ephemeral
+      }, { logger })
+      return true
+    }
+
+    const repository = repositoryProvider(health)
+    const guildId = interaction.guildId
+
     if (await handleAllianceManagementInteraction(interaction, { repository, health })) return true
     if (await handleEventManagementInteraction(interaction, { repository, health })) return true
     if (await handleEventCreationInteraction(interaction, {
@@ -426,26 +475,23 @@ async function handleEventSchedulerInteraction(
     })) return true
 
     if (interaction.isChatInputCommand?.() && interaction.commandName === "event-scheduler") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(await loadHome(repository, guildId, interaction.client))
       return true
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.home) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(await loadHome(repository, guildId, interaction.client))
       return true
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.identity) {
-      await interaction.showModal(buildAllianceIdentityModal(
-        await repository.getGuildSettings(guildId)
-      ))
-      return true
+      return false
     }
 
     if (interaction.isModalSubmit?.() && interaction.customId === IDS.identityModal) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+      await acknowledgeSchedulerInteraction(interaction)
       const settings = await repository.getGuildSettings(guildId)
       const allianceName = normalizeAllianceName(interaction.fields.getTextInputValue("a"))
       if (settings) {
@@ -466,7 +512,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.channels) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(buildChannelConfigurationView(
         await repository.getGuildSettings(guildId)
       ))
@@ -474,7 +520,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isChannelSelectMenu?.() && interaction.customId === IDS.reminderChannel) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const target = await resolveSendableChannel(interaction.client, guildId, interaction.values[0])
       if (!await repository.setEventChannel({ guildId, eventChannelId: target.channelId })) {
         throw new SchedulerValidationError("Set the main alliance identity first.")
@@ -486,7 +532,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.roundupSettings) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(buildRoundupSettingsView(
         await repository.getGuildSettings(guildId)
       ))
@@ -494,7 +540,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.roundupChannelView) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(buildRoundupChannelView(
         await repository.getGuildSettings(guildId)
       ))
@@ -502,7 +548,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isChannelSelectMenu?.() && interaction.customId === IDS.roundupChannel) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const settings = await repository.getGuildSettings(guildId)
       const target = await resolveSendableChannel(
         interaction.client,
@@ -528,7 +574,7 @@ async function handleEventSchedulerInteraction(
     if (interaction.isButton?.()
       && [IDS.roundupEnable, IDS.roundupDisable, IDS.stateRoundupToggle]
         .includes(interaction.customId)) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const settings = await repository.getGuildSettings(guildId)
       const enableAlliance = interaction.customId === IDS.roundupEnable
         ? true
@@ -556,7 +602,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.roundupSchedule) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(buildRoundupDayView(
         await repository.getGuildSettings(guildId)
       ))
@@ -564,20 +610,12 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isStringSelectMenu?.() && interaction.customId === IDS.roundupDay) {
-      const day = Number(interaction.values[0])
-      if (!Number.isInteger(day) || day < 0 || day > 6) {
-        throw new SchedulerValidationError("Select a valid UTC weekday.")
-      }
-      await interaction.showModal(buildRoundupTimeModal(
-        day,
-        await repository.getGuildSettings(guildId)
-      ))
-      return true
+      return false
     }
 
     if (interaction.isModalSubmit?.()
       && String(interaction.customId).startsWith(IDS.roundupTimeModalPrefix)) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+      await acknowledgeSchedulerInteraction(interaction)
       const day = Number(String(interaction.customId).slice(IDS.roundupTimeModalPrefix.length))
       if (!Number.isInteger(day) || day < 0 || day > 6) {
         throw new SchedulerValidationError("Select a valid UTC weekday.")
@@ -589,7 +627,7 @@ async function handleEventSchedulerInteraction(
 
     if (interaction.isButton?.()
       && String(interaction.customId).startsWith(IDS.roundupScheduleConfirmPrefix)) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const [dayValue, compactTime] = String(interaction.customId)
         .slice(IDS.roundupScheduleConfirmPrefix.length)
         .split(":")
@@ -615,7 +653,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.stateDestination) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await interaction.editReply(buildStateDestinationView(
         await repository.getStateDestination(guildId)
       ))
@@ -624,7 +662,7 @@ async function handleEventSchedulerInteraction(
 
     if (interaction.isChannelSelectMenu?.()
       && interaction.customId === IDS.stateDestinationChannel) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const target = await resolveSendableChannel(
         interaction.client,
         guildId,
@@ -641,7 +679,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.stateCode) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const code = generateStateLinkCode()
       const destination = await repository.getStateDestination(guildId)
       const created = await repository.createStateLinkCode({
@@ -657,7 +695,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.stateSharing) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       const stateLink = await describeStateLink(
         interaction.client,
         await repository.getStateLink(guildId)
@@ -667,12 +705,11 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.stateLink) {
-      await interaction.showModal(buildStateLinkModal())
-      return true
+      return false
     }
 
     if (interaction.isModalSubmit?.() && interaction.customId === IDS.stateLinkModal) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+      await acknowledgeSchedulerInteraction(interaction)
       const codeHash = hashStateLinkCode(interaction.fields.getTextInputValue("code"))
       if (!codeHash) throw new SchedulerValidationError("Enter a valid state link code.")
       const link = await repository.consumeStateLinkCode({
@@ -692,7 +729,7 @@ async function handleEventSchedulerInteraction(
     }
 
     if (interaction.isButton?.() && interaction.customId === IDS.stateOff) {
-      await interaction.deferUpdate()
+      await acknowledgeSchedulerInteraction(interaction)
       await repository.setStateSharing(guildId, false)
       await interaction.editReply(buildStateSharingView(
         await describeStateLink(interaction.client, await repository.getStateLink(guildId))
@@ -700,6 +737,10 @@ async function handleEventSchedulerInteraction(
       return true
     }
   } catch (error) {
+    if (isExpectedInteractionResponseError(error)) {
+      logExpectedInteractionResponseError(error, interaction, logger)
+      return true
+    }
     const userFacingErrors = new Set([
       "SchedulerValidationError",
       "DateTimeValidationError",
@@ -708,13 +749,23 @@ async function handleEventSchedulerInteraction(
       "InteractionSessionError",
       "OccurrenceValidationError"
     ])
-    const message = error instanceof SchedulerValidationError || userFacingErrors.has(error.name)
+    const isUserFacing = error instanceof SchedulerValidationError || userFacingErrors.has(error.name)
+    if (!isUserFacing) logger.error("[Event scheduler] Interaction failed:", error)
+    const message = isUserFacing
       ? error.message
       : "The event scheduler could not complete that action."
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({ content: message, components: [] })
-    } else {
-      await interaction.reply({ content: message, flags: MessageFlags.Ephemeral })
+    try {
+      await safelyRespondToInteraction(interaction, {
+        content: message,
+        flags: MessageFlags.Ephemeral,
+        components: []
+      }, { logger })
+    } catch (responseError) {
+      if (isExpectedInteractionResponseError(responseError)) {
+        logExpectedInteractionResponseError(responseError, interaction, logger)
+      } else {
+        throw responseError
+      }
     }
     return true
   }
@@ -740,5 +791,6 @@ module.exports = {
   parseYesNo,
   describeStateLink,
   loadHome,
+  handleSchedulerModalOpeningInteraction,
   handleEventSchedulerInteraction
 }

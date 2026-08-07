@@ -11,6 +11,7 @@ const {
 } = require("discord.js")
 
 const { InteractionSessionError, InteractionSessionStore } = require("./interactionSessions")
+const { acknowledgeSchedulerInteraction } = require("./interactionResponses")
 const { normalizeAllianceName, SchedulerValidationError } = require("./eventSchedulerService")
 const { sessionContext } = require("./eventCreationInteractions")
 
@@ -53,6 +54,7 @@ function allianceModal(customId, title, value = "") {
 function allianceListView(alliances, page, total, sessionId, selectedAllianceId) {
   const totalPages = Math.max(1, Math.ceil(total / ALLIANCES_PER_PAGE))
   const tokenMap = {}
+  const tokenNameMap = {}
   const lines = alliances.map(alliance => {
     const role = alliance.is_default ? "Main alliance" : "Sub-alliance"
     return `${role}: ${alliance.alliance_name} (${alliance.managed_event_count} active/paused events)`
@@ -66,6 +68,7 @@ function allianceListView(alliances, page, total, sessionId, selectedAllianceId)
         .addOptions(alliances.map(alliance => {
           const allianceToken = token()
           tokenMap[allianceToken] = String(alliance.id)
+          tokenNameMap[allianceToken] = alliance.alliance_name
           return {
             label: alliance.alliance_name.slice(0, 100),
             value: allianceToken,
@@ -96,7 +99,8 @@ function allianceListView(alliances, page, total, sessionId, selectedAllianceId)
       components,
       allowedMentions: { parse: [], repliedUser: false }
     },
-    tokenMap
+    tokenMap,
+    tokenNameMap
   }
 }
 
@@ -124,10 +128,43 @@ async function renderAllianceList(
   )
   allianceSessions.update(id, context, {
     page: safePage,
-    tokenMap: built.tokenMap
+    tokenMap: built.tokenMap,
+    tokenNameMap: built.tokenNameMap
   })
   if (interaction.deferred || interaction.replied) await interaction.editReply(built.view)
   else await interaction.reply({ ...built.view, flags: MessageFlags.Ephemeral })
+}
+
+async function handleAllianceManagementModalOpeningInteraction(
+  interaction,
+  { health }
+) {
+  const customId = String(interaction.customId || "")
+  if (!customId.startsWith(ALLIANCE_IDS.prefix)) return false
+  const context = sessionContext(interaction, health)
+  if (interaction.isButton?.() && customId.startsWith(ALLIANCE_IDS.addPrefix)) {
+    const sessionId = customId.slice(ALLIANCE_IDS.addPrefix.length)
+    allianceSessions.get(sessionId, context)
+    await interaction.showModal(allianceModal(
+      `${ALLIANCE_IDS.addModalPrefix}${sessionId}`,
+      "Add alliance or sub-alliance"
+    ))
+    return true
+  }
+  if (interaction.isButton?.() && customId.startsWith(ALLIANCE_IDS.renamePrefix)) {
+    const sessionId = customId.slice(ALLIANCE_IDS.renamePrefix.length)
+    const session = allianceSessions.get(sessionId, context)
+    if (!session.data.selectedAllianceId) {
+      throw new InteractionSessionError("Select an alliance first.")
+    }
+    await interaction.showModal(allianceModal(
+      `${ALLIANCE_IDS.renameModalPrefix}${sessionId}`,
+      "Rename alliance",
+      session.data.selectedAllianceName || ""
+    ))
+    return true
+  }
+  return false
 }
 
 function duplicateNameError(error) {
@@ -153,7 +190,7 @@ async function handleAllianceManagementInteraction(interaction, { repository, he
   const context = sessionContext(interaction, health)
 
   if (interaction.isButton?.() && customId === ALLIANCE_IDS.open) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await renderAllianceList(interaction, repository, health)
     return true
   }
@@ -161,7 +198,7 @@ async function handleAllianceManagementInteraction(interaction, { repository, he
   if (interaction.isButton?.() && customId.startsWith(ALLIANCE_IDS.listPrefix)) {
     const [sessionId, page] = customId.slice(ALLIANCE_IDS.listPrefix.length).split(":")
     allianceSessions.get(sessionId, context)
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await renderAllianceList(interaction, repository, health, Number(page), sessionId)
     return true
   }
@@ -171,27 +208,24 @@ async function handleAllianceManagementInteraction(interaction, { repository, he
     const session = allianceSessions.get(sessionId, context)
     const allianceId = session.data.tokenMap?.[interaction.values[0]]
     if (!allianceId) throw new InteractionSessionError("That alliance control has expired.")
-    allianceSessions.update(sessionId, context, { selectedAllianceId: allianceId })
-    await interaction.deferUpdate()
+    allianceSessions.update(sessionId, context, {
+      selectedAllianceId: allianceId,
+      selectedAllianceName: session.data.tokenNameMap?.[interaction.values[0]] || null
+    })
+    await acknowledgeSchedulerInteraction(interaction)
     await renderAllianceList(interaction, repository, health, session.data.page, sessionId)
     return true
   }
 
   if (interaction.isButton?.() && customId.startsWith(ALLIANCE_IDS.addPrefix)) {
-    const sessionId = customId.slice(ALLIANCE_IDS.addPrefix.length)
-    allianceSessions.get(sessionId, context)
-    await interaction.showModal(allianceModal(
-      `${ALLIANCE_IDS.addModalPrefix}${sessionId}`,
-      "Add alliance or sub-alliance"
-    ))
-    return true
+    return false
   }
 
   if (interaction.isModalSubmit?.() && customId.startsWith(ALLIANCE_IDS.addModalPrefix)) {
     const sessionId = customId.slice(ALLIANCE_IDS.addModalPrefix.length)
     const session = allianceSessions.get(sessionId, context)
     const allianceName = normalizeAllianceName(interaction.fields.getTextInputValue("name"))
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    await acknowledgeSchedulerInteraction(interaction)
     try {
       const alliance = await repository.createAlliance({
         guildId: interaction.guildId,
@@ -207,22 +241,14 @@ async function handleAllianceManagementInteraction(interaction, { repository, he
   }
 
   if (interaction.isButton?.() && customId.startsWith(ALLIANCE_IDS.renamePrefix)) {
-    const sessionId = customId.slice(ALLIANCE_IDS.renamePrefix.length)
-    const session = allianceSessions.get(sessionId, context)
-    const alliance = await selectedAlliance(repository, interaction, session)
-    await interaction.showModal(allianceModal(
-      `${ALLIANCE_IDS.renameModalPrefix}${sessionId}`,
-      "Rename alliance",
-      alliance.alliance_name
-    ))
-    return true
+    return false
   }
 
   if (interaction.isModalSubmit?.() && customId.startsWith(ALLIANCE_IDS.renameModalPrefix)) {
     const sessionId = customId.slice(ALLIANCE_IDS.renameModalPrefix.length)
     const session = allianceSessions.get(sessionId, context)
     const allianceName = normalizeAllianceName(interaction.fields.getTextInputValue("name"))
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    await acknowledgeSchedulerInteraction(interaction)
     try {
       const renamed = await repository.renameAlliance({
         guildId: interaction.guildId,
@@ -241,7 +267,7 @@ async function handleAllianceManagementInteraction(interaction, { repository, he
     const sessionId = customId.slice(ALLIANCE_IDS.deletePrefix.length)
     const session = allianceSessions.get(sessionId, context)
     const alliance = await selectedAlliance(repository, interaction, session)
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply({
       content: `Delete ${alliance.alliance_name}? Alliances with event history cannot be deleted.`,
       components: [new ActionRowBuilder().addComponents(
@@ -258,7 +284,7 @@ async function handleAllianceManagementInteraction(interaction, { repository, he
   if (interaction.isButton?.() && customId.startsWith(ALLIANCE_IDS.deleteConfirmPrefix)) {
     const sessionId = customId.slice(ALLIANCE_IDS.deleteConfirmPrefix.length)
     const session = allianceSessions.get(sessionId, context)
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     const result = await repository.deleteAlliance({
       guildId: interaction.guildId,
       allianceId: session.data.selectedAllianceId
@@ -293,5 +319,6 @@ module.exports = {
   allianceModal,
   allianceListView,
   renderAllianceList,
+  handleAllianceManagementModalOpeningInteraction,
   handleAllianceManagementInteraction
 }

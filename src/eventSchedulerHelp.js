@@ -2,9 +2,9 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  MessageFlags,
   StringSelectMenuBuilder
 } = require("discord.js")
+const { acknowledgeSchedulerInteraction } = require("./interactionResponses")
 
 const HELP_IDS = Object.freeze({
   prefix: "eh:",
@@ -163,21 +163,19 @@ async function handleEventSchedulerHelpInteraction(interaction) {
   if (!isSchedulerHelpInteraction(interaction)) return false
 
   if (interaction.isChatInputCommand?.() && interaction.commandName === "event-scheduler-help") {
-    await interaction.reply({
-      ...buildSchedulerHelpView(),
-      flags: MessageFlags.Ephemeral
-    })
+    await acknowledgeSchedulerInteraction(interaction)
+    await interaction.editReply(buildSchedulerHelpView())
     return true
   }
 
   if (interaction.isStringSelectMenu?.() && interaction.customId === HELP_IDS.section) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildSchedulerHelpView(interaction.values[0]))
     return true
   }
 
   if (interaction.isButton?.() && interaction.customId === HELP_IDS.home) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildSchedulerHelpView())
     return true
   }

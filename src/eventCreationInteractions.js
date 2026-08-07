@@ -13,6 +13,7 @@ const {
 } = require("discord.js")
 
 const { parseIsoDate, parseUtcTime } = require("./timeParsing")
+const { acknowledgeSchedulerInteraction } = require("./interactionResponses")
 const {
   EventValidationError,
   normalizeCustomMessage,
@@ -269,9 +270,11 @@ function opaqueToken() {
 function buildAllianceSelectionView(sessionId, alliances, page, total, selectedAllianceId) {
   const totalPages = Math.max(1, Math.ceil(total / ALLIANCES_PER_PAGE))
   const tokenMap = {}
+  const tokenNameMap = {}
   const options = alliances.map(alliance => {
     const token = opaqueToken()
     tokenMap[token] = String(alliance.id)
+    tokenNameMap[token] = alliance.alliance_name
     return {
       label: alliance.alliance_name.slice(0, 100),
       value: token,
@@ -307,7 +310,8 @@ function buildAllianceSelectionView(sessionId, alliances, page, total, selectedA
         )
       ]
     },
-    tokenMap
+    tokenMap,
+    tokenNameMap
   }
 }
 
@@ -337,10 +341,86 @@ async function renderAllianceSelection(
   )
   sessionStore.update(sessionId, context, {
     allianceSelectionPage: safePage,
-    allianceTokenMap: built.tokenMap
+    allianceTokenMap: built.tokenMap,
+    allianceTokenNameMap: built.tokenNameMap
   })
   if (interaction.deferred || interaction.replied) await interaction.editReply(built.view)
   else await interaction.reply({ ...built.view, flags: MessageFlags.Ephemeral })
+}
+
+async function handleEventCreationModalOpeningInteraction(
+  interaction,
+  { health, sessionStore = creationSessions }
+) {
+  const customId = String(interaction.customId || "")
+  if (!(customId.startsWith("ec:") || customId.startsWith("el:")
+    || customId.startsWith("ep:"))) return false
+  const context = sessionContext(interaction, health)
+
+  if (interaction.isStringSelectMenu?.()
+    && customId.startsWith(CREATION_IDS.allianceSelectPrefix)) {
+    const sessionId = idSuffix(customId, CREATION_IDS.allianceSelectPrefix)
+    const session = sessionStore.get(sessionId, context)
+    if (session.data.allianceChangeOnly) return false
+    const selectedToken = interaction.values?.[0]
+    const allianceId = session.data.allianceTokenMap?.[selectedToken]
+    const allianceName = session.data.allianceTokenNameMap?.[selectedToken]
+    if (!allianceId || !allianceName) {
+      throw new EventValidationError("That alliance selection has expired.")
+    }
+    const updated = sessionStore.update(sessionId, context, {
+      allianceId,
+      allianceName,
+      allianceTokenMap: null,
+      allianceTokenNameMap: null
+    })
+    await interaction.showModal(buildCoreModal(sessionId, updated.data))
+    return true
+  }
+
+  const prefixes = Object.values(CREATION_IDS).filter(value => value.endsWith(":"))
+  const prefix = prefixes.find(value => customId.startsWith(value))
+  const modalPrefixes = new Set([
+    CREATION_IDS.singleTimePrefix,
+    CREATION_IDS.groupAddPrefix,
+    CREATION_IDS.groupEditPrefix,
+    CREATION_IDS.messagesPrefix,
+    CREATION_IDS.imageReplacePrefix,
+    CREATION_IDS.editPrefix
+  ])
+  if (!prefix || !modalPrefixes.has(prefix) || !interaction.isButton?.()) return false
+  const sessionId = idSuffix(customId, prefix)
+  const session = sessionStore.get(sessionId, context)
+
+  if (prefix === CREATION_IDS.singleTimePrefix) {
+    await interaction.showModal(buildSingleTimeModal(sessionId, session.data))
+    return true
+  }
+  if (prefix === CREATION_IDS.groupAddPrefix) {
+    await interaction.showModal(buildGroupModal(sessionId, "add"))
+    return true
+  }
+  if (prefix === CREATION_IDS.groupEditPrefix) {
+    const index = session.data.selectedGroupIndex
+    if (!Number.isInteger(index) || !session.data.groups?.[index]) {
+      throw new EventValidationError("Select a group to edit.")
+    }
+    await interaction.showModal(buildGroupModal(sessionId, "edit", session.data.groups[index]))
+    return true
+  }
+  if (prefix === CREATION_IDS.messagesPrefix) {
+    await interaction.showModal(buildMessagesModal(sessionId, session.data))
+    return true
+  }
+  if (prefix === CREATION_IDS.imageReplacePrefix) {
+    await interaction.showModal(buildImageUploadModal(sessionId))
+    return true
+  }
+  if (prefix === CREATION_IDS.editPrefix) {
+    await interaction.showModal(buildCoreModal(sessionId, session.data))
+    return true
+  }
+  return false
 }
 
 function selectOption(label, value, selected) {
@@ -572,9 +652,9 @@ async function handleEventCreationInteraction(
   if (interaction.isButton?.() && customId === CREATION_IDS.newEvent) {
     const settings = await repository.getGuildSettings(interaction.guildId)
     if (!settings?.event_channel_id) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "Configure the alliance event channel before creating events.",
-        flags: MessageFlags.Ephemeral
+        components: []
       })
       return true
     }
@@ -603,7 +683,7 @@ async function handleEventCreationInteraction(
   }
 
   if (interaction.isButton?.() && customId.startsWith(CREATION_IDS.listPrefix)) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     const page = Number(idSuffix(customId, CREATION_IDS.listPrefix))
     await showList(interaction, repository, page)
     return true
@@ -613,7 +693,7 @@ async function handleEventCreationInteraction(
     interaction.isButton?.()
     && customId.startsWith(CREATION_IDS.occurrencePreviewPrefix)
   ) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     const [eventId, pageValue] = idSuffix(
       customId,
       CREATION_IDS.occurrencePreviewPrefix
@@ -638,7 +718,7 @@ async function handleEventCreationInteraction(
       CREATION_IDS.alliancePagePrefix
     ).split(":")
     sessionStore.get(sessionId, context)
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await renderAllianceSelection(
       interaction,
       repository,
@@ -665,14 +745,10 @@ async function handleEventCreationInteraction(
       allianceName: alliance.alliance_name,
       allianceTokenMap: null
     })
-    if (updated.data.allianceChangeOnly) {
-      const event = await validateSessionEvent(repository, interaction.guildId, updated.data)
-      sessionStore.update(sessionId, context, { ...event, allianceChangeOnly: false })
-      await interaction.deferUpdate()
-      await interaction.editReply(buildPreviewView(sessionId, event))
-    } else {
-      await interaction.showModal(buildCoreModal(sessionId, updated.data))
-    }
+    const event = await validateSessionEvent(repository, interaction.guildId, updated.data)
+    sessionStore.update(sessionId, context, { ...event, allianceChangeOnly: false })
+    await acknowledgeSchedulerInteraction(interaction)
+    await interaction.editReply(buildPreviewView(sessionId, event))
     return true
   }
 
@@ -680,7 +756,7 @@ async function handleEventCreationInteraction(
     && customId.startsWith(CREATION_IDS.singleTimeModalPrefix)) {
     const sessionId = idSuffix(customId, CREATION_IDS.singleTimeModalPrefix)
     sessionStore.get(sessionId, context)
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    await acknowledgeSchedulerInteraction(interaction)
     const session = sessionStore.update(sessionId, context, {
       eventTimeUtc: parseUtcTime(interaction.fields.getTextInputValue("t")),
       groups: [],
@@ -711,7 +787,7 @@ async function handleEventCreationInteraction(
       editingIndex
     )
     const groups = upsertGroup(current.groups || [], group, editingIndex)
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    await acknowledgeSchedulerInteraction(interaction)
     const session = sessionStore.update(sessionId, context, {
       groups,
       eventTimeUtc: null,
@@ -727,7 +803,7 @@ async function handleEventCreationInteraction(
     const current = sessionStore.get(sessionId, context).data
     const attachment = interaction.fields.getUploadedFiles("img")?.first?.()
     if (!attachment) throw new EventValidationError("Select one replacement image.")
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    await acknowledgeSchedulerInteraction(interaction)
     const image = await downloadEventImage(attachment)
     const session = sessionStore.update(sessionId, context, { image, imageAction: "replace" })
     await interaction.editReply(current.imageReturnView === "preview"
@@ -742,7 +818,7 @@ async function handleEventCreationInteraction(
   ) {
     const sessionId = idSuffix(customId, CREATION_IDS.messagesModalPrefix)
     sessionStore.get(sessionId, context)
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    await acknowledgeSchedulerInteraction(interaction)
     const session = sessionStore.update(sessionId, context, {
       advanceReminderMessage: normalizeCustomMessage(
         interaction.fields.getTextInputValue("advance"),
@@ -760,7 +836,7 @@ async function handleEventCreationInteraction(
   if (interaction.isModalSubmit?.() && customId.startsWith(CREATION_IDS.corePrefix)) {
     const sessionId = idSuffix(customId, CREATION_IDS.corePrefix)
     sessionStore.get(sessionId, context)
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    await acknowledgeSchedulerInteraction(interaction)
 
     const parsedDate = parseIsoDate(interaction.fields.getTextInputValue("d"))
     const session = sessionStore.update(sessionId, context, {
@@ -781,13 +857,13 @@ async function handleEventCreationInteraction(
 
   if (interaction.isStringSelectMenu?.() && prefix === CREATION_IDS.recurrencePrefix) {
     sessionStore.update(sessionId, context, { recurrenceDays: Number(interaction.values[0]) })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildTimingView(sessionId, session.data))
     return true
   }
   if (interaction.isStringSelectMenu?.() && prefix === CREATION_IDS.groupSelectPrefix) {
     sessionStore.update(sessionId, context, { selectedGroupIndex: Number(interaction.values[0]) })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildGroupManagerView(sessionId, session.data))
     return true
   }
@@ -796,20 +872,19 @@ async function handleEventCreationInteraction(
     sessionStore.update(sessionId, context, {
       advanceReminderMinutes: value === "none" ? null : Number(value)
     })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildTimingView(sessionId, session.data))
     return true
   }
 
   if (interaction.isButton?.() && prefix === CREATION_IDS.startPrefix) {
     sessionStore.update(sessionId, context, { reminderAtStart: !session.data.reminderAtStart })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildTimingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.singleTimePrefix) {
-    await interaction.showModal(buildSingleTimeModal(sessionId, session.data))
-    return true
+    return false
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.groupsPrefix) {
     sessionStore.update(sessionId, context, {
@@ -818,21 +893,19 @@ async function handleEventCreationInteraction(
       grouped: true,
       selectedGroupIndex: null
     })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildGroupManagerView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.groupAddPrefix) {
-    await interaction.showModal(buildGroupModal(sessionId, "add"))
-    return true
+    return false
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.groupEditPrefix) {
     const index = session.data.selectedGroupIndex
     if (!Number.isInteger(index) || !session.data.groups?.[index]) {
       throw new EventValidationError("Select a group to edit.")
     }
-    await interaction.showModal(buildGroupModal(sessionId, "edit", session.data.groups[index]))
-    return true
+    return false
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.groupRemovePrefix) {
     const index = session.data.selectedGroupIndex
@@ -841,7 +914,7 @@ async function handleEventCreationInteraction(
     }
     const groups = removeGroup(session.data.groups, index)
     sessionStore.update(sessionId, context, { groups, selectedGroupIndex: null })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildGroupManagerView(sessionId, session.data))
     return true
   }
@@ -849,61 +922,59 @@ async function handleEventCreationInteraction(
     if (!session.data.groups?.length) {
       throw new EventValidationError("A grouped event requires at least one group.")
     }
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildTimingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.messagesPrefix) {
-    await interaction.showModal(buildMessagesModal(sessionId, session.data))
-    return true
+    return false
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.imageManagePrefix) {
     sessionStore.update(sessionId, context, { imageReturnView: "timing" })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildImageChoiceView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.imageKeepPrefix) {
     sessionStore.update(sessionId, context, { imageAction: "retain" })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(session.data.imageReturnView === "preview"
       ? buildPreviewView(sessionId, session.data)
       : buildTimingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.imageReplacePrefix) {
-    await interaction.showModal(buildImageUploadModal(sessionId))
-    return true
+    return false
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.imageRemovePrefix) {
     sessionStore.update(sessionId, context, { image: null, imageAction: "remove" })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(session.data.imageReturnView === "preview"
       ? buildPreviewView(sessionId, session.data)
       : buildTimingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.optionsPrefix) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildPublishingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.alliancePrefix) {
     sessionStore.update(sessionId, context, { publishToAlliance: !session.data.publishToAlliance })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildPublishingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.statePrefix) {
     if (!session.data.publishToState && !(await stateLinkIsEnabled(repository, interaction.guildId))) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "Enable a valid state roundup link before including this event in state roundups.",
-        flags: MessageFlags.Ephemeral
+        components: []
       })
       return true
     }
     sessionStore.update(sessionId, context, { publishToState: !session.data.publishToState })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildPublishingView(sessionId, session.data))
     return true
   }
@@ -911,24 +982,23 @@ async function handleEventCreationInteraction(
     sessionStore.update(sessionId, context, {
       includeInWeeklyRoundup: !session.data.includeInWeeklyRoundup
     })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildPublishingView(sessionId, session.data))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.previewPrefix) {
     const event = await validateSessionEvent(repository, interaction.guildId, session.data)
     sessionStore.update(sessionId, context, event)
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(buildPreviewView(sessionId, event))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.editPrefix) {
-    await interaction.showModal(buildCoreModal(sessionId, session.data))
-    return true
+    return false
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.allianceChangePrefix) {
     sessionStore.update(sessionId, context, { allianceChangeOnly: true })
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await renderAllianceSelection(
       interaction,
       repository,
@@ -941,12 +1011,12 @@ async function handleEventCreationInteraction(
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.cancelPrefix) {
     sessionStore.cancel(sessionId, context)
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     await interaction.editReply(await loadHome(repository, interaction.guildId))
     return true
   }
   if (interaction.isButton?.() && prefix === CREATION_IDS.createPrefix) {
-    await interaction.deferUpdate()
+    await acknowledgeSchedulerInteraction(interaction)
     if (session.data.creationInProgress) {
       await interaction.editReply({
         content: "This event is already being created.",
@@ -1019,5 +1089,6 @@ module.exports = {
   buildPreviewView,
   buildListView,
   buildOccurrencePreviewView,
+  handleEventCreationModalOpeningInteraction,
   handleEventCreationInteraction
 }

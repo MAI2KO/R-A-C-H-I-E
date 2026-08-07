@@ -1,6 +1,5 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const { MessageFlags } = require("discord.js")
 
 const {
   HELP_IDS,
@@ -54,7 +53,8 @@ test("scheduler help sections are complete and remain inside Discord limits", ()
   assert.match(combined, /never requires server or channel IDs/i)
 })
 
-test("scheduler help is ephemeral and remains available when database health is down", async () => {
+test("scheduler help is acknowledged immediately and remains available when database health is down", async () => {
+  let deferred
   let reply
   let healthChecked = false
   let authorizationChecked = false
@@ -62,7 +62,8 @@ test("scheduler help is ephemeral and remains available when database health is 
     commandName: "event-scheduler-help",
     customId: null,
     isChatInputCommand: () => true,
-    async reply(payload) { reply = payload }
+    async deferReply(payload) { deferred = payload; this.deferred = true },
+    async editReply(payload) { reply = payload }
   }
   assert.equal(await handleEventSchedulerInteraction(interaction, {
     healthProvider() { healthChecked = true; throw new Error("must not check health") },
@@ -70,7 +71,7 @@ test("scheduler help is ephemeral and remains available when database health is 
   }), true)
   assert.equal(healthChecked, false)
   assert.equal(authorizationChecked, false)
-  assert.equal(reply.flags, MessageFlags.Ephemeral)
+  assert.equal(deferred.ephemeral, true)
   assert.match(reply.content, /Getting started/i)
 })
 

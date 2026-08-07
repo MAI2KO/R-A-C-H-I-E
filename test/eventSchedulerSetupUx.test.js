@@ -1,6 +1,6 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const { ChannelType, ComponentType, MessageFlags, PermissionFlagsBits } = require("discord.js")
+const { ChannelType, ComponentType, PermissionFlagsBits } = require("discord.js")
 
 const {
   IDS,
@@ -336,5 +336,5 @@ test("scheduler responses remain private for native setup entry", async () => {
     async editReply() {}
   }
   await handleEventSchedulerInteraction(interaction, handlerOptions(repository))
-  assert.equal(deferred.flags, MessageFlags.Ephemeral)
+  assert.equal(deferred.ephemeral, true)
 })
