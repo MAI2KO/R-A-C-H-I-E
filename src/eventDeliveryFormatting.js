@@ -56,14 +56,24 @@ function timingDetails(payload) {
 
 function formatAllianceEventDelivery(payload, { imageFilename = null } = {}) {
   const timing = timingDetails(payload)
+  const occurrence = requireOccurrence(payload?.claim?.occurrenceAt)
+  const occurrenceTimestamp = Math.floor(occurrence.getTime() / 1000)
+  const utcTime = occurrence.toISOString().slice(11, 16)
   const eventName = boundedText(payload?.event?.eventName, 220)
   const allianceName = boundedText(payload?.alliance?.name, 1000)
   const groupName = payload?.group?.name
     ? boundedText(payload.group.name, 1000)
     : null
-  const descriptionParts = [allianceName, eventName]
+  const descriptionParts = [`**${allianceName}**`, `**${eventName}**`]
   if (groupName) descriptionParts.push(groupName)
-  descriptionParts.push("", timing.status)
+  descriptionParts.push(
+    "",
+    timing.status,
+    "",
+    "Start time",
+    `${utcTime} UTC`,
+    `Local time: <t:${occurrenceTimestamp}:t>`
+  )
   const customMessage = payload.claim.deliveryKind === "final_reminder"
     ? payload?.event?.finalReminderMessage
     : payload?.event?.advanceReminderMessage

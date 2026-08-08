@@ -73,9 +73,13 @@ test("advance reminder embeds cover 10, 30 and grouped events", () => {
   const ten = formatAllianceEventDelivery(payload())
   const tenEmbed = embedJson(ten)
   assert.match(tenEmbed.title, /Event reminder: Bear Hunt/)
-  assert.equal(tenEmbed.description, "North\nBear Hunt\n\nStarts in 10 minutes")
+  assert.equal(
+    tenEmbed.description,
+    "**North**\n**Bear Hunt**\n\nStarts in 10 minutes\n\n" +
+      "Start time\n18:30 UTC\nLocal time: <t:1786386600:t>"
+  )
   assert.equal(tenEmbed.fields, undefined)
-  assert.doesNotMatch(JSON.stringify(tenEmbed), /Alliance:|Group:|Status:|When|UTC|<t:|recurrence/i)
+  assert.doesNotMatch(JSON.stringify(tenEmbed), /Alliance:|Group:|Status:|When|recurrence|2026-08-10/i)
 
   const thirty = embedJson(formatAllianceEventDelivery(payload({
     claim: { deliverAt: new Date("2026-08-10T18:00:00Z") }
@@ -85,7 +89,7 @@ test("advance reminder embeds cover 10, 30 and grouped events", () => {
   const grouped = embedJson(formatAllianceEventDelivery(payload({
     group: { id: "2", name: "Alpha", eventTimeUtc: "18:30", sortOrder: 0 }
   })))
-  assert.equal(grouped.description, "North\nBear Hunt\nAlpha\n\nStarts in 10 minutes")
+  assert.match(grouped.description, /^\*\*North\*\*\n\*\*Bear Hunt\*\*\nAlpha/)
 })
 
 test("final reminder embeds say about to start one minute before", () => {
@@ -94,7 +98,11 @@ test("final reminder embeds say about to start one minute before", () => {
     event: { recurrenceDays: 3 }
   })))
   assert.match(final.title, /About to start: Bear Hunt/)
-  assert.equal(final.description, "North\nBear Hunt\n\nAbout to start\nStarts in approximately 1 minute")
+  assert.equal(
+    final.description,
+    "**North**\n**Bear Hunt**\n\nAbout to start\nStarts in approximately 1 minute\n\n" +
+      "Start time\n18:30 UTC\nLocal time: <t:1786386600:t>"
+  )
   assert.equal(final.fields, undefined)
   assert.doesNotMatch(JSON.stringify(final), /Starting now|Has started|Event start/i)
 

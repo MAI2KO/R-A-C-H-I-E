@@ -50,6 +50,30 @@ function roundupPayload() {
   }
 }
 
+function stateRoundupPayload() {
+  return {
+    ...roundupPayload(),
+    claim: {
+      ...roundupPayload().claim,
+      targetKind: "state",
+      targetGuildId: "state-guild",
+      targetChannelId: "state-channel"
+    },
+    occurrences: [
+      ...roundupPayload().occurrences,
+      {
+        eventId: "event-2",
+        sourceGuildId: "guild-2",
+        allianceId: "alliance-2",
+        allianceName: "HwC",
+        isMainAlliance: true,
+        eventName: "Foundry",
+        occurrenceAt: new Date("2028-03-04T20:00:00Z")
+      }
+    ]
+  }
+}
+
 function interaction(type, customId, overrides = {}) {
   return {
     commandName: null,
@@ -94,7 +118,7 @@ test("roundup preview is ephemeral and does not mutate scheduled history", async
   const repository = {
     async getWeeklyRoundupPreview() { return roundupPayload() }
   }
-  const preview = interaction("button", IDS.roundupPreview)
+  const preview = interaction("button", IDS.roundupAlliancePreview)
   await handleEventSchedulerInteraction(preview, options(repository))
   assert.equal(preview.deferred, true)
   assert.match(preview.edited.content, /nothing has been sent/i)
@@ -104,16 +128,20 @@ test("roundup preview is ephemeral and does not mutate scheduled history", async
 
 test("confirmed test sends are repeatable and never consume production history", async () => {
   const sent = []
+  const targets = []
   const history = { status: "sent", sentMessageId: "production-message" }
   const repository = {
     async getGuildSettings() { return settings },
     async getWeeklyRoundupPreview() { return roundupPayload() }
   }
-  const resolver = async () => ({
+  const resolver = async (client, targetGuildId, targetChannelId) => {
+    targets.push({ targetGuildId, targetChannelId })
+    return {
     channel: { async send(message) { sent.push(message); return { id: `test-${sent.length}` } } }
-  })
+    }
+  }
 
-  const request = interaction("button", IDS.roundupTest)
+  const request = interaction("button", IDS.roundupAllianceTest)
   await handleEventSchedulerInteraction(request, options(repository, {
     roundupTargetResolver: resolver
   }))
@@ -122,7 +150,7 @@ test("confirmed test sends are repeatable and never consume production history",
   assert.ok(components(request.edited).some(component => component.label === "Confirm test send"))
 
   for (let count = 1; count <= 2; count += 1) {
-    const confirm = interaction("button", IDS.roundupTestConfirm)
+    const confirm = interaction("button", IDS.roundupAllianceTestConfirm)
     await handleEventSchedulerInteraction(confirm, options(repository, {
       roundupTargetResolver: resolver
     }))
@@ -130,7 +158,69 @@ test("confirmed test sends are repeatable and never consume production history",
     assert.match(sent.at(-1).embeds[0].toJSON().title, /— TEST/)
     assert.match(confirm.edited.content, /Scheduled history was not changed/)
   }
+  assert.deepEqual(targets, [
+    { targetGuildId: guildId, targetChannelId: channelId },
+    { targetGuildId: guildId, targetChannelId: channelId }
+  ])
   assert.deepEqual(history, { status: "sent", sentMessageId: "production-message" })
+})
+
+test("state preview and repeated test sends use the combined linked destination", async () => {
+  const sent = []
+  const targets = []
+  const history = { status: "sent", sentMessageId: "production-state-message" }
+  const repository = {
+    async getGuildSettings() { return settings },
+    async getStateWeeklyRoundupPreview() { return stateRoundupPayload() }
+  }
+  const resolver = async (client, targetGuildId, targetChannelId) => {
+    targets.push({ targetGuildId, targetChannelId })
+    return {
+      channel: { async send(message) { sent.push(message); return { id: `state-${sent.length}` } } }
+    }
+  }
+
+  const preview = interaction("button", IDS.roundupStatePreview)
+  await handleEventSchedulerInteraction(preview, options(repository))
+  assert.match(preview.edited.content, /State roundup preview.*nothing has been sent/is)
+  const previewJson = preview.edited.embeds[0].toJSON()
+  assert.match(previewJson.title, /State weekly roundup/)
+  assert.match(previewJson.description, /\*\*HnC\*\*/)
+  assert.match(previewJson.description, /\*\*HwC\*\*/)
+
+  const request = interaction("button", IDS.roundupStateTest)
+  await handleEventSchedulerInteraction(request, options(repository))
+  assert.match(request.edited.content, /Destination: <#state-channel>/)
+  assert.equal(sent.length, 0)
+
+  for (let count = 1; count <= 2; count += 1) {
+    const confirm = interaction("button", IDS.roundupStateTestConfirm)
+    await handleEventSchedulerInteraction(confirm, options(repository, {
+      roundupTargetResolver: resolver
+    }))
+    assert.equal(sent.length, count)
+    const sentJson = sent.at(-1).embeds[0].toJSON()
+    assert.match(sentJson.title, /State weekly roundup — TEST/)
+    assert.match(sentJson.description, /\*\*HnC\*\*/)
+    assert.match(sentJson.description, /\*\*HwC\*\*/)
+  }
+  assert.deepEqual(targets, [
+    { targetGuildId: "state-guild", targetChannelId: "state-channel" },
+    { targetGuildId: "state-guild", targetChannelId: "state-channel" }
+  ])
+  assert.deepEqual(history, { status: "sent", sentMessageId: "production-state-message" })
+})
+
+test("state roundup testing explains missing destination configuration", async () => {
+  const repository = {
+    async getGuildSettings() { return settings },
+    async getStateWeeklyRoundupPreview() { return null }
+  }
+  for (const customId of [IDS.roundupStatePreview, IDS.roundupStateTest]) {
+    const request = interaction("button", customId)
+    await handleEventSchedulerInteraction(request, options(repository))
+    assert.match(request.edited.content, /valid enabled state destination and link/i)
+  }
 })
 
 test("scheduled roundup replay protection remains independent from test sends", async () => {

@@ -17,6 +17,30 @@ function createEventSchedulerRepository(pool, gameProfile) {
   }
   assertProfile(gameProfile)
 
+  async function withEventGroups(events) {
+    const eventIds = events.map(event => event.id)
+    let groups = []
+    if (eventIds.length) {
+      groups = (await pool.query(
+        `SELECT id AS group_id, event_id, group_name, event_time_utc, sort_order
+           FROM scheduled_event_groups
+          WHERE game_profile = $1 AND event_id = ANY($2::bigint[])
+          ORDER BY event_id, sort_order, group_name, id`,
+        [gameProfile, eventIds]
+      )).rows
+    }
+    const groupsByEvent = new Map()
+    for (const group of groups) {
+      const key = String(group.event_id)
+      if (!groupsByEvent.has(key)) groupsByEvent.set(key, [])
+      groupsByEvent.get(key).push(group)
+    }
+    return events.map(event => ({
+      ...event,
+      groups: groupsByEvent.get(String(event.id)) || []
+    }))
+  }
+
   return {
     async getGuildSettings(guildId) {
       const result = await pool.query(
@@ -540,27 +564,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
           ORDER BY e.id`,
         [guildId, gameProfile]
       )
-      const eventIds = eventResult.rows.map(event => event.id)
-      let groups = []
-      if (eventIds.length) {
-        groups = (await pool.query(
-          `SELECT id AS group_id, event_id, group_name, event_time_utc, sort_order
-             FROM scheduled_event_groups
-            WHERE game_profile = $1 AND event_id = ANY($2::bigint[])
-            ORDER BY event_id, sort_order, group_name, id`,
-          [gameProfile, eventIds]
-        )).rows
-      }
-      const groupsByEvent = new Map()
-      for (const group of groups) {
-        const key = String(group.event_id)
-        if (!groupsByEvent.has(key)) groupsByEvent.set(key, [])
-        groupsByEvent.get(key).push(group)
-      }
-      const events = eventResult.rows.map(event => ({
-        ...event,
-        groups: groupsByEvent.get(String(event.id)) || []
-      }))
+      const events = await withEventGroups(eventResult.rows)
       const { weekStart, weekEnd } = configuredRoundupWindow(
         now,
         settings.weekly_roundup_day
@@ -577,6 +581,67 @@ function createEventSchedulerRepository(pool, gameProfile) {
           postWhenEmpty: settings.roundup_when_empty === true
         },
         allianceName: settings.alliance_name,
+        occurrences: buildRoundupOccurrences(events, weekStart, weekEnd)
+      }
+    },
+
+    async getStateWeeklyRoundupPreview(guildId, { now = new Date() } = {}) {
+      const target = (await pool.query(
+        `SELECT s.alliance_name, s.weekly_roundup_day, s.roundup_when_empty,
+                l.state_guild_id, l.state_event_channel_id
+           FROM event_guild_settings s
+           JOIN event_state_links l
+             ON l.alliance_guild_id = s.guild_id AND l.game_profile = s.game_profile
+           JOIN event_state_destinations d
+             ON d.state_guild_id = l.state_guild_id AND d.game_profile = l.game_profile
+            AND d.state_roundup_channel_id = l.state_event_channel_id
+          WHERE s.guild_id = $1 AND s.game_profile = $2
+            AND s.state_roundup_enabled = true
+            AND l.sharing_enabled = true AND d.enabled = true`,
+        [guildId, gameProfile]
+      )).rows[0]
+      if (!target) return null
+
+      const eventResult = await pool.query(
+        `SELECT DISTINCT e.*, a.alliance_name AS alliance_name,
+                a.is_default AS is_default_alliance,
+                e.first_occurrence_date::text AS first_occurrence_date
+           FROM scheduled_events e
+           JOIN event_alliances a
+             ON a.id = e.alliance_id AND a.guild_id = e.guild_id
+            AND a.game_profile = e.game_profile
+           JOIN event_guild_settings s
+             ON s.guild_id = e.guild_id AND s.game_profile = e.game_profile
+           JOIN event_state_links l
+             ON l.alliance_guild_id = e.guild_id AND l.game_profile = e.game_profile
+           JOIN event_state_destinations d
+             ON d.state_guild_id = l.state_guild_id AND d.game_profile = l.game_profile
+            AND d.state_roundup_channel_id = l.state_event_channel_id
+          WHERE e.game_profile = $1 AND e.status = 'active'
+            AND e.include_in_weekly_roundup = true
+            AND s.state_roundup_enabled = true
+            AND l.sharing_enabled = true AND d.enabled = true
+            AND l.state_guild_id = $2 AND l.state_event_channel_id = $3
+          ORDER BY e.id`,
+        [gameProfile, target.state_guild_id, target.state_event_channel_id]
+      )
+      const events = await withEventGroups(eventResult.rows)
+      const { weekStart, weekEnd } = configuredRoundupWindow(
+        now,
+        target.weekly_roundup_day
+      )
+      return {
+        claim: {
+          gameProfile,
+          targetKind: "state",
+          targetGuildId: target.state_guild_id,
+          targetChannelId: target.state_event_channel_id,
+          targetIsCurrent: true,
+          weekStart,
+          weekEnd,
+          postWhenEmpty: target.roundup_when_empty === true
+        },
+        allianceName: target.alliance_name,
         occurrences: buildRoundupOccurrences(events, weekStart, weekEnd)
       }
     },

@@ -64,9 +64,12 @@ const IDS = Object.freeze({
   roundupScheduleConfirmPrefix: "es:roundconfirm:",
   roundupChannelView: "es:roundchannel",
   roundupChannel: "es:roundch",
-  roundupPreview: "es:roundpreview",
-  roundupTest: "es:roundtest",
-  roundupTestConfirm: "es:roundtestconfirm",
+  roundupAlliancePreview: "es:roundpreview",
+  roundupAllianceTest: "es:roundtest",
+  roundupAllianceTestConfirm: "es:roundtestconfirm",
+  roundupStatePreview: "es:stateroundpreview",
+  roundupStateTest: "es:stateroundtest",
+  roundupStateTestConfirm: "es:stateroundtestconfirm",
   stateRoundupToggle: "es:stateroundtoggle",
   stateDestination: "es:statedest",
   stateDestinationChannel: "es:statedestch",
@@ -254,10 +257,16 @@ function buildRoundupSettingsView(settings) {
         backButton()
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(IDS.roundupPreview).setLabel("Preview roundup")
+        new ButtonBuilder().setCustomId(IDS.roundupAlliancePreview).setLabel("Preview alliance roundup")
           .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(IDS.roundupTest).setLabel("Send test roundup")
+        new ButtonBuilder().setCustomId(IDS.roundupAllianceTest).setLabel("Send test alliance roundup")
           .setStyle(ButtonStyle.Secondary).setDisabled(!settings?.weekly_roundup_channel_id)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.roundupStatePreview).setLabel("Preview state roundup")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(IDS.roundupStateTest).setLabel("Send test state roundup")
+          .setStyle(ButtonStyle.Secondary)
       )
     ],
     allowedMentions: SAFE_MENTIONS
@@ -298,15 +307,19 @@ function buildRoundupDayView(settings, selectedDay = Number(settings?.weekly_rou
   }
 }
 
-function buildRoundupTestConfirmation(settings) {
+function buildRoundupTestConfirmation({ targetKind, channelId, settings }) {
+  const label = targetKind === "state" ? "state" : "alliance"
+  const confirmId = targetKind === "state"
+    ? IDS.roundupStateTestConfirm
+    : IDS.roundupAllianceTestConfirm
   return {
     content:
-      `Send test weekly roundup\n\n` +
-      `Destination: <#${settings.weekly_roundup_channel_id}>\n` +
+      `Send test ${label} weekly roundup\n\n` +
+      `Destination: <#${channelId}>\n` +
       `Configured schedule: ${roundupScheduleLabel(settings)}\n\n` +
       "This sends a clearly marked test and does not affect scheduled-roundup history.",
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(IDS.roundupTestConfirm).setLabel("Confirm test send")
+      new ButtonBuilder().setCustomId(confirmId).setLabel("Confirm test send")
         .setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Cancel")
         .setStyle(ButtonStyle.Secondary)
@@ -315,9 +328,10 @@ function buildRoundupTestConfirmation(settings) {
 }
 
 function roundupPreviewResponse(payload, messages) {
+  const label = payload?.claim?.targetKind === "state" ? "State" : "Alliance"
   if (!messages.length) {
     return {
-      content: "Roundup preview\n\nNo eligible events are in the current configured weekly window.",
+      content: `${label} roundup preview\n\nNo eligible events are in the current configured weekly window.`,
       embeds: [],
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
@@ -326,7 +340,7 @@ function roundupPreviewResponse(payload, messages) {
     }
   }
   return {
-    content: "Roundup preview - nothing has been sent.",
+    content: `${label} roundup preview - nothing has been sent.`,
     embeds: messages.map(message => message.embeds?.[0]).filter(Boolean).slice(0, 10),
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")
@@ -725,7 +739,7 @@ async function handleEventSchedulerInteraction(
       return true
     }
 
-    if (interaction.isButton?.() && interaction.customId === IDS.roundupPreview) {
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupAlliancePreview) {
       const payload = await repository.getWeeklyRoundupPreview(guildId, { now: roundupNow() })
       if (!payload) throw new SchedulerValidationError("Configure the event scheduler first.")
       const messages = roundupFormatter(payload)
@@ -733,22 +747,66 @@ async function handleEventSchedulerInteraction(
       return true
     }
 
-    if (interaction.isButton?.() && interaction.customId === IDS.roundupTest) {
-      const settings = await repository.getGuildSettings(guildId)
-      if (!settings?.weekly_roundup_channel_id) {
-        throw new SchedulerValidationError("Choose the alliance roundup channel first.")
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupStatePreview) {
+      const payload = await repository.getStateWeeklyRoundupPreview(guildId, { now: roundupNow() })
+      if (!payload) {
+        throw new SchedulerValidationError(
+          "Enable state publishing and configure a valid enabled state destination and link first."
+        )
       }
-      await interaction.editReply(buildRoundupTestConfirmation(settings))
+      const messages = roundupFormatter(payload)
+      await interaction.editReply(roundupPreviewResponse(payload, messages))
       return true
     }
 
-    if (interaction.isButton?.() && interaction.customId === IDS.roundupTestConfirm) {
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupAllianceTest) {
       const settings = await repository.getGuildSettings(guildId)
       if (!settings?.weekly_roundup_channel_id) {
         throw new SchedulerValidationError("Choose the alliance roundup channel first.")
       }
-      const payload = await repository.getWeeklyRoundupPreview(guildId, { now: roundupNow() })
-      if (!payload) throw new SchedulerValidationError("Configure the event scheduler first.")
+      await interaction.editReply(buildRoundupTestConfirmation({
+        targetKind: "alliance",
+        channelId: settings.weekly_roundup_channel_id,
+        settings
+      }))
+      return true
+    }
+
+    if (interaction.isButton?.() && interaction.customId === IDS.roundupStateTest) {
+      const settings = await repository.getGuildSettings(guildId)
+      const payload = await repository.getStateWeeklyRoundupPreview(guildId, { now: roundupNow() })
+      if (!settings || !payload) {
+        throw new SchedulerValidationError(
+          "Enable state publishing and configure a valid enabled state destination and link first."
+        )
+      }
+      await interaction.editReply(buildRoundupTestConfirmation({
+        targetKind: "state",
+        channelId: payload.claim.targetChannelId,
+        settings
+      }))
+      return true
+    }
+
+    if (interaction.isButton?.() && [
+      IDS.roundupAllianceTestConfirm,
+      IDS.roundupStateTestConfirm
+    ].includes(interaction.customId)) {
+      const targetKind = interaction.customId === IDS.roundupStateTestConfirm
+        ? "state"
+        : "alliance"
+      const settings = await repository.getGuildSettings(guildId)
+      if (targetKind === "alliance" && !settings?.weekly_roundup_channel_id) {
+        throw new SchedulerValidationError("Choose the alliance roundup channel first.")
+      }
+      const payload = targetKind === "state"
+        ? await repository.getStateWeeklyRoundupPreview(guildId, { now: roundupNow() })
+        : await repository.getWeeklyRoundupPreview(guildId, { now: roundupNow() })
+      if (!payload) {
+        throw new SchedulerValidationError(targetKind === "state"
+          ? "Enable state publishing and configure a valid enabled state destination and link first."
+          : "Configure the event scheduler first.")
+      }
       const messages = roundupFormatter({
         ...payload,
         claim: { ...payload.claim, isTest: true }
@@ -760,15 +818,15 @@ async function handleEventSchedulerInteraction(
       }
       const target = await roundupTargetResolver(
         interaction.client,
-        guildId,
-        settings.weekly_roundup_channel_id,
+        payload.claim.targetGuildId,
+        payload.claim.targetChannelId,
         { requireAttachments: false }
       )
       for (const message of messages) await target.channel.send(message)
       await interaction.editReply({
         content:
           `Sent ${messages.length} test roundup message${messages.length === 1 ? "" : "s"} ` +
-          `to <#${settings.weekly_roundup_channel_id}>. Scheduled history was not changed.`,
+          `to <#${payload.claim.targetChannelId}>. Scheduled history was not changed.`,
         embeds: [],
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Back")

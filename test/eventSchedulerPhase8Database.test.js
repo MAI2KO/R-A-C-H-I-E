@@ -6,6 +6,10 @@ const { createEventSchedulerRepository } = require("../src/eventSchedulerReposit
 const { createEventDeliveryRepository } = require("../src/eventDeliveryRepository")
 const { createWeeklyRoundupRepository } = require("../src/weeklyRoundupRepository")
 const { claimsForConfigurations } = require("../src/weeklyRoundupGeneration")
+const {
+  IDS,
+  handleEventSchedulerInteraction
+} = require("../src/eventSchedulerInteractions")
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 
@@ -400,6 +404,84 @@ test("Phase 8 management and roundups remain atomic, durable and profile isolate
     assert.equal(statePayload.occurrences.some(item =>
       String(item.eventId) === String(roundupOff.id)
     ), false)
+
+    const statePreview = await wosA.getStateWeeklyRoundupPreview(guildA, { now })
+    assert.equal(statePreview.claim.targetKind, "state")
+    assert.equal(statePreview.claim.targetGuildId, stateGuild)
+    assert.equal(statePreview.claim.targetChannelId, stateChannel)
+    assert.ok(statePreview.occurrences.some(item => item.allianceName === "North"))
+    assert.ok(statePreview.occurrences.some(item => item.allianceName === "South"))
+    assert.equal(statePreview.occurrences.some(item => item.allianceName === "Kingshot North"), false)
+    assert.ok(statePreview.occurrences.some(item =>
+      String(item.eventId) === String(allianceOnly.id)
+    ))
+    assert.equal(statePreview.occurrences.some(item =>
+      String(item.eventId) === String(roundupOff.id)
+    ), false)
+
+    const beforeStateTests = (await pool.query(
+      `SELECT id, status, attempt_count, sent_at, sent_message_id
+         FROM weekly_roundup_claims
+        WHERE game_profile = 'wos' AND target_kind = 'state'
+        ORDER BY id`
+    )).rows
+    const stateTestMessages = []
+    const resolvedStateTargets = []
+    for (let index = 0; index < 2; index += 1) {
+      const interaction = {
+        commandName: null,
+        customId: IDS.roundupStateTestConfirm,
+        guildId: guildA,
+        user: { id: userId },
+        client: {},
+        deferred: false,
+        replied: false,
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        isStringSelectMenu: () => false,
+        isChannelSelectMenu: () => false,
+        isModalSubmit: () => false,
+        async deferUpdate() { this.deferred = true },
+        async editReply(value) { this.edited = value }
+      }
+      await handleEventSchedulerInteraction(interaction, {
+        healthProvider: () => ({
+          available: true,
+          gameProfile: "wos",
+          botInstanceName: "rachie-wos"
+        }),
+        userCanManageServer: async () => true,
+        repositoryProvider: () => wosA,
+        roundupNow: () => now,
+        roundupTargetResolver: async (client, targetGuildId, targetChannelId) => {
+          resolvedStateTargets.push({ targetGuildId, targetChannelId })
+          return {
+            channel: {
+              async send(message) {
+                stateTestMessages.push(message)
+                return { id: `state-test-${stateTestMessages.length}` }
+              }
+            }
+          }
+        },
+        logger: { error() {}, warn() {} }
+      })
+    }
+    const afterStateTests = (await pool.query(
+      `SELECT id, status, attempt_count, sent_at, sent_message_id
+         FROM weekly_roundup_claims
+        WHERE game_profile = 'wos' AND target_kind = 'state'
+        ORDER BY id`
+    )).rows
+    assert.equal(stateTestMessages.length, 2)
+    assert.ok(stateTestMessages.every(message =>
+      /State weekly roundup — TEST/.test(message.embeds[0].toJSON().title)
+    ))
+    assert.deepEqual(resolvedStateTargets, [
+      { targetGuildId: stateGuild, targetChannelId: stateChannel },
+      { targetGuildId: stateGuild, targetChannelId: stateChannel }
+    ])
+    assert.deepEqual(afterStateTests, beforeStateTests)
 
     assert.equal(await roundupRepository.setPartCount({
       claimId: stateClaim.id, botInstanceName: "rachie-wos", workerId: owner, partCount: 2

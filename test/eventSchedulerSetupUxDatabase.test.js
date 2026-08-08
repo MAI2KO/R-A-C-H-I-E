@@ -433,7 +433,7 @@ test("roundup previews leave production delivery history unchanged", {
     for (let index = 0; index < 2; index += 1) {
       const interaction = {
         commandName: null,
-        customId: IDS.roundupTestConfirm,
+        customId: IDS.roundupAllianceTestConfirm,
         guildId,
         user: { id: "6888888888888904" },
         client: {},

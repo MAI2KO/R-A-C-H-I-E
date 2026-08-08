@@ -60,7 +60,7 @@ const HELP_SECTIONS = Object.freeze([
       "**Reminder behaviour**\n\n" +
       "Each event/group occurrence can have one advance reminder: none, 5, 10, 15, 20 or 30 minutes before.\n\n" +
       "The separate final announcement says **About to start** and is delivered one minute before the configured event time. There is no exact-start post.\n\n" +
-      "Immediate reminders contain only the alliance, event, optional group, countdown, and optional custom text. The final message uses **About to start** and approximate one-minute wording. Detailed UTC/local schedules belong in previews and weekly roundups. Mentions never ping. An image is attached only to the alliance advance reminder. Individual reminders are alliance-only."
+      "Immediate reminders contain the alliance, event, optional group, countdown, UTC start time, local Discord time, and optional custom text. The final message uses **About to start** and approximate one-minute wording. Mentions never ping. An image is attached only to the alliance advance reminder. Individual reminders are alliance-only."
   }),
   Object.freeze({
     id: "managing-events",

@@ -250,6 +250,22 @@ test("roundup settings remain manageable while disabled and preview schedule cha
   assert.equal(buttons.find(button => button.custom_id === IDS.roundupDisable).disabled, true)
   assert.ok(buttons.some(button => button.custom_id === IDS.roundupSchedule))
   assert.ok(buttons.some(button => button.custom_id === IDS.roundupChannelView))
+  assert.equal(
+    buttons.find(button => button.custom_id === IDS.roundupAlliancePreview).label,
+    "Preview alliance roundup"
+  )
+  assert.equal(
+    buttons.find(button => button.custom_id === IDS.roundupAllianceTest).label,
+    "Send test alliance roundup"
+  )
+  assert.equal(
+    buttons.find(button => button.custom_id === IDS.roundupStatePreview).label,
+    "Preview state roundup"
+  )
+  assert.equal(
+    buttons.find(button => button.custom_id === IDS.roundupStateTest).label,
+    "Send test state roundup"
+  )
 
   const dayView = buildRoundupDayView(settings).components[0].toJSON().components[0]
   assert.deepEqual(dayView.options.map(option => option.label), [
