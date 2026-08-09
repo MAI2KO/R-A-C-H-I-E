@@ -54,6 +54,9 @@ function eventDraft(event) {
     eventTimeUtc: event.event_time_utc ? String(event.event_time_utc).slice(0, 5) : null,
     groups: (event.groups || []).map(group => ({
       groupName: group.group_name,
+      firstOccurrenceDate: String(
+        group.first_occurrence_date || event.first_occurrence_date
+      ).slice(0, 10),
       eventTimeUtc: String(group.event_time_utc).slice(0, 5),
       sortOrder: group.sort_order
     })),

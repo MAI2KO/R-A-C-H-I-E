@@ -134,7 +134,14 @@ function buildSingleTimeModal(sessionId, data = {}) {
     .addComponents(textInput("t", "Event time (UTC)", data.eventTimeUtc, { maximum: 20 }))
 }
 
-function normalizeGroupInput(name, time, groups, editingIndex = null) {
+function normalizeGroupInput(
+  name,
+  time,
+  groups,
+  editingIndex = null,
+  firstOccurrenceDate = null,
+  parentFirstOccurrenceDate = null
+) {
   const groupName = String(name || "").trim()
   if (!groupName || groupName.length > 100) {
     throw new EventValidationError("Group name must be 1 to 100 characters.")
@@ -143,7 +150,18 @@ function normalizeGroupInput(name, time, groups, editingIndex = null) {
     index !== editingIndex && group.groupName.toLowerCase() === groupName.toLowerCase()
   )
   if (duplicate) throw new EventValidationError(`Duplicate group name: ${groupName}.`)
-  return { groupName, eventTimeUtc: parseUtcTime(time) }
+  const groupDate = firstOccurrenceDate === null
+    ? null
+    : parseIsoDate(firstOccurrenceDate).value
+  if (groupDate && parentFirstOccurrenceDate && groupDate < parentFirstOccurrenceDate) {
+    throw new EventValidationError("Group date must not be before the event's first date.")
+  }
+  const normalized = {
+    groupName,
+    eventTimeUtc: parseUtcTime(time)
+  }
+  if (groupDate) normalized.firstOccurrenceDate = groupDate
+  return normalized
 }
 
 function upsertGroup(groups, group, editingIndex = null) {
@@ -169,21 +187,34 @@ function removeGroup(groups, index) {
     .map((group, groupIndex) => ({ ...group, sortOrder: groupIndex }))
 }
 
-function buildGroupModal(sessionId, mode, group = {}) {
+function buildGroupModal(sessionId, mode, group = {}, parentFirstOccurrenceDate = null) {
   return new ModalBuilder()
     .setCustomId(`${CREATION_IDS.groupModalPrefix}${sessionId}:${mode}`)
     .setTitle(mode === "edit" ? "Edit event group" : "Add event group")
     .addComponents(
       textInput("name", "Group name", group.groupName, { maximum: 100 }),
+      textInput(
+        "date",
+        "First date (YYYY-MM-DD)",
+        group.firstOccurrenceDate || parentFirstOccurrenceDate,
+        { maximum: 10 }
+      ),
       textInput("time", "Event time (UTC)", group.eventTimeUtc, { maximum: 20 })
     )
+}
+
+function groupDateTimeText(group, parentFirstOccurrenceDate = null) {
+  const date = group.firstOccurrenceDate || parentFirstOccurrenceDate
+  return date ? `${date} - ${group.eventTimeUtc} UTC` : `${group.eventTimeUtc} UTC`
 }
 
 function buildGroupManagerView(sessionId, data = {}) {
   const groups = data.groups || []
   const selected = Number.isInteger(data.selectedGroupIndex) ? data.selectedGroupIndex : null
   const lines = groups.length
-    ? groups.map((group, index) => `${index + 1}. ${group.groupName} - ${group.eventTimeUtc} UTC`).join("\n")
+    ? groups.map((group, index) =>
+      `${index + 1}. ${group.groupName} - ${groupDateTimeText(group, data.firstOccurrenceDate)}`
+    ).join("\n")
     : "No groups configured."
   const components = []
   if (groups.length) {
@@ -193,7 +224,7 @@ function buildGroupManagerView(sessionId, data = {}) {
         .setPlaceholder("Select a group to edit or remove")
         .addOptions(groups.slice(0, 25).map((group, index) => ({
           label: group.groupName.slice(0, 100),
-          description: `${group.eventTimeUtc} UTC`,
+          description: groupDateTimeText(group, data.firstOccurrenceDate),
           value: String(index),
           default: selected === index
         })))
@@ -396,7 +427,12 @@ async function handleEventCreationModalOpeningInteraction(
     return true
   }
   if (prefix === CREATION_IDS.groupAddPrefix) {
-    await interaction.showModal(buildGroupModal(sessionId, "add"))
+    await interaction.showModal(buildGroupModal(
+      sessionId,
+      "add",
+      {},
+      session.data.firstOccurrenceDate
+    ))
     return true
   }
   if (prefix === CREATION_IDS.groupEditPrefix) {
@@ -404,7 +440,12 @@ async function handleEventCreationModalOpeningInteraction(
     if (!Number.isInteger(index) || !session.data.groups?.[index]) {
       throw new EventValidationError("Select a group to edit.")
     }
-    await interaction.showModal(buildGroupModal(sessionId, "edit", session.data.groups[index]))
+    await interaction.showModal(buildGroupModal(
+      sessionId,
+      "edit",
+      session.data.groups[index],
+      session.data.firstOccurrenceDate
+    ))
     return true
   }
   if (prefix === CREATION_IDS.messagesPrefix) {
@@ -770,14 +811,16 @@ async function handleEventCreationInteraction(
     if (mode === "edit" && !Number.isInteger(editingIndex)) {
       throw new EventValidationError("Select a group to edit.")
     }
+    await acknowledgeSchedulerInteraction(interaction)
     const group = normalizeGroupInput(
       interaction.fields.getTextInputValue("name"),
       interaction.fields.getTextInputValue("time"),
       current.groups || [],
-      editingIndex
+      editingIndex,
+      interaction.fields.getTextInputValue("date"),
+      current.firstOccurrenceDate
     )
     const groups = upsertGroup(current.groups || [], group, editingIndex)
-    await acknowledgeSchedulerInteraction(interaction)
     const session = sessionStore.update(sessionId, context, {
       groups,
       eventTimeUtc: null,

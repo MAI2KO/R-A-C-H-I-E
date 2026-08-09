@@ -22,7 +22,9 @@ function createEventSchedulerRepository(pool, gameProfile) {
     let groups = []
     if (eventIds.length) {
       groups = (await pool.query(
-        `SELECT id AS group_id, event_id, group_name, event_time_utc, sort_order
+        `SELECT id AS group_id, event_id, group_name,
+                first_occurrence_date::text AS first_occurrence_date,
+                event_time_utc, sort_order
            FROM scheduled_event_groups
           WHERE game_profile = $1 AND event_id = ANY($2::bigint[])
           ORDER BY event_id, sort_order, group_name, id`,
@@ -713,9 +715,17 @@ function createEventSchedulerRepository(pool, gameProfile) {
         for (const group of event.groups) {
           await client.query(
             `INSERT INTO scheduled_event_groups (
-               event_id, game_profile, group_name, event_time_utc, sort_order
-             ) VALUES ($1, $2, $3, $4, $5)`,
-            [created.id, gameProfile, group.groupName, group.eventTimeUtc, group.sortOrder]
+               event_id, game_profile, group_name, first_occurrence_date,
+               event_time_utc, sort_order
+             ) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              created.id,
+              gameProfile,
+              group.groupName,
+              group.firstOccurrenceDate,
+              group.eventTimeUtc,
+              group.sortOrder
+            ]
           )
         }
 
@@ -773,7 +783,9 @@ function createEventSchedulerRepository(pool, gameProfile) {
 
       const eventIds = events.map(event => event.id)
       const groupsResult = await pool.query(
-        `SELECT g.id AS group_id, g.event_id, g.group_name, g.event_time_utc, g.sort_order
+        `SELECT g.id AS group_id, g.event_id, g.group_name,
+                g.first_occurrence_date::text AS first_occurrence_date,
+                g.event_time_utc, g.sort_order
            FROM scheduled_event_groups g
            JOIN scheduled_events e
              ON e.id = g.event_id AND e.game_profile = g.game_profile
@@ -822,7 +834,9 @@ function createEventSchedulerRepository(pool, gameProfile) {
       if (!event) return null
 
       const groupsResult = await pool.query(
-        `SELECT g.id AS group_id, g.group_name, g.event_time_utc, g.sort_order
+        `SELECT g.id AS group_id, g.group_name,
+                g.first_occurrence_date::text AS first_occurrence_date,
+                g.event_time_utc, g.sort_order
            FROM scheduled_event_groups g
            JOIN scheduled_events e
              ON e.id = g.event_id AND e.game_profile = g.game_profile
@@ -899,9 +913,17 @@ function createEventSchedulerRepository(pool, gameProfile) {
         for (const group of event.groups) {
           await client.query(
             `INSERT INTO scheduled_event_groups
-               (event_id, game_profile, group_name, event_time_utc, sort_order)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [eventId, gameProfile, group.groupName, group.eventTimeUtc, group.sortOrder]
+               (event_id, game_profile, group_name, first_occurrence_date,
+                event_time_utc, sort_order)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              eventId,
+              gameProfile,
+              group.groupName,
+              group.firstOccurrenceDate,
+              group.eventTimeUtc,
+              group.sortOrder
+            ]
           )
         }
         if (imageAction === "remove" || imageAction === "replace") {

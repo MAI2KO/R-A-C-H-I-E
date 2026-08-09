@@ -1,3 +1,5 @@
+const { parseIsoDate } = require("./timeParsing")
+
 const ALLOWED_RECURRENCES = new Set([2, 3, 7, 14, 21, 28, 35, 42])
 const ALLOWED_ADVANCE_REMINDERS = new Set([null, 5, 10, 15, 20, 30])
 const CUSTOM_MESSAGE_MAX_LENGTH = 500
@@ -45,9 +47,7 @@ function validateEventDraft(draft) {
     ? null
     : Number(draft.advanceReminderMinutes)
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(draft.firstOccurrenceDate || ""))) {
-    throw new EventValidationError("A validated first occurrence date is required.")
-  }
+  const firstOccurrenceDate = parseIsoDate(draft.firstOccurrenceDate).value
   if (!ALLOWED_RECURRENCES.has(recurrenceDays)) {
     throw new EventValidationError("Recurrence must be 2, 3, 7, 14, 21, 28, 35 or 42 days.")
   }
@@ -68,13 +68,24 @@ function validateEventDraft(draft) {
   const names = new Set()
   const normalizedGroups = groups.map((group, index) => {
     const groupName = validateText(group.groupName, "Group name")
+    const groupFirstOccurrenceDate = parseIsoDate(
+      group.firstOccurrenceDate || firstOccurrenceDate
+    ).value
+    if (groupFirstOccurrenceDate < firstOccurrenceDate) {
+      throw new EventValidationError(`Group ${groupName} date must not be before the event's first date.`)
+    }
     if (!group.eventTimeUtc) {
       throw new EventValidationError(`Group ${groupName} requires a UTC time.`)
     }
     const key = groupName.toLowerCase()
     if (names.has(key)) throw new EventValidationError(`Duplicate group name: ${groupName}.`)
     names.add(key)
-    return { ...group, groupName, sortOrder: group.sortOrder ?? index }
+    return {
+      ...group,
+      groupName,
+      firstOccurrenceDate: groupFirstOccurrenceDate,
+      sortOrder: group.sortOrder ?? index
+    }
   })
 
   return {
@@ -82,6 +93,7 @@ function validateEventDraft(draft) {
     allianceId,
     allianceName,
     eventName,
+    firstOccurrenceDate,
     recurrenceDays,
     advanceReminderMinutes,
     advanceReminderMessage: normalizeCustomMessage(

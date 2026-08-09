@@ -83,12 +83,26 @@ function normalizeEventDefinition(event) {
       if (!Number.isInteger(sortOrder)) {
         throw new OccurrenceValidationError("Group sort order must be an integer.")
       }
+      const groupDateValue = readField(
+        group,
+        "firstOccurrenceDate",
+        "first_occurrence_date"
+      )
+      const groupDate = groupDateValue
+        ? parseAnchorDate(groupDateValue)
+        : anchorDate
+      if (groupDate.timestamp < anchorDate.timestamp) {
+        throw new OccurrenceValidationError(
+          `Group ${groupName} first occurrence date must not precede the event anchor.`
+        )
+      }
       const time = parseStoredUtcTime(readField(group, "eventTimeUtc", "event_time_utc"))
       return {
         groupId,
         groupName,
         groupSortOrder: sortOrder,
         stableIdentifier: String(groupId ?? index),
+        dateOffsetMs: groupDate.timestamp - anchorDate.timestamp,
         time
       }
     })
@@ -99,6 +113,7 @@ function normalizeEventDefinition(event) {
       groupName: null,
       groupSortOrder: 0,
       stableIdentifier: "event",
+      dateOffsetMs: 0,
       time
     }]
   }
@@ -132,6 +147,7 @@ function occurrenceForStream(definition, stream, occurrenceIndex) {
     throw new OccurrenceValidationError("Occurrence index must be a non-negative safe integer.")
   }
   const timestamp = definition.anchorDate.timestamp
+    + stream.dateOffsetMs
     + stream.time.milliseconds
     + occurrenceIndex * definition.intervalMs
   if (!Number.isFinite(timestamp)) {
@@ -163,14 +179,18 @@ function getOccurrenceAtIndex(event, occurrenceIndex) {
     .sort(compareOccurrences)
 }
 
+function streamAnchorMs(definition, stream) {
+  return definition.anchorDate.timestamp + stream.dateOffsetMs + stream.time.milliseconds
+}
+
 function nextIndexAtOrAfter(definition, stream, instantMs) {
-  const anchorMs = definition.anchorDate.timestamp + stream.time.milliseconds
+  const anchorMs = streamAnchorMs(definition, stream)
   if (instantMs <= anchorMs) return 0
   return Math.ceil((instantMs - anchorMs) / definition.intervalMs)
 }
 
 function previousIndexBefore(definition, stream, instantMs) {
-  const anchorMs = definition.anchorDate.timestamp + stream.time.milliseconds
+  const anchorMs = streamAnchorMs(definition, stream)
   if (instantMs <= anchorMs) return null
   return Math.ceil((instantMs - anchorMs) / definition.intervalMs) - 1
 }

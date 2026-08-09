@@ -369,7 +369,7 @@ test("event listing formats grouped, ungrouped, active and paused entries safely
     groups: [{ group_name: "Alpha", event_time_utc: "20:00:00" }]
   }
   assert.match(formatEventEntry(ungrouped), /18:30 UTC/)
-  assert.match(formatEventEntry(grouped), /Alpha: 20:00 UTC/)
+  assert.match(formatEventEntry(grouped), /Alpha: 2026-08-10 - 20:00 UTC/)
   assert.match(formatEventEntry(grouped), /paused/)
 
   const page = formatEventListPage([ungrouped, grouped], 0, EVENTS_PER_PAGE + 1)

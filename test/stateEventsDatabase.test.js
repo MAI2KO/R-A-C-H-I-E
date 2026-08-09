@@ -20,7 +20,7 @@ async function dropSchema(pool, schema) {
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
 }
 
-test("migrations 001-009 apply cleanly, reapply to zero, and serialize concurrent startup", {
+test("migrations 001-010 apply cleanly, reapply to zero, and serialize concurrent startup", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   const admin = new Pool({ connectionString: databaseUrl, max: 1 })
@@ -34,8 +34,8 @@ test("migrations 001-009 apply cleanly, reapply to zero, and serialize concurren
     clean = scopedPool(cleanSchema)
     const first = await runMigrations({ pool: clean, logger })
     const second = await runMigrations({ pool: clean, logger })
-    assert.equal(first.applied.length, 9)
-    assert.equal(first.applied.at(-1), "009_state_events.sql")
+    assert.equal(first.applied.length, 10)
+    assert.equal(first.applied.at(-1), "010_cross_midnight_event_groups.sql")
     assert.deepEqual(second.applied, [])
 
     await admin.query(`CREATE SCHEMA "${concurrentSchema}"`)
@@ -44,12 +44,16 @@ test("migrations 001-009 apply cleanly, reapply to zero, and serialize concurren
       runMigrations({ pool: concurrent, logger }),
       runMigrations({ pool: concurrent, logger })
     ])
-    assert.deepEqual(results.map(result => result.applied.length).sort((a, b) => a - b), [0, 9])
+    assert.deepEqual(results.map(result => result.applied.length).sort((a, b) => a - b), [0, 10])
     const versions = await concurrent.query(
       "SELECT version, COUNT(*)::integer AS count FROM schema_migrations GROUP BY version ORDER BY version"
     )
-    assert.equal(versions.rowCount, 9)
+    assert.equal(versions.rowCount, 10)
     assert.equal(versions.rows.find(row => row.version === "009_state_events.sql").count, 1)
+    assert.equal(
+      versions.rows.find(row => row.version === "010_cross_midnight_event_groups.sql").count,
+      1
+    )
   } finally {
     await clean?.end().catch(() => {})
     await concurrent?.end().catch(() => {})
@@ -59,7 +63,7 @@ test("migrations 001-009 apply cleanly, reapply to zero, and serialize concurren
   }
 })
 
-test("migration 009 preserves persisted 3-day recurrence and admits 2 and 42 days", {
+test("migrations 009-010 preserve recurrence and legacy group schedules", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   const admin = new Pool({ connectionString: databaseUrl, max: 1 })
@@ -96,6 +100,21 @@ test("migration 009 preserves persisted 3-day recurrence and admits 2 and 42 day
     )).rows[0].recurrence_days, 3)
     await pool.query("UPDATE scheduled_events SET recurrence_days = 2 WHERE event_name = 'Three Day'")
     await pool.query("UPDATE scheduled_events SET recurrence_days = 42 WHERE event_name = 'Three Day'")
+    await pool.query(
+      `INSERT INTO scheduled_event_groups
+         (event_id, game_profile, group_name, event_time_utc, sort_order)
+       SELECT id, game_profile, 'Legacy Group', '00:15', 0
+         FROM scheduled_events WHERE event_name = 'Three Day'`
+    )
+    await pool.query(await fs.readFile(
+      path.join(migrationsDirectory, "010_cross_midnight_event_groups.sql"),
+      "utf8"
+    ))
+    const legacyGroup = (await pool.query(
+      `SELECT first_occurrence_date::text AS first_occurrence_date
+         FROM scheduled_event_groups WHERE group_name = 'Legacy Group'`
+    )).rows[0]
+    assert.equal(legacyGroup.first_occurrence_date, null)
   } finally {
     await pool?.end().catch(() => {})
     await dropSchema(admin, schema)

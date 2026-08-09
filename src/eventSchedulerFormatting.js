@@ -45,11 +45,15 @@ function publishingLabel(event) {
   return targets.length ? targets.join(" and ") : "none"
 }
 
-function groupLines(groups, maximum = 12) {
+function groupLines(groups, maximum = 12, parentFirstOccurrenceDate = null) {
   const visible = groups.slice(0, maximum).map(group => {
     const name = group.group_name ?? group.groupName
+    const date = group.first_occurrence_date
+      ?? group.firstOccurrenceDate
+      ?? parentFirstOccurrenceDate
     const time = group.event_time_utc ?? group.eventTimeUtc
-    return `  ${name}: ${displayTime(time)} UTC`
+    const datePrefix = date ? `${displayDate(date)} - ` : ""
+    return `  ${name}: ${datePrefix}${displayTime(time)} UTC`
   })
   if (groups.length > maximum) visible.push(`  ...and ${groups.length - maximum} more groups`)
   return visible
@@ -65,7 +69,7 @@ function occurrenceLine(occurrence, { numbered = false, index = 0 } = {}) {
 function formatEventPreview(event, { now = new Date() } = {}) {
   const groups = event.groups || []
   const timeBlock = groups.length
-    ? groupLines(groups).join("\n")
+    ? groupLines(groups, 12, event.firstOccurrenceDate).join("\n")
     : `${displayTime(event.eventTimeUtc)} UTC`
   const pastNote = event.firstDateIsPast ? " (historical anchor)" : ""
   const anchorOccurrences = getOccurrenceAtIndex(event, 0)
@@ -122,7 +126,7 @@ function formatUpcomingOccurrencePreview(event, occurrences) {
 function formatEventEntry(event) {
   const groups = event.groups || []
   const timeBlock = groups.length
-    ? groupLines(groups, 8).join("\n")
+    ? groupLines(groups, 8, event.first_occurrence_date).join("\n")
     : `  ${displayTime(event.event_time_utc)} UTC`
 
   return (

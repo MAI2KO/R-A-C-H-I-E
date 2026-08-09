@@ -270,7 +270,12 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       event: eventDraft(academy, "Academy Event", "12:00", { publishToState: false })
     })
     const groupedDraft = eventDraft(academy, "Grouped Drill", null, {
-      groups: [{ groupName: "Alpha", eventTimeUtc: "14:00", sortOrder: 0 }],
+      groups: [{
+        groupName: "Alpha",
+        firstOccurrenceDate: "2028-02-28",
+        eventTimeUtc: "14:00",
+        sortOrder: 0
+      }],
       grouped: true,
       publishToState: false,
       includeInWeeklyRoundup: false
@@ -281,6 +286,8 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       createdByBotInstance: "rachie-wos",
       event: groupedDraft
     })
+    const createdGrouped = await wos.getEvent(guildId, groupedEvent.id)
+    assert.equal(createdGrouped.groups[0].first_occurrence_date, "2028-02-28")
     await kingshot.createEvent({
       guildId,
       createdByUserId: userId,
@@ -365,7 +372,12 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       eventId: groupedEvent.id,
       event: {
         ...groupedDraft,
-        groups: [{ groupName: "Alpha", eventTimeUtc: "14:30", sortOrder: 0 }]
+        groups: [{
+          groupName: "Alpha",
+          firstOccurrenceDate: "2028-02-28",
+          eventTimeUtc: "14:30",
+          sortOrder: 0
+        }]
       },
       imageAction: "retain"
     })
@@ -390,12 +402,14 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
     assert.equal(preservedGroupedClaims[1].status, "failed")
     assert.equal(preservedGroupedClaims[1].group_id, null)
     const replacementGroup = (await pool.query(
-      `SELECT id, event_time_utc::text AS event_time_utc
+      `SELECT id, first_occurrence_date::text AS first_occurrence_date,
+              event_time_utc::text AS event_time_utc
          FROM scheduled_event_groups
         WHERE event_id = $1 AND game_profile = 'wos'`,
       [groupedEvent.id]
     )).rows[0]
     assert.notEqual(String(replacementGroup.id), String(originalGroup.id))
+    assert.equal(replacementGroup.first_occurrence_date, "2028-02-28")
     assert.equal(replacementGroup.event_time_utc, "14:30:00")
 
     const groupedDeliveryRepository = createEventDeliveryRepository(pool, "wos", {
@@ -423,7 +437,12 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       eventId: groupedEvent.id,
       event: {
         ...groupedDraft,
-        groups: [{ groupName: "Alpha", eventTimeUtc: "14:30", sortOrder: 0 }],
+        groups: [{
+          groupName: "Alpha",
+          firstOccurrenceDate: "2028-02-29",
+          eventTimeUtc: "14:30",
+          sortOrder: 0
+        }],
         advanceReminderMinutes: null,
         advanceReminderMessage: null,
         reminderAtStart: false,
@@ -437,6 +456,7 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
     assert.equal(cancelledStored.advance_reminder_message, null)
     assert.equal(cancelledStored.reminder_at_start, false)
     assert.equal(cancelledStored.final_reminder_message, null)
+    assert.equal(cancelledStored.groups[0].first_occurrence_date, "2028-02-29")
     const cancelledClaims = (await pool.query(
       `SELECT schedule_version, delivery_kind, status, sent_message_id
          FROM event_delivery_claims

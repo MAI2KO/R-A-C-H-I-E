@@ -102,7 +102,9 @@ function createEventDeliveryRepository(pool, gameProfile, { targetKind = null } 
 
       const eventIds = eventResult.rows.map(event => event.id)
       const groupResult = await pool.query(
-        `SELECT id AS group_id, event_id, group_name, event_time_utc, sort_order
+        `SELECT id AS group_id, event_id, group_name,
+                first_occurrence_date::text AS first_occurrence_date,
+                event_time_utc, sort_order
            FROM scheduled_event_groups
           WHERE game_profile = $1 AND event_id = ANY($2::bigint[])
           ORDER BY event_id, sort_order, group_name, id`,
