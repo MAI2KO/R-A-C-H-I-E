@@ -21,13 +21,15 @@ Administrators use `/event-scheduler`; authorization uses the existing `userCanM
 
 Normal channel setup uses Discord's native channel selector. Set the main alliance through **Alliance identity**, use **Configure channels** for the alliance reminder channel, and use **Weekly roundup settings** for roundup enablement, state publishing, UTC weekday/time, and channel. No channel ID is typed. To link a state Discord, configure **State destination** inside that Discord, select its roundup channel, generate a one-time 15-minute code, and enter that code under **State sharing** in the alliance Discord. Guild and channel IDs are resolved internally.
 
+An enabled state destination also exposes **State events**. After setting the state number/name, state admins can create canonical one-time or recurring events with one or more named phases. Each phase uses the shared free-form UTC parser, one of the standard pre-alert choices, an independent exact-time toggle, separate custom messages, and separate PNG/JPEG/GIF/WebP media for pre-alert and exact-time posts. Linked alliance Discords cannot create or manage these events.
+
 A Discord guild and game profile can contain one main alliance and multiple sub-alliances, such as `YOU`, `YOU2`, and `YOU Academy`. Events select an alliance through an ephemeral opaque control. Alliance channels, weekly-roundup channels, and state links remain guild/profile settings and may be shared by every alliance in that guild.
 
 Events support:
 
 - Custom event names and a required alliance selection.
 - A guided choice between one UTC time and named groups managed one at a time with separate UTC times; groups may share a time.
-- First occurrence dates and recurrence every 3, 7, 14, or 28 days.
+- First occurrence dates and recurrence every 2, 3, 7, 14, 21, 28, 35, or 42 days.
 - One optional advance reminder: 5, 10, 15, 20, or 30 minutes before.
 - One optional final announcement one minute before, worded **About to start**.
 - Optional advance and final custom messages, each trimmed and limited to 500 characters.
@@ -41,7 +43,9 @@ Accepted UTC time examples include `18:30`, `1830`, `1800`, `6:30pm`, and `6.30 
 
 Immediate reminders contain the alliance, event, optional group, countdown, and optional custom text without date, recurrence, or timestamp fields. Detailed UTC and clearly labelled Discord-local times appear in previews and weekly roundups. Discord mention parsing is disabled. Images are never attached to final announcements, state Discord messages, roundups, or management previews. Images persist through ordinary edits and alliance changes unless explicitly replaced or removed.
 
-Each alliance roundup contains eligible events for its guild/profile and lists alliance names. A linked state Discord receives one combined profile-scoped roundup containing only active, roundup-enabled, `publish_to_state=true` events from valid enabled state links. State Discords never receive individual event reminders.
+Each alliance roundup contains eligible events for its guild/profile and lists alliance names. A linked state Discord receives one combined profile-scoped roundup containing active, roundup-enabled alliance events from valid enabled state links. Alliance events never produce individual state reminders.
+
+Canonical state-event phase alerts publish once to the configured state Discord and once to each uniquely linked alliance Discord for the same profile. Their weekly milestones appear under one **STATE EVENTS** section in state and alliance roundups. Pre-alerts never create roundup milestones, while a phase remains in roundups even if its exact-time post is disabled. State-event management includes edit, phase add/edit/remove, next-occurrence preview, isolated TEST send, pause/resume, and soft delete.
 
 See [Event Scheduler](docs/event-scheduler.md) for setup and workflow details.
 
@@ -79,7 +83,7 @@ Migrations run during scheduler initialization under a session-level Postgres ad
 EVENT_SCHEDULER_ENABLED=true npm run migrate
 ```
 
-Migration files are append-only. Migrations 001 through 005 preserve the initial scheduler history; migration 006 adds flexible reminders, custom messages, and profile-scoped alliance entities while backfilling existing events. Migration 007 permits identity-first setup and adds profile-scoped state destinations plus hashed, expiring, one-time link codes. Migration 008 separates state-roundup enablement and adds a replay boundary for changed or re-enabled schedules. Existing channels, schedules, state links, and sent history are preserved. Run migrations again to confirm that zero files reapply.
+Migration files are append-only. Migrations 001 through 005 preserve the initial scheduler history; migration 006 adds flexible reminders, custom messages, and profile-scoped alliance entities while backfilling existing events. Migration 007 permits identity-first setup and adds profile-scoped state destinations plus hashed, expiring, one-time link codes. Migration 008 separates state-roundup enablement and adds a replay boundary for changed or re-enabled schedules. Migration 009 expands recurrence intervals, stores the profile-scoped state number/name, and adds canonical state events, phases, per-phase media, and per-target delivery claims. Existing channels, schedules, state links, and sent history are preserved. Run migrations again to confirm that zero files reapply.
 
 ## Testing
 
@@ -119,7 +123,7 @@ The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables schedul
 - Scheduler says unavailable: use `/event-scheduler-help`, then inspect startup logs for missing `DATABASE_URL`, invalid `GAME_PROFILE`, missing `BOT_INSTANCE_NAME`, authentication, network, or migration errors.
 - Commands are absent: confirm `EVENT_SCHEDULER_ENABLED=true` and that global command registration completed for that service's `CLIENT_ID`.
 - Messages are not delivered: verify the configured guild/channel, bot membership, View Channel, Send Messages, Embed Links, and Attach Files permissions.
-- State roundup is empty: verify the profile-scoped scheduler state link, sharing status, event `publish_to_state`, roundup inclusion, active status, and weekly window.
+- State roundup is empty: verify the profile-scoped scheduler state link, sharing status, weekly-roundup inclusion, canonical state-event status, and weekly window.
 - State link code is rejected: generate a fresh code in the state Discord and verify both sides use the same bot/game profile; codes expire after 15 minutes and work once.
 - Duplicate alliance rejected: names are unique case-insensitively within one guild/profile.
 

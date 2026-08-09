@@ -1,6 +1,7 @@
 const { assertProfile } = require("./eventSchedulerRepository")
 const { buildRoundupOccurrences } = require("./weeklyRoundupCalculation")
 const { MAX_DELIVERY_ATTEMPTS } = require("./eventDeliveryRepository")
+const { createStateEventRepository } = require("./stateEventRepository")
 
 function requirePool(pool) {
   if (!pool || typeof pool.query !== "function" || typeof pool.connect !== "function") {
@@ -266,6 +267,33 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
       }))
       const weekStart = utcDate(row.week_start_text)
       const weekEnd = new Date(weekStart.getTime() + 7 * 86400000)
+      const stateRepository = createStateEventRepository(pool, gameProfile)
+      let stateOccurrences = []
+      if (row.target_kind === "state") {
+        stateOccurrences = await stateRepository.stateRoundupOccurrences({
+          stateGuildId: row.target_guild_id,
+          weekStart,
+          weekEnd
+        })
+      } else {
+        const links = (await pool.query(
+          `SELECT DISTINCT l.state_guild_id
+             FROM event_state_links l
+             JOIN event_state_destinations d
+               ON d.state_guild_id = l.state_guild_id AND d.game_profile = l.game_profile
+            WHERE l.alliance_guild_id = $1 AND l.game_profile = $2
+              AND l.sharing_enabled = true AND d.enabled = true`,
+          [row.source_guild_id, gameProfile]
+        )).rows
+        const sections = await Promise.all(links.map(link =>
+          stateRepository.stateRoundupOccurrences({
+            stateGuildId: link.state_guild_id,
+            weekStart,
+            weekEnd
+          })
+        ))
+        stateOccurrences = sections.flat()
+      }
       const messages = (await pool.query(
         `SELECT message_index, sent_message_id, payload_hash FROM weekly_roundup_messages
           WHERE roundup_claim_id = $1 ORDER BY message_index`,
@@ -286,6 +314,7 @@ function createWeeklyRoundupRepository(pool, gameProfile) {
         },
         allianceName: row.alliance_name,
         occurrences: buildRoundupOccurrences(events, weekStart, weekEnd),
+        stateOccurrences,
         sentMessages: new Map(messages.map(message => [message.message_index, {
           sentMessageId: message.sent_message_id,
           payloadHash: message.payload_hash

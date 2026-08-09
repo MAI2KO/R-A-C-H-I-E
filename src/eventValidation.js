@@ -1,4 +1,4 @@
-const ALLOWED_RECURRENCES = new Set([3, 7, 14, 28])
+const ALLOWED_RECURRENCES = new Set([2, 3, 7, 14, 21, 28, 35, 42])
 const ALLOWED_ADVANCE_REMINDERS = new Set([null, 5, 10, 15, 20, 30])
 const CUSTOM_MESSAGE_MAX_LENGTH = 500
 
@@ -49,7 +49,7 @@ function validateEventDraft(draft) {
     throw new EventValidationError("A validated first occurrence date is required.")
   }
   if (!ALLOWED_RECURRENCES.has(recurrenceDays)) {
-    throw new EventValidationError("Recurrence must be 3, 7, 14 or 28 days.")
+    throw new EventValidationError("Recurrence must be 2, 3, 7, 14, 21, 28, 35 or 42 days.")
   }
   if (!ALLOWED_ADVANCE_REMINDERS.has(advanceReminderMinutes)) {
     throw new EventValidationError("Advance reminder must be none, 5, 10, 15, 20 or 30 minutes.")

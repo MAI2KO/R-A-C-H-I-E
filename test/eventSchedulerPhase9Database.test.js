@@ -197,6 +197,11 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
       postWhenEmpty: false,
       stateEnabled: true
     })
+    await wos.upsertStateDestination({
+      stateGuildId,
+      configuredByBotInstance: "rachie-wos",
+      stateRoundupChannelId: stateChannel
+    })
     await wos.upsertStateLink({
       allianceGuildId: guildId,
       configuredByBotInstance: "rachie-wos",
@@ -530,9 +535,9 @@ test("one guild safely manages multiple profile-scoped alliances, events and rou
     )
     assert.deepEqual(
       new Set(statePayload.occurrences.map(item => item.allianceName)),
-      new Set(["YOU", "YOU Two"])
+      new Set(["YOU", "YOU Academy", "YOU Two"])
     )
-    assert.equal(statePayload.occurrences.some(item => item.eventName === "Academy Event"), false)
+    assert.equal(statePayload.occurrences.some(item => item.eventName === "Academy Event"), true)
     assert.equal(alliancePayload.occurrences.some(item => item.eventName === "Academy Event"), true)
     assert.equal(JSON.stringify(formatWeeklyRoundup(alliancePayload)).includes("YOU Two"), true)
     assert.equal(JSON.stringify(formatWeeklyRoundup(statePayload)).includes("YOU Two"), true)

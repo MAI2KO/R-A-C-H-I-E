@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require("discord.js")
 const { PermanentDeliveryError } = require("./eventDeliveryWorker")
 const { compareRoundupOccurrences } = require("./weeklyRoundupCalculation")
+const { compareStateRoundupOccurrences } = require("./stateEventRoundupCalculation")
 
 const ROUNDUP_DESCRIPTION_LIMIT = 3800
 
@@ -54,9 +55,51 @@ function splitRoundupLines(occurrences, targetKind) {
   return parts
 }
 
+function stateOccurrenceLine(occurrence) {
+  const timestamp = Math.floor(occurrence.occurrenceAt.getTime() / 1000)
+  const time = occurrence.occurrenceAt.toISOString().slice(11, 16)
+  return `${safeText(occurrence.phaseName)} - ${time} UTC · Local time: <t:${timestamp}:t>`
+}
+
+function splitStateRoundupLines(occurrences) {
+  const parts = []
+  let current = ""
+  let currentEvent = null
+  for (const occurrence of [...occurrences].sort(compareStateRoundupOccurrences)) {
+    const eventKey = [
+      occurrence.stateNumber || "",
+      occurrence.stateEventId || "",
+      occurrence.eventName || ""
+    ].join(":")
+    const heading = eventKey !== currentEvent
+      ? `${current ? "\n" : ""}**${safeText(occurrence.stateNumber)} - ${safeText(occurrence.eventName)}**\n`
+      : ""
+    const block = `${heading}${stateOccurrenceLine(occurrence)}`
+    if (block.length > ROUNDUP_DESCRIPTION_LIMIT) {
+      throw new PermanentDeliveryError("A state roundup entry exceeds Discord limits.")
+    }
+    const separator = current ? "\n" : ""
+    if ((current + separator + block).length > ROUNDUP_DESCRIPTION_LIMIT) {
+      parts.push(current)
+      current = `**${safeText(occurrence.stateNumber)} - ${safeText(occurrence.eventName)}**\n${stateOccurrenceLine(occurrence)}`
+    } else {
+      current += separator + block
+    }
+    currentEvent = eventKey
+  }
+  if (current) parts.push(current)
+  return parts
+}
+
 function formatWeeklyRoundup(payload) {
   const occurrences = [...(payload?.occurrences || [])].sort(compareRoundupOccurrences)
-  if (occurrences.length === 0 && !payload?.claim?.postWhenEmpty) return []
+  const uniqueStateOccurrences = new Map()
+  for (const occurrence of payload?.stateOccurrences || []) {
+    const key = `${occurrence.stateEventId}:${occurrence.phaseId}:${occurrence.occurrenceAt.toISOString()}`
+    if (!uniqueStateOccurrences.has(key)) uniqueStateOccurrences.set(key, occurrence)
+  }
+  const stateOccurrences = [...uniqueStateOccurrences.values()].sort(compareStateRoundupOccurrences)
+  if (occurrences.length === 0 && stateOccurrences.length === 0 && !payload?.claim?.postWhenEmpty) return []
   const targetKind = payload.claim.targetKind
   if (!["alliance", "state"].includes(targetKind)) {
     throw new PermanentDeliveryError("Roundup target type is unsupported.")
@@ -66,9 +109,14 @@ function formatWeeklyRoundup(payload) {
     : `${safeText(payload.allianceName)} weekly roundup`
   const testLabel = payload.claim.isTest ? " — TEST" : ""
   const range = `${dateLabel(payload.claim.weekStart)} to ${dateLabel(payload.claim.weekEnd)}`
-  const parts = occurrences.length
-    ? splitRoundupLines(occurrences, targetKind)
-    : ["No scheduled events this week."]
+  const parts = []
+  if (occurrences.length) parts.push(...splitRoundupLines(occurrences, targetKind))
+  if (stateOccurrences.length) {
+    for (const section of splitStateRoundupLines(stateOccurrences)) {
+      parts.push(`STATE EVENTS\n\n${section}`)
+    }
+  }
+  if (!parts.length) parts.push("No scheduled events this week.")
 
   return parts.map((description, index) => {
     const partLabel = parts.length > 1 ? ` · Part ${index + 1} of ${parts.length}` : ""
@@ -89,5 +137,7 @@ module.exports = {
   safeText,
   occurrenceLine,
   splitRoundupLines,
+  stateOccurrenceLine,
+  splitStateRoundupLines,
   formatWeeklyRoundup
 }

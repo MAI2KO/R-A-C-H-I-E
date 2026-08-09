@@ -15,6 +15,9 @@ const {
 const { createWeeklyRoundupRepository } = require("./weeklyRoundupRepository")
 const { createDiscordWeeklyRoundupDelivery } = require("./discordWeeklyRoundup")
 const { createWeeklyRoundupProcessor } = require("./weeklyRoundupProcessor")
+const { createStateEventRepository } = require("./stateEventRepository")
+const { createDiscordStateEventDeliveryHandler } = require("./discordStateEventDelivery")
+const { createStateEventDeliveryProcessor } = require("./stateEventDeliveryProcessor")
 
 function createAllianceEventDeliveryRuntime({
   client,
@@ -27,6 +30,9 @@ function createAllianceEventDeliveryRuntime({
   createRoundupRepositoryFn = createWeeklyRoundupRepository,
   createRoundupDeliveryFn = createDiscordWeeklyRoundupDelivery,
   createRoundupProcessorFn = createWeeklyRoundupProcessor,
+  createStateRepositoryFn = createStateEventRepository,
+  createStateHandlerFn = createDiscordStateEventDeliveryHandler,
+  createStateProcessorFn = createStateEventDeliveryProcessor,
   createWorkerFn = createEventDeliveryWorker,
   shutdownFn = shutdownEventSchedulerSubsystem
 }) {
@@ -64,6 +70,25 @@ function createAllianceEventDeliveryRuntime({
       config: require("./eventDeliveryConfig").getEventDeliveryConfig(env),
       logger
     })
+    let stateProcessor = null
+    try {
+      const stateRepository = createStateRepositoryFn(
+        getPoolFn({ env, logger }),
+        gameProfile
+      )
+      stateProcessor = createStateProcessorFn({
+        repository: stateRepository,
+        gameProfile,
+        botInstanceName,
+        deliveryHandler: createStateHandlerFn({ client, gameProfile }),
+        config: require("./eventDeliveryConfig").getEventDeliveryConfig(env),
+        logger
+      })
+    } catch (error) {
+      logger.error(
+        `[Event scheduler] State-event processor not started: ${sanitizeDeliveryError(error)}`
+      )
+    }
     worker = createWorkerFn({
       env,
       health,
@@ -71,7 +96,10 @@ function createAllianceEventDeliveryRuntime({
       gameProfile,
       botInstanceName,
       deliveryHandler,
-      additionalTick: roundupProcessor.tick,
+      additionalTick: tickNow => Promise.all([
+        roundupProcessor.tick(tickNow),
+        stateProcessor ? stateProcessor.tick(tickNow) : Promise.resolve(0)
+      ]),
       logger
     })
     const result = worker.start()

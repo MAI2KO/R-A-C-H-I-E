@@ -259,7 +259,8 @@ test("Phase 5 delivery claims are transactional, leased and profile isolated", {
 
     const indexResult = await pool.query(
       `SELECT indexname FROM pg_indexes
-        WHERE tablename = 'event_delivery_claims'
+        WHERE schemaname = current_schema()
+          AND tablename = 'event_delivery_claims'
           AND indexname = ANY($1::text[])`,
       [[
         "event_delivery_claims_pending_due_idx",

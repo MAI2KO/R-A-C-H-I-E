@@ -14,6 +14,7 @@ const {
 const { getPool } = require("./db")
 const { getEventSchedulerHealth } = require("./eventSchedulerHealth")
 const { createEventSchedulerRepository } = require("./eventSchedulerRepository")
+const { createStateEventRepository } = require("./stateEventRepository")
 const {
   SchedulerValidationError,
   normalizeAllianceName,
@@ -33,6 +34,12 @@ const {
 } = require("./allianceManagementInteractions")
 const { handleEventSchedulerHelpInteraction } = require("./eventSchedulerHelp")
 const {
+  STATE_EVENT_IDS,
+  buildStateEventHome,
+  handleStateEventModalOpeningInteraction,
+  handleStateEventInteraction
+} = require("./stateEventInteractions")
+const {
   acknowledgeSchedulerInteraction,
   isExpectedInteractionResponseError,
   logDiscordApiError,
@@ -40,6 +47,7 @@ const {
   safelyRespondToInteraction
 } = require("./interactionResponses")
 const { parseUtcTime } = require("./timeParsing")
+const { normalizeStateNumber } = require("./stateEventValidation")
 const { formatWeeklyRoundup } = require("./weeklyRoundupFormatting")
 const {
   CODE_TTL_MINUTES,
@@ -73,6 +81,8 @@ const IDS = Object.freeze({
   stateRoundupToggle: "es:stateroundtoggle",
   stateDestination: "es:statedest",
   stateDestinationChannel: "es:statedestch",
+  stateDestinationNumber: "es:statenumber",
+  stateDestinationNumberModal: "es:statenumberm",
   stateCode: "es:statecode",
   stateSharing: "es:stateshare",
   stateLink: "es:statelink",
@@ -95,6 +105,7 @@ function isSchedulerInteraction(interaction) {
     || String(interaction.customId || "").startsWith("mg:")
     || String(interaction.customId || "").startsWith("am:")
     || String(interaction.customId || "").startsWith("eh:")
+    || String(interaction.customId || "").startsWith(STATE_EVENT_IDS.prefix)
 }
 
 function backButton() {
@@ -123,11 +134,44 @@ function buildHomeView(settings, stateLink, stateDestination) {
     ? `${stateLink.state_guild_name || "Linked state Discord"} / ${stateLink.state_channel_name || "roundup channel"} (${stateLink.sharing_enabled ? "enabled" : "disabled"})`
     : "Not linked"
   const destination = stateDestination
-    ? `<#${stateDestination.state_roundup_channel_id}> (${stateDestination.enabled ? "enabled" : "disabled"})`
+    ? `<#${stateDestination.state_roundup_channel_id}> (${stateDestination.enabled ? "enabled" : "disabled"}; state ${stateDestination.state_number || "not set"})`
     : "Not configured"
   const roundup = settings?.weekly_roundup_enabled
     ? `<#${settings.weekly_roundup_channel_id}> on weekday ${settings.weekly_roundup_day} at ${String(settings.weekly_roundup_time_utc).slice(0, 5)} UTC`
     : "Disabled"
+
+  const components = [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("ec:new").setLabel("Create event")
+        .setStyle(ButtonStyle.Success).setDisabled(!settings?.event_channel_id),
+      new ButtonBuilder().setCustomId("el:0").setLabel("View events")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("am:open").setLabel("Alliances")
+        .setStyle(ButtonStyle.Primary).setDisabled(!settings)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(IDS.identity).setLabel("Alliance identity")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(IDS.channels).setLabel("Configure channels")
+        .setStyle(ButtonStyle.Primary).setDisabled(!settings),
+      new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Weekly roundup settings")
+        .setStyle(ButtonStyle.Primary).setDisabled(!settings)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(IDS.stateDestination).setLabel("State destination")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(IDS.stateSharing).setLabel("State sharing")
+        .setStyle(ButtonStyle.Secondary).setDisabled(!settings),
+      ...(stateDestination?.enabled ? [
+        new ButtonBuilder().setCustomId(STATE_EVENT_IDS.home).setLabel("State events")
+          .setStyle(ButtonStyle.Primary)
+      ] : [])
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("eh:home").setLabel("Help")
+        .setStyle(ButtonStyle.Secondary)
+    )
+  ]
 
   return {
     content:
@@ -138,34 +182,7 @@ function buildHomeView(settings, stateLink, stateDestination) {
       `Alliance weekly roundup: ${roundup}\n` +
       `State sharing: ${state}\n` +
       `This server as state destination: ${destination}`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("ec:new").setLabel("Create event")
-          .setStyle(ButtonStyle.Success).setDisabled(!settings?.event_channel_id),
-        new ButtonBuilder().setCustomId("el:0").setLabel("View events")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("am:open").setLabel("Alliances")
-          .setStyle(ButtonStyle.Primary).setDisabled(!settings)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(IDS.identity).setLabel("Alliance identity")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(IDS.channels).setLabel("Configure channels")
-          .setStyle(ButtonStyle.Primary).setDisabled(!settings),
-        new ButtonBuilder().setCustomId(IDS.roundupSettings).setLabel("Weekly roundup settings")
-          .setStyle(ButtonStyle.Primary).setDisabled(!settings)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(IDS.stateDestination).setLabel("State destination")
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(IDS.stateSharing).setLabel("State sharing")
-          .setStyle(ButtonStyle.Secondary).setDisabled(!settings)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("eh:home").setLabel("Help")
-          .setStyle(ButtonStyle.Secondary)
-      )
-    ],
+    components,
     allowedMentions: SAFE_MENTIONS
   }
 }
@@ -389,7 +406,7 @@ function buildRoundupSchedulePreview(day, timeUtc, currentSchedule = null) {
 
 function buildStateDestinationView(destination, generatedCode = null) {
   const status = destination
-    ? `Current state roundup channel: <#${destination.state_roundup_channel_id}>`
+    ? `Current state roundup channel: <#${destination.state_roundup_channel_id}>\nState number: ${destination.state_number || "Not set"}`
     : "Select this server's state weekly-roundup channel."
   const codeText = generatedCode
     ? `\n\nState link code: **${generatedCode}**\nThis one-time ${CODE_TTL_MINUTES}-minute code is for an alliance administrator using the same bot/game profile.`
@@ -403,6 +420,9 @@ function buildStateDestinationView(destination, generatedCode = null) {
         destination?.state_roundup_channel_id
       )),
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(IDS.stateDestinationNumber)
+          .setLabel(destination?.state_number ? "Change state number" : "Set state number")
+          .setStyle(ButtonStyle.Primary).setDisabled(!destination?.enabled),
         new ButtonBuilder().setCustomId(IDS.stateCode).setLabel("Generate link code")
           .setStyle(ButtonStyle.Primary).setDisabled(!destination?.enabled),
         backButton()
@@ -442,6 +462,23 @@ function buildStateLinkModal() {
         .setMinLength(12)
         .setMaxLength(14)
         .setPlaceholder("ABCD-EFGH-JKLM")
+    ))
+}
+
+function buildStateDestinationNumberModal(destination) {
+  return new ModalBuilder()
+    .setCustomId(IDS.stateDestinationNumberModal)
+    .setTitle("State number")
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("n")
+        .setLabel("State number")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMinLength(1)
+        .setMaxLength(32)
+        .setValue(destination?.state_number || "")
+        .setPlaceholder("689")
     ))
 }
 
@@ -488,6 +525,7 @@ async function replyUnavailable(interaction) {
 }
 
 async function handleSchedulerModalOpeningInteraction(interaction, { health }) {
+  if (await handleStateEventModalOpeningInteraction(interaction, { health })) return true
   if (interaction.isButton?.() && interaction.customId === IDS.identity) {
     await interaction.showModal(buildAllianceIdentityModal(
       guildSettingsCache.get(String(interaction.guildId)) || null
@@ -516,6 +554,10 @@ async function handleSchedulerModalOpeningInteraction(interaction, { health }) {
     await interaction.showModal(buildStateLinkModal())
     return true
   }
+  if (interaction.isButton?.() && interaction.customId === IDS.stateDestinationNumber) {
+    await interaction.showModal(buildStateDestinationNumberModal(null))
+    return true
+  }
   if (await handleAllianceManagementModalOpeningInteraction(interaction, { health })) return true
   if (await handleEventManagementModalOpeningInteraction(interaction, { health })) return true
   return handleEventCreationModalOpeningInteraction(interaction, { health })
@@ -527,6 +569,7 @@ async function handleEventSchedulerInteraction(
     userCanManageServer,
     healthProvider = getEventSchedulerHealth,
     repositoryProvider = health => createEventSchedulerRepository(getPool(), health.gameProfile),
+    stateRepositoryProvider = health => createStateEventRepository(getPool(), health.gameProfile),
     roundupNow = () => new Date(),
     roundupFormatter = formatWeeklyRoundup,
     roundupTargetResolver = resolveSendableChannel,
@@ -556,6 +599,16 @@ async function handleEventSchedulerInteraction(
 
     const repository = repositoryProvider(health)
     const guildId = interaction.guildId
+
+    if (String(interaction.customId || "").startsWith(STATE_EVENT_IDS.prefix)) {
+      const stateRepository = stateRepositoryProvider(health)
+      if (await handleStateEventInteraction(interaction, {
+        schedulerRepository: repository,
+        stateRepository,
+        health,
+        targetResolver: resolveSendableChannel
+      })) return true
+    }
 
     if (await handleAllianceManagementInteraction(interaction, { repository, health })) return true
     if (await handleEventManagementInteraction(interaction, { repository, health })) return true
@@ -889,6 +942,17 @@ async function handleEventSchedulerInteraction(
       return true
     }
 
+    if (interaction.isModalSubmit?.() && interaction.customId === IDS.stateDestinationNumberModal) {
+      await acknowledgeSchedulerInteraction(interaction)
+      const destination = await repository.setStateDestinationNumber({
+        stateGuildId: guildId,
+        stateNumber: normalizeStateNumber(interaction.fields.getTextInputValue("n"))
+      })
+      if (!destination) throw new SchedulerValidationError("Configure this state destination first.")
+      await interaction.editReply(buildStateDestinationView(destination))
+      return true
+    }
+
     if (interaction.isButton?.() && interaction.customId === IDS.stateCode) {
       await acknowledgeSchedulerInteraction(interaction)
       const code = generateStateLinkCode()
@@ -990,6 +1054,7 @@ module.exports = {
   IDS,
   isSchedulerInteraction,
   buildHomeView,
+  buildStateEventHome,
   buildAllianceIdentityModal,
   buildChannelConfigurationView,
   buildRoundupTimeModal,

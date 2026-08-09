@@ -11,6 +11,7 @@ Run `/event-scheduler-help` for private setup, creation, reminder, management, r
 3. Choose **Weekly roundup settings** to enable or disable the alliance roundup, independently control state publishing, select the roundup channel, and preview or change its UTC weekday/time. Roundups do not require Attach Files.
 4. Open **Alliances** to add, list, rename, or delete sub-alliances.
 5. For state sharing, invite the profile's bot to the state Discord. Run `/event-scheduler` there, choose **State destination**, select its weekly-roundup channel, and generate a one-time 15-minute link code. Back in the alliance Discord, choose **State sharing**, then **Link with code**. Both guilds and the channel are identified automatically.
+6. In that enabled state destination, set the state number/name and use **State events** to create and manage canonical state events. Linked alliance Discords do not receive this administration control.
 
 The scheduler state link is Postgres-backed and separate from existing Apps Script state linking. Alliance and state channels here do not reuse the existing Apps Script announcement channel. Codes are stored only as hashes, expire, work once, and cannot cross game profiles. Existing ID-backed configurations continue to work internally, but normal setup never asks users for guild or channel IDs.
 
@@ -29,7 +30,7 @@ The private flow is:
 1. Select an alliance or sub-alliance.
 2. Enter the event name and first date.
 3. Choose **Single time** and enter one UTC time, or choose **Multiple groups** and add each group through separate name/time fields. Groups may share a time; names must be unique without regard to case.
-4. Choose recurrence: 3, 7, 14, or 28 days.
+4. Choose recurrence: 2, 3, 7, 14, 21, 28, 35, or 42 days.
 5. Choose one advance reminder: none, 5, 10, 15, 20, or 30 minutes.
 6. Optionally enter separate advance and final custom messages, each up to 500 characters.
 7. Enable or disable the one-minute final announcement.
@@ -42,6 +43,20 @@ No event is saved before final confirmation. **Edit details** retains the curren
 Selecting no advance reminder cancels future advance claims. Disabling the final announcement cancels future final claims. Clearing either optional message restores default wording. These edits increment `schedule_version`, invalidate unsent claims from the previous version, and preserve sent history.
 
 Accepted time forms include `18:30`, `1830`, `1800`, `6:30pm`, and `6.30 PM`. Times are normalized to UTC. Ambiguous or invalid values are rejected rather than guessed.
+
+## State Events
+
+**State events** appears on `/event-scheduler` only when the current guild is the enabled state destination for the current game profile. Configure or change the displayed state number/name under **State destination** first. Administration is ephemeral and session controls are scoped to the requesting user, guild, and profile.
+
+Choose **Create state event**, enter its name and first occurrence date, then select one-time or recurrence every 2, 3, 7, 14, 21, 28, 35, or 42 days. Every 2 days is a true anchored 48-hour interval. Add at least one structured phase before review and confirmation; nothing is stored before confirmation.
+
+Each phase has a name and free-form UTC time parsed by the same parser as alliance events. Supported examples include `1000`, `10:00`, `10am`, `10:00am`, `1830`, `18:30`, and `6:30pm`. The editor shows the normalized UTC time and a Discord-local timestamp. Configure a pre-alert of none, 5, 10, 15, 20, or 30 minutes and independently turn the exact-time announcement on or off. Exact-time alerts may cover the game screen, so consider disabling them for critical battle or red-zone phases.
+
+Pre-alert and exact-time messages are separate. Each delivery kind also has independent keep/upload, replace, and remove controls for PNG, JPEG, GIF, or WebP media up to 8 MB. Editing unrelated phase settings retains existing media. Discord's native GIF picker is not used.
+
+**View state events** lists active and paused events. Selecting one provides next-occurrence preview, event-detail editing, phase management, pause/resume, soft delete, and a test announcement. Preview reads the schedule without creating claims. A test sends one clearly marked pre-alert or exact-time version to the configured state destination only; it does not create or consume production claims, change `schedule_version`, or alter sent history.
+
+Confirmed edits update the existing event and reconcile unsent older-version claims. Stable phase rows and sent history are preserved. Pause removes the event from future alerts and roundups while retaining its anchor. Resume schedules only future work from that anchor. Soft delete stops future alerts and roundup entries while retaining sent history.
 
 ## Reminder Semantics
 
@@ -63,7 +78,7 @@ If no advance reminder is selected, the image remains stored but produces no ima
 
 Individual advance, final, grouped, and image deliveries are alliance-only. No state event delivery claim is generated. Historical sent state and exact-start rows remain unchanged; unsent legacy rows are terminally failed and never redirected.
 
-`publish_to_state` means eligibility for the combined state weekly roundup. It does not mean individual state publishing.
+`publish_to_state` is retained as a legacy compatibility field. Individual alliance-event reminders remain alliance-only; linked state roundup inclusion follows weekly-roundup inclusion and enabled sharing.
 
 ## Help
 
@@ -77,7 +92,7 @@ Disabling retains the configured channel and schedule. Changing the configuratio
 
 Alliance roundup eligibility requires matching guild/profile, active status, `include_in_weekly_roundup=true`, and an occurrence in the window. It is independent of `publish_to_state` and includes separate alliance names for main/sub-alliance entries.
 
-State roundup eligibility additionally requires `publish_to_state=true`, an enabled valid profile-scoped state link, and the matching state destination. One state claim combines eligible events from all linked alliances for that profile. WOS and Kingshot are never mixed.
+State roundup eligibility for alliance events additionally requires an enabled valid profile-scoped state link and matching state destination. Canonical state events add a single **STATE EVENTS** section to both the state roundup and each linked alliance roundup. Every phase is a milestone even when its exact alert is off; pre-alerts are not milestones. Multiple alliance identities in one Discord do not duplicate the section. WOS and Kingshot are never mixed.
 
 Roundups are text/embed-only and disable mention parsing. Long output splits deterministically. Each sent part ID is stored immediately and recorded parts are skipped on retry; the parent claim is sent only when all parts are recorded.
 

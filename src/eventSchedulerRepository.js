@@ -365,7 +365,7 @@ function createEventSchedulerRepository(pool, gameProfile) {
     async getStateDestination(stateGuildId) {
       const result = await pool.query(
         `SELECT state_guild_id, game_profile, configured_by_bot_instance,
-                state_roundup_channel_id, enabled, created_at, updated_at
+                state_roundup_channel_id, state_number, enabled, created_at, updated_at
            FROM event_state_destinations
           WHERE state_guild_id = $1 AND game_profile = $2`,
         [stateGuildId, gameProfile]
@@ -376,17 +376,19 @@ function createEventSchedulerRepository(pool, gameProfile) {
     async upsertStateDestination({
       stateGuildId,
       configuredByBotInstance,
-      stateRoundupChannelId
+      stateRoundupChannelId,
+      stateNumber = null
     }) {
       const result = await pool.query(
         `WITH destination AS (
            INSERT INTO event_state_destinations (
              state_guild_id, game_profile, configured_by_bot_instance,
-             state_roundup_channel_id, enabled
-           ) VALUES ($1, $2, $3, $4, true)
+             state_roundup_channel_id, state_number, enabled
+           ) VALUES ($1, $2, $3, $4, NULLIF(btrim($5::varchar), ''), true)
            ON CONFLICT (state_guild_id, game_profile) DO UPDATE SET
              configured_by_bot_instance = EXCLUDED.configured_by_bot_instance,
              state_roundup_channel_id = EXCLUDED.state_roundup_channel_id,
+             state_number = COALESCE(EXCLUDED.state_number, event_state_destinations.state_number),
              enabled = true,
              updated_at = now()
            RETURNING *
@@ -400,9 +402,20 @@ function createEventSchedulerRepository(pool, gameProfile) {
            RETURNING link.alliance_guild_id
          )
          SELECT destination.* FROM destination`,
-        [stateGuildId, gameProfile, configuredByBotInstance, stateRoundupChannelId]
+        [stateGuildId, gameProfile, configuredByBotInstance, stateRoundupChannelId, stateNumber]
       )
       return result.rows[0]
+    },
+
+    async setStateDestinationNumber({ stateGuildId, stateNumber }) {
+      const result = await pool.query(
+        `UPDATE event_state_destinations
+            SET state_number = NULLIF(btrim($3::varchar), ''), updated_at = now()
+          WHERE state_guild_id = $1 AND game_profile = $2
+          RETURNING *`,
+        [stateGuildId, gameProfile, stateNumber]
+      )
+      return result.rows[0] || null
     },
 
     async createStateLinkCode({

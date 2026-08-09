@@ -136,6 +136,7 @@ async function resolveDeliveryTarget(client, payload, { hasImage }) {
   }
   if (
     targetKind === "alliance"
+    && !payload?.stateEvent
     && (payload?.alliance?.guildId !== guildId || payload?.event?.guildId !== guildId)
   ) {
     throw permanent("Delivery guild ownership is invalid.")

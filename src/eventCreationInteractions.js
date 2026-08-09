@@ -443,10 +443,14 @@ function buildTimingView(sessionId, data) {
           .setCustomId(`${CREATION_IDS.recurrencePrefix}${sessionId}`)
           .setPlaceholder("Recurrence")
           .addOptions(
+            selectOption("Every 2 days", "2", data.recurrenceDays),
             selectOption("Every 3 days", "3", data.recurrenceDays),
-            selectOption("Every week", "7", data.recurrenceDays),
+            selectOption("Every 1 week", "7", data.recurrenceDays),
             selectOption("Every 2 weeks", "14", data.recurrenceDays),
-            selectOption("Every 4 weeks", "28", data.recurrenceDays)
+            selectOption("Every 3 weeks", "21", data.recurrenceDays),
+            selectOption("Every 4 weeks", "28", data.recurrenceDays),
+            selectOption("Every 5 weeks", "35", data.recurrenceDays),
+            selectOption("Every 6 weeks", "42", data.recurrenceDays)
           )
       ),
       new ActionRowBuilder().addComponents(
