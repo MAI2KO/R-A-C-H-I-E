@@ -152,5 +152,5 @@ test("previews and roundups label UTC and Discord-local times clearly", () => {
       groupName: null
     }]
   })[0].embeds[0].toJSON().description
-  assert.match(roundup, /13:00 UTC · Local time: <t:/)
+  assert.match(roundup, /13:00 UTC · <t:\d+:t> local/)
 })
