@@ -34,19 +34,53 @@ function interactionType(interaction) {
   return "interaction"
 }
 
+function sanitizeValidationMessage(message) {
+  return String(message || "Invalid value")
+    .replace(/https?:\/\/\S+/gi, "[redacted URL]")
+    .replace(/\b(token|authorization|password|secret)\b\s*[:=]?\s*\S+/gi, "$1 [redacted]")
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 180)
+}
+
+function sanitizedValidationIssues(errors, maximumIssues = 6) {
+  const issues = []
+  function visit(value, path = []) {
+    if (!value || issues.length >= maximumIssues) return
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length && issues.length < maximumIssues; index += 1) {
+        visit(value[index], [...path, String(index)])
+      }
+      return
+    }
+    if (typeof value !== "object") return
+    if (Array.isArray(value._errors)) {
+      for (const issue of value._errors.slice(0, maximumIssues - issues.length)) {
+        const field = path.join(".").replace(/[^A-Za-z0-9_.-]/g, "?") || "body"
+        const code = String(issue?.code || "INVALID_VALUE")
+          .replace(/[^A-Za-z0-9_-]/g, "?").slice(0, 80)
+        const message = sanitizeValidationMessage(issue?.message)
+        issues.push(`${field}: ${code} (${message})`)
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key !== "_errors") visit(child, [...path, key])
+    }
+  }
+  visit(errors)
+  return issues
+}
+
 function logDiscordApiError(error, interaction, logger = console) {
   const code = interactionErrorCode(error)
   if (!code) return false
 
-  let details = ""
-  try {
-    details = JSON.stringify(error?.rawError?.errors || error?.data?.errors || {})
-  } catch {
-    // Diagnostic formatting must not obscure the original Discord API failure.
-  }
-  const message = code === 50035 && details.includes("COMPONENT_CUSTOM_ID_DUPLICATED")
-    ? "duplicate custom_id in rendered components"
-    : "Discord rejected the interaction response"
+  const issues = sanitizedValidationIssues(error?.rawError?.errors || error?.data?.errors)
+  const duplicateId = issues.some(issue => issue.includes("COMPONENT_CUSTOM_ID_DUPLICATED"))
+  const message = code === 50035 && duplicateId
+    ? `duplicate custom_id in rendered components; ${issues.join("; ")}`
+    : code === 50035 && issues.length
+      ? `invalid form body; ${issues.join("; ")}`
+      : "Discord rejected the interaction response"
   logger.error(
     `[Event scheduler] Discord API error ${code} during ${interactionType(interaction)} ` +
     `${interactionLabel(interaction)}: ${message}`
@@ -128,6 +162,7 @@ module.exports = {
   interactionLabel,
   logExpectedInteractionResponseError,
   interactionType,
+  sanitizedValidationIssues,
   logDiscordApiError,
   acknowledgeSchedulerInteraction,
   editOrReply,

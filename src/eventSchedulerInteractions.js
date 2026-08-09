@@ -94,6 +94,18 @@ const TEXT_CHANNEL_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement
 const SAFE_MENTIONS = Object.freeze({ parse: [], repliedUser: false })
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 const guildSettingsCache = new Map()
+const stateDestinationCache = new Map()
+
+function stateDestinationCacheKey(guildId, gameProfile) {
+  return `${String(gameProfile || "")}:${String(guildId || "")}`
+}
+
+function cacheStateDestination(guildId, gameProfile, destination) {
+  const key = stateDestinationCacheKey(guildId, gameProfile)
+  if (destination) stateDestinationCache.set(key, destination)
+  else stateDestinationCache.delete(key)
+  return destination
+}
 
 function isSchedulerInteraction(interaction) {
   return interaction.commandName === "event-scheduler"
@@ -466,19 +478,22 @@ function buildStateLinkModal() {
 }
 
 function buildStateDestinationNumberModal(destination) {
+  const stateNumberInput = new TextInputBuilder()
+    .setCustomId("n")
+    .setLabel("State number")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMinLength(1)
+    .setMaxLength(10)
+    .setPlaceholder("689")
+  if (String(destination?.state_number || "").trim()) {
+    stateNumberInput.setValue(String(destination.state_number).trim())
+  }
   return new ModalBuilder()
     .setCustomId(IDS.stateDestinationNumberModal)
-    .setTitle("State number")
+    .setTitle("Set state number")
     .addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId("n")
-        .setLabel("State number")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMinLength(1)
-        .setMaxLength(32)
-        .setValue(destination?.state_number || "")
-        .setPlaceholder("689")
+      stateNumberInput
     ))
 }
 
@@ -555,7 +570,12 @@ async function handleSchedulerModalOpeningInteraction(interaction, { health }) {
     return true
   }
   if (interaction.isButton?.() && interaction.customId === IDS.stateDestinationNumber) {
-    await interaction.showModal(buildStateDestinationNumberModal(null))
+    await interaction.showModal(buildStateDestinationNumberModal(
+      stateDestinationCache.get(stateDestinationCacheKey(
+        interaction.guildId,
+        health.gameProfile
+      )) || null
+    ))
     return true
   }
   if (await handleAllianceManagementModalOpeningInteraction(interaction, { health })) return true
@@ -918,9 +938,12 @@ async function handleEventSchedulerInteraction(
 
     if (interaction.isButton?.() && interaction.customId === IDS.stateDestination) {
       await acknowledgeSchedulerInteraction(interaction)
-      await interaction.editReply(buildStateDestinationView(
+      const destination = cacheStateDestination(
+        guildId,
+        health.gameProfile,
         await repository.getStateDestination(guildId)
-      ))
+      )
+      await interaction.editReply(buildStateDestinationView(destination))
       return true
     }
 
@@ -938,6 +961,7 @@ async function handleEventSchedulerInteraction(
         configuredByBotInstance: health.botInstanceName,
         stateRoundupChannelId: target.channelId
       })
+      cacheStateDestination(guildId, health.gameProfile, destination)
       await interaction.editReply(buildStateDestinationView(destination))
       return true
     }
@@ -949,6 +973,7 @@ async function handleEventSchedulerInteraction(
         stateNumber: normalizeStateNumber(interaction.fields.getTextInputValue("n"))
       })
       if (!destination) throw new SchedulerValidationError("Configure this state destination first.")
+      cacheStateDestination(guildId, health.gameProfile, destination)
       await interaction.editReply(buildStateDestinationView(destination))
       return true
     }
@@ -1068,6 +1093,7 @@ module.exports = {
   buildStateDestinationView,
   buildStateSharingView,
   buildStateLinkModal,
+  buildStateDestinationNumberModal,
   parseYesNo,
   describeStateLink,
   loadHome,

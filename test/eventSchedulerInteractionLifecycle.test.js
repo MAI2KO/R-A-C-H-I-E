@@ -281,3 +281,43 @@ test("Discord component validation errors are logged without request secrets", a
   assert.doesNotMatch(errors[0], /secret-token|webhooks|requestBody/)
   assert.equal(interaction.replyCount, 1)
 })
+
+test("Discord invalid-form diagnostics retain field details without secrets", async () => {
+  const errors = []
+  const interaction = schedulerInteraction("button", { customId: "es:statenumber" })
+  await handleInteractionFailure(interaction, {
+    code: 50035,
+    rawError: {
+      errors: {
+        data: {
+          components: {
+            0: {
+              components: {
+                0: {
+                  value: {
+                    _errors: [{
+                      code: "BASE_TYPE_BAD_LENGTH",
+                      message: "Must be between 1 and 4000 in length; token=secret-token"
+                    }]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    requestBody: {
+      json: { interaction_token: "interaction-secret", value: "private-input" }
+    }
+  }, {
+    logger: { warn() {}, error: message => errors.push(message) }
+  })
+
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /invalid form body/)
+  assert.match(errors[0], /data\.components\.0\.components\.0\.value/)
+  assert.match(errors[0], /BASE_TYPE_BAD_LENGTH/)
+  assert.match(errors[0], /Must be between 1 and 4000 in length/)
+  assert.doesNotMatch(errors[0], /secret-token|interaction-secret|private-input|requestBody/)
+})

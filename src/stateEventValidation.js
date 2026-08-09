@@ -11,8 +11,8 @@ const ALLOWED_STATE_RECURRENCES = new Set([null, 2, 3, 7, 14, 21, 28, 35, 42])
 
 function normalizeStateNumber(value) {
   const normalized = String(value || "").trim()
-  if (!normalized || normalized.length > 32) {
-    throw new EventValidationError("State number must be 1 to 32 characters.")
+  if (!/^\d{1,10}$/.test(normalized)) {
+    throw new EventValidationError("State number must contain 1 to 10 digits.")
   }
   return normalized
 }
