@@ -11,7 +11,7 @@ They are separate Discord applications and separate Railway services. Each has i
 
 Apps Script continues to own existing booking, state-linking, booking announcements, administration, and related sheet-backed behavior. The scheduler does not change those actions, URLs, sheets, or announcement channels.
 
-Postgres owns only scheduler guild settings, alliance identities, events, images, delivery claims, scheduler state links, and weekly roundups. If Postgres is disabled or unavailable, the Discord bot still starts and existing Apps Script-backed features continue to operate. Scheduler management and polling remain unavailable until scheduler health recovers on a later restart; the static `/event-scheduler-help` command remains available when the subsystem is enabled.
+Postgres owns scheduler data and, when enabled, canonical player accounts and gift-code records. If Postgres is disabled or unavailable, the Discord bot still starts and existing Apps Script-backed features continue to operate. Database-backed commands report temporary unavailability without taking down booking or banter.
 
 See [Architecture](docs/architecture.md) for the complete boundary and data model.
 
@@ -49,6 +49,12 @@ Canonical state-event phase alerts publish once to the configured state Discord 
 
 See [Event Scheduler](docs/event-scheduler.md) for setup and workflow details.
 
+## Player Accounts And Gift Codes
+
+Set `PLAYER_GIFT_CODES_ENABLED=true` to register the profile-specific `/player` command. It supports multiple Whiteout Survival or Kingshot characters per Discord user, one active primary character per user/profile, private account views, transactional State/Kingdom changes, and soft deactivation. PostgreSQL is canonical; the existing `/register`, `/my-info`, and `/unregister` booking identities remain unchanged in Apps Script.
+
+Migration 011 also establishes case-sensitive gift codes, source/submission provenance, and restart-safe redemption rows with immutable Player ID and State/Kingdom snapshots. It does not automatically redeem, discover, scrape, announce, or bulk-process codes. See [Player Accounts And Gift Codes](docs/player-gift-codes.md).
+
 ## Installation
 
 Requirements: Node.js 18 or later, npm, a Discord application, and the existing Apps Script deployment. Postgres is optional unless the event scheduler is enabled.
@@ -70,6 +76,7 @@ All variables read by the code are represented in [.env.example](.env.example):
 - Required existing bot variables: `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and `OPENAI_API_KEY` where those existing features are used.
 - Profile variables: `GAME_PROFILE` (`wos` default or `kingshot`) and `BANTER_PROFILE` (`rachie` default).
 - Scheduler variables: `EVENT_SCHEDULER_ENABLED`, `DATABASE_URL`, and `BOT_INSTANCE_NAME`.
+- Player/gift-code variables: `PLAYER_GIFT_CODES_ENABLED`, the shared standard `DATABASE_URL`, optional profile signing-suffix overrides, and conservative Century delay/backoff controls.
 - Optional scheduler tuning: `EVENT_SCHEDULER_LOOKAHEAD_MINUTES`, `EVENT_SCHEDULER_GRACE_MINUTES`, `EVENT_SCHEDULER_POLL_INTERVAL_MS`, `EVENT_SCHEDULER_BATCH_SIZE`, `EVENT_SCHEDULER_CLAIM_LEASE_SECONDS`, and `EVENT_SCHEDULER_HANDLER_TIMEOUT_MS`.
 - Test-only database variable: `TEST_DATABASE_URL`, which must reference a disposable Postgres database.
 
@@ -83,7 +90,13 @@ Migrations run during scheduler initialization under a session-level Postgres ad
 EVENT_SCHEDULER_ENABLED=true npm run migrate
 ```
 
-Migration files are append-only. Migrations 001 through 005 preserve the initial scheduler history; migration 006 adds flexible reminders, custom messages, and profile-scoped alliance entities while backfilling existing events. Migration 007 permits identity-first setup and adds profile-scoped state destinations plus hashed, expiring, one-time link codes. Migration 008 separates state-roundup enablement and adds a replay boundary for changed or re-enabled schedules. Migration 009 expands recurrence intervals, stores the profile-scoped state number/name, and adds canonical state events, phases, per-phase media, and per-target delivery claims. Existing channels, schedules, state links, and sent history are preserved. Run migrations again to confirm that zero files reapply.
+When only the player/gift-code subsystem is enabled, the same portable command is:
+
+```bash
+PLAYER_GIFT_CODES_ENABLED=true npm run migrate
+```
+
+Migration files are append-only. Migrations 001 through 010 own the scheduler and state-event history described above. Migration 011 adds canonical profile-scoped player accounts, transfer history, gift codes, submissions, sources, and durable redemption work/history. Existing channels, schedules, state links, sent history, booking sheets, and Apps Script records are preserved. Run migrations again to confirm that zero files reapply.
 
 ## Testing
 
@@ -111,6 +124,8 @@ Both:         EVENT_SCHEDULER_ENABLED=true
 ```
 
 Each service retains its own Discord and Apps Script variables. Follow [Deployment](docs/deployment.md) for clean migration validation, staged rollout, health checks, and rollback.
+
+The application is not tied to Railway APIs. The same services can use a standard `DATABASE_URL` on a Linux VPS, Docker Compose, externally hosted PostgreSQL, or another managed PostgreSQL provider. Durable state remains in PostgreSQL rather than deployment-local files.
 
 ## Safe Rollout And Rollback
 

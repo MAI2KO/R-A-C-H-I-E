@@ -27,6 +27,8 @@ const {
   handleInteractionFailure,
   schedulerInteractionWasHandled
 } = require("./src/interactionResponses")
+const { getPlayerCommandData } = require("./src/giftCodes/discord/commands")
+const { handlePlayerInteraction } = require("./src/giftCodes/discord/interactions")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -1719,6 +1721,8 @@ const eventSchedulerCommand = getEventSchedulerCommandData()
 if (eventSchedulerCommand) commands.push(eventSchedulerCommand)
 const eventSchedulerHelpCommand = getEventSchedulerHelpCommandData()
 if (eventSchedulerHelpCommand) commands.push(eventSchedulerHelpCommand)
+const playerCommand = getPlayerCommandData()
+if (playerCommand) commands.push(playerCommand)
 
 /* -------------------- COMMAND REGISTRATION -------------------- */
 
@@ -1756,6 +1760,8 @@ client.once("clientReady", () => {
 
 client.on("interactionCreate", async interaction => {
   try {
+    if (await handlePlayerInteraction(interaction)) return
+
     if (await schedulerInteractionWasHandled(
       interaction,
       handleEventSchedulerInteraction,
@@ -3954,10 +3960,14 @@ channelMessageThresholds.set(channelId, getRandomBanterThreshold())
 
 const { initializeEventSchedulerSubsystem } = require("./src/eventSchedulerHealth")
 const { createAllianceEventDeliveryRuntime } = require("./src/allianceEventDeliveryRuntime")
+const { initializePlayerGiftCodesSubsystem } = require("./src/giftCodes/runtime")
 
 /* -------------------- START BOT -------------------- */
 
 async function main() {
+  void initializePlayerGiftCodesSubsystem().catch(() => {
+    console.error("[Player accounts] Initialization failed unexpectedly")
+  })
   const schedulerInitialization = initializeEventSchedulerSubsystem().catch(() => {
     console.error("[Event scheduler] Initialization failed unexpectedly")
     return null

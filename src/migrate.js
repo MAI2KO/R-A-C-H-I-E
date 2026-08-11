@@ -2,7 +2,7 @@ const fs = require("fs/promises")
 const path = require("path")
 
 const {
-  schedulerIsEnabled,
+  postgresIsEnabled,
   getPool,
   closePool,
   classifyDatabaseError
@@ -111,8 +111,8 @@ async function runMigrations({
 }
 
 async function runFromCommandLine() {
-  if (!schedulerIsEnabled()) {
-    console.log("[Event scheduler] Migrations skipped: subsystem disabled")
+  if (!postgresIsEnabled()) {
+    console.log("[Postgres] Migrations skipped: database-backed subsystems disabled")
     return
   }
 

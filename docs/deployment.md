@@ -22,6 +22,18 @@ EVENT_SCHEDULER_ENABLED=true
 DATABASE_URL=<shared or dedicated Postgres URL>
 ```
 
+Optional on either profile:
+
+```text
+PLAYER_GIFT_CODES_ENABLED=true
+CENTURY_MINIMUM_DELAY_MS=1000
+CENTURY_MAXIMUM_RETRIES=2
+CENTURY_BACKOFF_BASE_MS=2000
+CENTURY_BACKOFF_CAP_MS=60000
+```
+
+The adapters include signing suffixes observed in the current official public browser clients and independently validated against real official requests. These are public-client implementation details, not secrets or credentials, and may change. `CENTURY_WOS_SIGNING_SUFFIX` and `CENTURY_KINGSHOT_SIGNING_SUFFIX` are optional emergency compatibility overrides; a non-empty environment value takes precedence over the built-in value.
+
 Each service keeps its own `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and any `OPENAI_API_KEY`/`BANTER_PROFILE` configuration. Do not combine Apps Script deployments or booking sheets.
 
 Every variable read by the repository is listed in [`.env.example`](../.env.example). Scheduler tuning variables are optional; invalid or out-of-range values fall back to defaults.
@@ -40,7 +52,7 @@ Every variable read by the repository is listed in [`.env.example`](../.env.exam
 
 ## Startup And Degraded Mode
 
-`EVENT_SCHEDULER_ENABLED` is checked before `DATABASE_URL`. When it is not exactly `true`, the scheduler remains disabled and no Postgres pool is created.
+`EVENT_SCHEDULER_ENABLED` and `PLAYER_GIFT_CODES_ENABLED` independently gate their subsystems. A Postgres pool is created only when at least one database-backed subsystem is enabled; otherwise `DATABASE_URL` is not required.
 
 When enabled, scheduler initialization validates `GAME_PROFILE` and `BOT_INSTANCE_NAME`, checks Postgres, and runs migrations under an advisory lock. The lock encloses migration-state creation/checking, transactional application, and version recording, so simultaneous services serialize safely. A failure marks only database-backed scheduler management unavailable and closes its pool. Discord login and existing bot behavior continue; `/event-scheduler-help` remains available and the polling worker does not start.
 
@@ -73,3 +85,9 @@ If a release must be reverted, revert only application code, keep the database b
 - Confirm both services intentionally use the same or separate `DATABASE_URL`.
 - Never place `TEST_DATABASE_URL` in a production service.
 - Do not print tokens, URLs with credentials, or full environment dumps in logs.
+
+## Infrastructure Portability
+
+Railway is one deployment target, not an application dependency. `npm run migrate`, the bot processes, and future worker/API processes use ordinary environment variables and standard PostgreSQL connectivity. They can run under systemd, Docker, Docker Compose, or another scheduler against local, external, or managed PostgreSQL.
+
+Do not introduce Railway service IDs, private hostnames, deployment APIs, or persistent local-file assumptions into business logic. Services should remain stateless outside PostgreSQL. Future cache/queue providers must be accessed through an abstraction so deployment can move without rewriting player, gift-code, or redemption rules.

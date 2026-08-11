@@ -9,11 +9,19 @@ The repository serves two independent Discord applications:
 | R.A.C.H.I.E | `wos` | `rachie-wos` | Its own token, client ID, Apps Script URL, deployment, and booking sheet |
 | P.E.G.G.I.E | `kingshot` | `peggie-kingshot` | Its own token, client ID, Apps Script URL, deployment, and booking sheet |
 
-The Railway services may share Postgres. `game_profile` is included in settings, events, alliances, claims, links, images, and every ownership query. A worker claims only its own profile. `BOT_INSTANCE_NAME` records and checks sender ownership; it is not a secret.
+The bot services may share standard Postgres. `game_profile` is included in scheduler, player, gift-code, and redemption ownership. A process handles only its own profile. `BOT_INSTANCE_NAME` records worker ownership; it is not a secret.
 
 ## Existing Apps Script Boundary
 
 `index.js` retains the existing Apps Script client and actions for booking, sheet-backed state behavior, administration, announcements, and related commands. The scheduler neither calls those actions nor reuses their channel fields. Each bot keeps its own `APPS_SCRIPT_URL` and sheet.
+
+The canonical player-account subsystem is also separate from Apps Script booking identities. Its optional mirror is an interface only; no Sheet write is guessed. A mirror failure occurs after the PostgreSQL commit and is safe to retry.
+
+## Portable Process Boundaries
+
+All durable application state uses standard PostgreSQL through `DATABASE_URL` and append-only SQL migrations. Discord interaction modules, repositories, the Century client, and rate limiter have explicit dependency boundaries. The Century client and any future redemption worker can run in a separate Node.js process without a Discord client. No business logic uses Railway hostnames, service identifiers, internal DNS, database APIs, or deployment-local durable files.
+
+A future container deployment can run PostgreSQL, R.A.C.H.I.E, P.E.G.G.I.E, a website/API, and independently scaled background workers. A future external cache or queue must sit behind an interface; PostgreSQL remains the current durable queue/idempotency layer.
 
 Scheduler failure is isolated. Discord login and existing slash-command registration do not wait for Postgres. When enabled, scheduler initialization validates ownership, connects, runs migrations, and records health. Failure closes the scheduler pool and leaves the rest of the bot running. Database-backed management returns a private unavailable response; static scheduler help remains usable.
 

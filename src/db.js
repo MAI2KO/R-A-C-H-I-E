@@ -17,6 +17,14 @@ function schedulerIsEnabled(env = process.env) {
   return env.EVENT_SCHEDULER_ENABLED === "true"
 }
 
+function playerGiftCodesIsEnabled(env = process.env) {
+  return env.PLAYER_GIFT_CODES_ENABLED === "true"
+}
+
+function postgresIsEnabled(env = process.env) {
+  return schedulerIsEnabled(env) || playerGiftCodesIsEnabled(env)
+}
+
 function validateDatabaseUrl(databaseUrl) {
   if (!databaseUrl) {
     throw new DatabaseConfigurationError(
@@ -57,7 +65,7 @@ function classifyDatabaseError(error) {
 }
 
 function getPool({ env = process.env, logger = console } = {}) {
-  if (!schedulerIsEnabled(env)) return null
+  if (!postgresIsEnabled(env)) return null
   if (pool) return pool
 
   validateDatabaseUrl(env.DATABASE_URL)
@@ -93,6 +101,8 @@ module.exports = {
   QUERY_TIMEOUT_MS,
   DatabaseConfigurationError,
   schedulerIsEnabled,
+  playerGiftCodesIsEnabled,
+  postgresIsEnabled,
   validateDatabaseUrl,
   classifyDatabaseError,
   getPool,
