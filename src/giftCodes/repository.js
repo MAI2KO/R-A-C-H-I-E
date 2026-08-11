@@ -254,11 +254,18 @@ function createGiftCodeRepository(pool, gameProfile) {
                      AND ag.gift_code_enrolled = true
                 ) AS guild_gift_code_enrolled,
                 COALESCE(stats.success_count, 0)::integer AS successful_redemptions,
+                COALESCE(stats.already_redeemed_count, 0)::integer AS already_redeemed,
+                (
+                  COALESCE(stats.success_count, 0) +
+                  COALESCE(stats.already_redeemed_count, 0)
+                )::integer AS completed_redemption_checks,
                 latest.status AS last_redemption_status,
                 latest.api_message AS last_redemption_message
            FROM player_accounts a
            LEFT JOIN LATERAL (
-             SELECT COUNT(*) FILTER (WHERE status IN ('success', 'already_redeemed')) AS success_count
+             SELECT
+               COUNT(*) FILTER (WHERE status = 'success') AS success_count,
+               COUNT(*) FILTER (WHERE status = 'already_redeemed') AS already_redeemed_count
                FROM gift_code_redemptions r
               WHERE r.game_profile = a.game_profile AND r.player_account_id = a.id
            ) stats ON true

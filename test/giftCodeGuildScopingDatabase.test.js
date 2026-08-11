@@ -12,13 +12,17 @@ const { createGiftCodeCommunityRepository } = require("../src/giftCodes/communit
 const databaseUrl = process.env.TEST_DATABASE_URL
 const logger = { log() {}, error() {} }
 
-function successResult() {
+function redemptionResult(state) {
   return {
     httpStatus: 200,
     headers: {},
     classification: {
-      state: "success",
-      raw: { code: 0, errCode: 20000, message: "SUCCESS" }
+      state,
+      raw: {
+        code: state === "success" ? 0 : null,
+        errCode: state === "success" ? 20000 : 40008,
+        message: state === "success" ? "SUCCESS" : "RECEIVED"
+      }
     }
   }
 }
@@ -136,7 +140,7 @@ test("gift-code community activity is explicitly guild scoped while redemption s
     await wosRepository.finishRedemption({
       claim,
       workerId: "redeem-worker",
-      result: successResult(),
+      result: redemptionResult("success"),
       now: new Date("2026-08-11T14:00:01Z"),
       status: "success"
     })
@@ -165,6 +169,50 @@ test("gift-code community activity is explicitly guild scoped while redemption s
           AND event_type = 'code_progress' AND guild_id IN ($2, $3)`,
       [submission.giftCode.id, guildB, guildC]
     )).rows[0].count, 0)
+
+    const alreadyCode = await wosRepository.recordSubmission({ code: "AlreadyClaimedCode" })
+    await pool.query(
+      `UPDATE gift_codes SET status = 'active', verification_state = 'complete',
+          verified_at_utc = now() WHERE id = $1`,
+      [alreadyCode.giftCode.id]
+    )
+    assert.equal((await wosRepository.fanOutActiveCode({
+      giftCodeId: alreadyCode.giftCode.id
+    })).length, 1)
+    const alreadyClaim = await wosRepository.claimRedemption({
+      workerId: "already-worker",
+      now: new Date("2026-08-11T14:01:00Z"),
+      leaseSeconds: 60
+    })
+    assert.equal(alreadyClaim.gift_code_id, alreadyCode.giftCode.id)
+    await wosRepository.finishRedemption({
+      claim: alreadyClaim,
+      workerId: "already-worker",
+      result: redemptionResult("already_redeemed"),
+      now: new Date("2026-08-11T14:01:01Z"),
+      status: "already_redeemed"
+    })
+    const guildAStats = await wosCommunity.communityStats(guildA)
+    const guildCStats = await wosCommunity.communityStats(guildC)
+    const guildBStats = await wosCommunity.communityStats(guildB)
+    for (const stats of [guildAStats, guildCStats]) {
+      assert.equal(stats.successful_redemptions, 1)
+      assert.equal(stats.already_redeemed, 1)
+      assert.equal(stats.successful_redemptions + stats.already_redeemed, 2)
+    }
+    assert.equal(guildBStats.successful_redemptions, 0)
+    assert.equal(guildBStats.already_redeemed, 0)
+    const accountStatus = (await wosRepository.accountStatuses(
+      owner,
+      account.player_id,
+      guildA
+    ))[0]
+    assert.equal(accountStatus.successful_redemptions, 1)
+    assert.equal(accountStatus.already_redeemed, 1)
+    assert.equal(accountStatus.completed_redemption_checks, 2)
+    const ownerStats = await wosCommunity.accountOwnerStats(owner, guildA)
+    assert.equal(ownerStats.successfulRedemptions, 1)
+    assert.equal(ownerStats.alreadyRedeemed, 1)
 
     await wosGifts.setAutomaticRedemption({
       discordUserId: owner,
@@ -215,6 +263,10 @@ test("gift-code community activity is explicitly guild scoped while redemption s
     })
     assert.equal((await createGiftCodeCommunityRepository(pool, "kingshot")
       .communityStats(guildB)).auto_redeem_players, 1)
+    const kingshotStats = await createGiftCodeCommunityRepository(pool, "kingshot")
+      .communityStats(guildB)
+    assert.equal(kingshotStats.successful_redemptions, 0)
+    assert.equal(kingshotStats.already_redeemed, 0)
     assert.equal((await wosCommunity.communityStats(guildB)).auto_redeem_players, 0)
   } finally {
     await pool?.end().catch(() => {})

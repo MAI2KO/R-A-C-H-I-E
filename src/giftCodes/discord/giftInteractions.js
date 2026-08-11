@@ -14,7 +14,9 @@ function formatPlayerGiftStatus(account, terms) {
     `Automatic redemption: ${account.gift_redemption_enabled ? "Enabled" : "Disabled"}`,
     `Account: ${account.is_active ? "Active" : "Inactive"}`,
     `Verification: ${account.verification_status}`,
-    `Successful codes: ${account.successful_redemptions}`
+    `Successful redemptions: ${account.successful_redemptions ?? 0}`,
+    `Already claimed: ${account.already_redeemed ?? 0}`,
+    `Completed redemption checks: ${account.completed_redemption_checks ?? 0}`
   ]
   if (account.last_redemption_status) lines.push(`Last result: ${account.last_redemption_status}`)
   return lines.join("\n")

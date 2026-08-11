@@ -429,9 +429,15 @@ test("gift panel commands register for both profiles and status uses State or Ki
     gift_redemption_enabled: true,
     is_active: true,
     verification_status: "verified",
-    successful_redemptions: 1
+    successful_redemptions: 1,
+    already_redeemed: 2,
+    completed_redemption_checks: 3
   }
-  assert.match(formatPlayerGiftStatus(account, profileTerminology("wos")), /State: 689/)
+  const wosStatus = formatPlayerGiftStatus(account, profileTerminology("wos"))
+  assert.match(wosStatus, /State: 689/)
+  assert.match(wosStatus, /Successful redemptions: 1/)
+  assert.match(wosStatus, /Already claimed: 2/)
+  assert.match(wosStatus, /Completed redemption checks: 3/)
   assert.match(formatPlayerGiftStatus(account, profileTerminology("kingshot")), /Kingdom: 689/)
   assert.equal(getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "false" }).length, 0)
   assert.equal(getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "true", GAME_PROFILE: "wos" }).length, 2)

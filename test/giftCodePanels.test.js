@@ -192,6 +192,7 @@ test("community statistics use engagement wording without pricing or guarantees"
   assert.match(output, /Players using Auto-Redeem: 8/)
   assert.match(output, /Characters covered: 10/)
   assert.match(output, /Successful redemptions: 42/)
+  assert.match(output, /Already claimed: 7/)
   assert.match(output, /Verified gift codes: 3/)
   assert.doesNotMatch(output, /\b(?:free|paid|premium|subscription|protected)\b/i)
 })
@@ -297,18 +298,23 @@ test("community messages expose aggregates and location but never full Player ID
   }
   const codeMessage = codeProgressMessage(payload, progress, wos, { initial: true })
   assert.match(codeMessage, /Accounts queued: 63/)
-  assert.match(codeMessage, /Redeemed: 57/)
+  assert.match(codeMessage, /Successful redemptions: 57/)
   assert.ok(!codeMessage.includes("282021376"))
   const joined = joinMessage(payload, {
     registered_users: 47,
     auto_redeem_players: 40,
     enabled_accounts: 63,
-    successful_redemptions: 418
-  }, { enabledCount: 2, successfulRedemptions: 14 }, wos, 2)
+    successful_redemptions: 418,
+    already_redeemed: 27
+  }, { enabledCount: 2, successfulRedemptions: 14, alreadyRedeemed: 3 }, wos, 2)
   assert.match(joined, /State: 689/)
   assert.match(joined, /Gift Code Auto-Redeem Activated/)
   assert.match(joined, /Characters covered: 2 \/ 2/)
   assert.match(joined, /Players using Auto-Redeem: 40/)
+  assert.match(joined, /Successful redemptions: 418/)
+  assert.match(joined, /Already claimed: 27/)
+  assert.match(joined, /Their successful redemptions: 14/)
+  assert.match(joined, /Their already claimed: 3/)
   assert.ok(!joined.includes("Player ID"))
   assert.doesNotMatch(`${codeMessage}\n${joined}`, /\b(?:free|paid|premium|subscription)\b/i)
 })

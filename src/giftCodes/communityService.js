@@ -49,7 +49,7 @@ function codeProgressMessage(payload, progress, terms, { initial = false } = {})
     "Status: Active",
     initial ? `Accounts queued: ${payload.metadata?.queuedCount ?? progress.total}` : "",
     "",
-    `Redeemed: ${progress.successful}`,
+    `Successful redemptions: ${progress.successful}`,
     `Already claimed: ${progress.already_redeemed}`,
     `Account issue: ${progress.account_issues}`,
     `Restricted: ${progress.restricted}`,
@@ -67,12 +67,14 @@ function joinMessage(payload, stats, accountStats, terms, maximumEnabled) {
     `Game: ${terms.gameName}`,
     `${terms.locationLabel}: ${payload.state_or_kingdom_number}`,
     `Characters covered: ${accountStats.enabledCount} / ${maximumEnabled}`,
-    `Their successful redemptions: ${accountStats.successfulRedemptions}`,
+    `Their successful redemptions: ${accountStats.successfulRedemptions ?? 0}`,
+    `Their already claimed: ${accountStats.alreadyRedeemed ?? 0}`,
     "",
     "**Community**",
     `Players using Auto-Redeem: ${stats.auto_redeem_players}`,
     `Characters covered: ${stats.enabled_accounts}`,
-    `Successful redemptions: ${stats.successful_redemptions}`
+    `Successful redemptions: ${stats.successful_redemptions}`,
+    `Already claimed: ${stats.already_redeemed ?? 0}`
   ].join("\n")
 }
 
