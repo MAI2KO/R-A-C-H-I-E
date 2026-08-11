@@ -23,6 +23,7 @@ const { giftAccountConfig } = require("../config")
 const { PlayerValidationError } = require("../validation")
 const { getPlayerGiftCodesHealth } = require("../runtime")
 const { getGiftCodeRuntime } = require("../workflowRuntime")
+const { formatCodeDiagnostics } = require("./diagnostics")
 
 const PREFIX = "gcux:"
 const IDS = Object.freeze({
@@ -511,12 +512,7 @@ async function handleGiftCodePanelInteraction(interaction, {
     if (customId.startsWith(IDS.inspectModal)) {
       const code = await gifts.adminCode(interaction.fields.getTextInputValue("code"))
       await interaction.editReply({
-        content: code
-          ? `**${code.code}**\nStatus: ${code.status}\nVerification: ${code.verification_state}\n` +
-            `Classification: ${code.last_err_code ?? "none"} · ${code.last_api_message || "none"}\n` +
-            `Pending: ${code.pending_count} · Success: ${code.success_count} · ` +
-            `Already claimed: ${code.already_redeemed_count} · Review/failed: ${code.failed_count}`
-          : "No matching gift code was found.",
+        content: formatCodeDiagnostics(code),
         components: []
       })
       return true

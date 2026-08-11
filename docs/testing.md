@@ -61,3 +61,18 @@ git diff --check
 ```
 
 Confirm `.env` remains ignored and `.env.example` contains placeholders only.
+
+## One Controlled Century Comparison
+
+Normal tests never contact Century Games. To issue exactly one Whiteout verification request from a developer machine, use the dedicated harness with all opt-ins explicit:
+
+```bash
+ALLOW_ONE_LIVE_CENTURY_REQUEST=true \
+GAME_PROFILE=wos \
+LIVE_CENTURY_GIFT_CODE=gogoWOS \
+WOS_GIFT_VERIFY_FID=<controlled verifier FID> \
+WOS_GIFT_VERIFY_KID=<controlled verifier State> \
+npm run test:live-century:wos
+```
+
+The harness has no database or Discord dependency, fixes retries at zero, invokes the shared adapter once, and prints only bounded sanitized diagnostics. Do not put the opt-in variable in production configuration and do not repeat the request merely to gather more samples.

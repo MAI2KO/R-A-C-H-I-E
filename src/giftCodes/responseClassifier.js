@@ -22,7 +22,7 @@ function classifyCenturyResponse({ httpStatus, data, profileMappings = {} }) {
       || KNOWN_ERROR_STATES[raw.errCode]
       || codes[raw.code]
       || messages[raw.message]
-      || "unknown_response"
+      || ([401, 403].includes(Number(httpStatus)) ? "upstream_rejection" : "unknown_response")
   }
 
   return Object.freeze({

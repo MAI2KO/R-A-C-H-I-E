@@ -28,9 +28,10 @@ function machineFields(result) {
     metadata: {
       profile: result?.profile || null,
       endpoint: result?.endpoint || "gift_code",
+      classification: String(result?.classification?.state || "unknown_response"),
       rateLimit: result?.rateLimit || {},
       transportErrorCode: result?.errorCode || null,
-      rawResponse: result?.responseData ?? result?.response ?? null
+      response: result?.responseDiagnostics || null
     }
   }
 }

@@ -74,6 +74,10 @@ Whiteout Survival and Kingshot adapters own their official URLs, independently v
 
 Classification prioritizes `err_code`, then top-level code, then explicitly mapped stable messages, then `unknown_response`. WOS observations currently include `20000` success, `40008` already received, `40007` expired, `40014` not found, and `40020` user information error. Kingshot currently maps only independently verified success semantics; other codes remain unknown until observed and reviewed.
 
+Century requests use the official profile endpoint, form encoding, public-client Origin and Referer, a descriptive application User-Agent, and a Unix timestamp in seconds. An unrecognized HTTP 401/403 is retained as `upstream_rejection`; it remains in manual review and cannot activate or fan out a code. Stored edge diagnostics are limited to HTTP status, response type, bounded Content-Type/Server and allowlisted CDN/rate-limit headers, plus a sanitized response summary of at most 2 KB. Cookies, authorization values, signing material, verifier identifiers, and raw HTML are not exposed through Discord.
+
+For a single developer-machine comparison with production, use the explicitly gated harness documented in [Testing](testing.md). It performs one request through the same Whiteout adapter with retries disabled and is never part of the normal test suite or worker startup.
+
 No CAPTCHA, anti-bot, proxy, IP rotation, concurrency, or rate-limit bypass exists. Tests inject transport and never contact Century.
 
 ## Retry And Rate Handling

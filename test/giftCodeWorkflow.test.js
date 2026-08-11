@@ -27,8 +27,11 @@ const {
 } = require("../src/giftCodes/discord/commands")
 const {
   formatPlayerGiftStatus,
+  formatCodeDiagnostics,
   handleGiftInteraction
 } = require("../src/giftCodes/discord/giftInteractions")
+const { machineFields } = require("../src/giftCodes/repository")
+const { runControlledCenturyVerification } = require("../scripts/controlledCenturyVerification")
 const { profileTerminology } = require("../src/giftCodes/terminology")
 
 const config = {
@@ -79,10 +82,12 @@ test("profile classifiers prioritize err_code and do not assume cross-game meani
 
 test("unknown response metadata is retained when bounded and safely truncated when large", () => {
   assert.deepEqual(boundedResponseData({ code: 9, detail: { reason: "new" } }), {
-    code: 9,
-    detail: { reason: "new" }
+    summary: '{"code":9,"detail":{"reason":"new"}}',
+    truncated: false,
+    originalCharacters: 36
   })
   assert.deepEqual(boundedResponseData({ detail: "x".repeat(100) }, 20), {
+    summary: '{"detail":"xxxxxxxxx',
     truncated: true,
     originalCharacters: 113
   })
@@ -138,6 +143,90 @@ test("verification state machine distinguishes valid, invalid, blocked, restrict
   assert.deepEqual(verificationTransition("unknown_response", 1, now, config), {
     codeStatus: "unknown", verificationState: "review"
   })
+  assert.deepEqual(verificationTransition("upstream_rejection", 1, now, config), {
+    codeStatus: "unknown", verificationState: "review"
+  })
+})
+
+test("upstream rejection does not activate or fan out a candidate", async () => {
+  let finished
+  let activationCalls = 0
+  const processor = createVerificationProcessor({
+    repository: {
+      gameProfile: "wos",
+      async claimVerification() { return { id: "code-id", code: "ABC", verification_attempt_count: 1 } },
+      async finishVerification(input) {
+        finished = input
+        return { giftCode: { id: "code-id", status: input.codeStatus }, queued: [] }
+      }
+    },
+    client: { async redeem() { return centuryResult("upstream_rejection", { httpStatus: 403, errCode: null }) } },
+    verifier: { configured: true, playerId: "123", locationNumber: "689" },
+    community: { async onCodeActivated() { activationCalls += 1 } },
+    config,
+    botInstanceName: "test",
+    logger: { log() {}, warn() {}, error() {} },
+    workerId: "verify-worker"
+  })
+  assert.equal(await processor.tick(), 1)
+  assert.equal(finished.codeStatus, "unknown")
+  assert.equal(finished.verificationState, "review")
+  assert.equal(activationCalls, 0)
+})
+
+test("stored edge metadata and Inspect Code remain useful without exposing raw response data", () => {
+  const fields = machineFields({
+    profile: "wos",
+    endpoint: "/gift_code",
+    httpStatus: 403,
+    classification: { state: "upstream_rejection", raw: { code: null, errCode: null, message: "" } },
+    responseDiagnostics: { responseType: "html", bodySummary: "Access denied" }
+  })
+  assert.equal(fields.metadata.classification, "upstream_rejection")
+  assert.equal(fields.metadata.response.responseType, "html")
+  assert.equal(fields.metadata.rawResponse, undefined)
+  const output = formatCodeDiagnostics({
+    code: "gogoWOS",
+    status: "unknown",
+    verification_state: "review",
+    verification_http_status: 403,
+    last_err_code: null,
+    verification_metadata: fields.metadata,
+    pending_count: 0,
+    success_count: 0,
+    already_redeemed_count: 0,
+    failed_count: 0
+  })
+  assert.match(output, /HTTP status: 403/)
+  assert.match(output, /Century err_code: None/)
+  assert.match(output, /Response type: HTML/)
+  assert.match(output, /Classification: Upstream Rejection/)
+  assert.doesNotMatch(output, /Access denied/)
+})
+
+test("controlled live harness is opt-in and makes exactly one injected request", async () => {
+  let requests = 0
+  await assert.rejects(runControlledCenturyVerification({ env: {} }), /blocked/)
+  const report = await runControlledCenturyVerification({
+    env: {
+      ALLOW_ONE_LIVE_CENTURY_REQUEST: "true",
+      GAME_PROFILE: "wos",
+      LIVE_CENTURY_GIFT_CODE: "gogoWOS",
+      WOS_GIFT_VERIFY_FID: "123",
+      WOS_GIFT_VERIFY_KID: "689"
+    },
+    clientFactory: () => ({
+      adapter: centuryAdapter("wos", {}),
+      async redeem() {
+        requests += 1
+        return centuryResult("upstream_rejection", { httpStatus: 403, errCode: null })
+      }
+    }),
+    write() {}
+  })
+  assert.equal(requests, 1)
+  assert.equal(report.requestCount, 1)
+  assert.equal(report.httpStatus, 403)
 })
 
 test("redemption state machine has bounded durable retries and manual-review terminals", () => {

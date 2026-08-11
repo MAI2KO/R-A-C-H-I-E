@@ -13,7 +13,10 @@ const {
   ConservativeRateLimiter,
   retryAfterMilliseconds
 } = require("../src/giftCodes/rateLimiter")
-const { createCenturyGameClient } = require("../src/giftCodes/centuryGameClient")
+const {
+  createCenturyGameClient,
+  responseDiagnostics
+} = require("../src/giftCodes/centuryGameClient")
 const { postgresIsEnabled } = require("../src/db")
 
 test("profile terminology consistently distinguishes State and Kingdom", () => {
@@ -205,6 +208,12 @@ test("Century responses classify known, temporary, rate-limited and unknown resu
   }).state, "already_redeemed")
   assert.equal(classifyCenturyResponse({ httpStatus: 429, data: {} }).state, "rate_limited")
   assert.equal(classifyCenturyResponse({ httpStatus: 503, data: {} }).state, "temporary_error")
+  assert.equal(classifyCenturyResponse({ httpStatus: 403, data: {} }).state, "upstream_rejection")
+  assert.equal(classifyCenturyResponse({
+    httpStatus: 403,
+    data: { err_code: 40008, msg: "RECEIVED." },
+    profileMappings: centuryAdapter("wos", {}).responseMappings
+  }).state, "already_redeemed")
   const unknown = classifyCenturyResponse({
     httpStatus: 200,
     data: { code: 9, err_code: 49999, msg: "NEW RESPONSE" }
@@ -264,9 +273,11 @@ test("Century client sends one URL-encoded signed request through injected trans
   const client = createCenturyGameClient({
     gameProfile: "wos",
     adapter: {
-      apiBaseUrl: "https://official.example/api",
+      frontendUrl: "https://wos-giftcode.centurygame.com",
+      apiBaseUrl: "https://wos-giftcode-api.centurygame.com/api",
       redemptionPath: "/gift_code",
-      signingSuffix: "test-suffix"
+      signingSuffix: "test-suffix",
+      responseMappings: {}
     },
     limiter,
     now: () => 1700000000000,
@@ -282,10 +293,69 @@ test("Century client sends one URL-encoded signed request through injected trans
     }
   })
   const result = await client.redeem({ playerId: "123", code: "GiftCode", locationNumber: "689" })
-  assert.equal(request.url, "https://official.example/api/gift_code")
+  assert.equal(request.url, "https://wos-giftcode-api.centurygame.com/api/gift_code")
   assert.equal(request.options.headers["Content-Type"], "application/x-www-form-urlencoded")
+  assert.equal(request.options.headers.Accept, "application/json, text/plain, */*")
+  assert.equal(request.options.headers.Origin, "https://wos-giftcode.centurygame.com")
+  assert.equal(request.options.headers.Referer, "https://wos-giftcode.centurygame.com/")
+  assert.equal(request.options.headers["User-Agent"], "R.A.C.H.I.E gift-code client")
+  assert.equal(request.options.headers.Authorization, undefined)
+  assert.equal(request.options.headers.Cookie, undefined)
+  assert.equal(request.options.maxRedirects, 5)
+  assert.equal(request.options.decompress, true)
   const form = new URLSearchParams(request.body)
+  assert.deepEqual([...form.keys()].sort(), ["cdk", "fid", "kid", "sign", "time"])
+  assert.equal(form.get("fid"), "123")
   assert.equal(form.get("cdk"), "GiftCode")
-  assert.equal(form.get("sign"), "c84cd3058471383a8dddb115594d92d6")
+  assert.equal(form.get("kid"), "689")
+  assert.equal(form.get("time"), "1700000000")
+  assert.equal(form.get("sign"), "15cba9d17960a3c42fe6366ac6ba0663")
   assert.equal(result.classification.state, "success")
+})
+
+test("403 HTML and JSON edge responses remain reviewable upstream rejections", async () => {
+  for (const [expectedType, response] of [
+    ["html", {
+      status: 403,
+      headers: { "content-type": "text/html", server: "cloud-edge", "cf-ray": "ray-id" },
+      data: "<!doctype html><html><body>Access denied</body></html>"
+    }],
+    ["json", {
+      status: 403,
+      headers: { "content-type": "application/json", server: "nginx" },
+      data: { error: "Forbidden" }
+    }]
+  ]) {
+    const client = createCenturyGameClient({
+      gameProfile: "wos",
+      adapter: centuryAdapter("wos", {}),
+      now: () => 1786380000000,
+      limiter: new ConservativeRateLimiter({ gameProfile: "wos", minimumDelayMs: 0, maximumRetries: 0 }),
+      transport: { async post() { return response } }
+    })
+    const result = await client.redeem({ playerId: "282021376", code: "gogoWOS", locationNumber: "689" })
+    assert.equal(result.classification.state, "upstream_rejection")
+    assert.equal(result.classification.raw.errCode, null)
+    assert.equal(result.responseDiagnostics.responseType, expectedType)
+  }
+})
+
+test("edge diagnostics are bounded, allowlisted and redact request material", () => {
+  const diagnostics = responseDiagnostics(
+    `<html><script>token=script-secret</script><body>fid=282021376 sign=abc123 ${"x".repeat(3000)}</body></html>`,
+    {
+      "content-type": "text/html; charset=utf-8",
+      server: "cloud-edge",
+      "cf-ray": "safe-ray",
+      "x-ratelimit-remaining": "4",
+      "set-cookie": "session=never-store"
+    },
+    1024,
+    ["282021376", "abc123", "public-client-suffix"]
+  )
+  assert.equal(diagnostics.responseType, "html")
+  assert.equal(diagnostics.bodySummary.length, 1024)
+  assert.equal(diagnostics.bodyTruncated, true)
+  assert.deepEqual(diagnostics.edgeHeaders, { "cf-ray": "safe-ray" })
+  assert.doesNotMatch(JSON.stringify(diagnostics), /282021376|abc123|script-secret|never-store|set-cookie/)
 })

@@ -5,6 +5,7 @@ const { GiftCodeError, createGiftCodeService } = require("../service")
 const { PlayerValidationError } = require("../validation")
 const { getPlayerGiftCodesHealth } = require("../runtime")
 const { getGiftCodeRuntime } = require("../workflowRuntime")
+const { formatCodeDiagnostics } = require("./diagnostics")
 
 function formatPlayerGiftStatus(account, terms) {
   const lines = [
@@ -33,20 +34,6 @@ function formatRuntimeStatus(runtime, diagnostics) {
     observation
       ? `Recent rate limit: ${observation.remaining ?? "?"}/${observation.limit ?? "?"} remaining`
       : "Recent rate limit: no observations"
-  ].join("\n")
-}
-
-function formatCodeDiagnostics(code) {
-  if (!code) return "No matching gift code was found."
-  return [
-    `**Gift code ${code.code}**`,
-    `Status: ${code.status}`,
-    `Verification: ${code.verification_state}`,
-    `First seen: <t:${Math.floor(new Date(code.first_seen_at_utc).getTime() / 1000)}:f>`,
-    `Source: ${code.source_name || code.source_type || "Discord submission"}`,
-    `Classification: ${code.last_err_code ?? "none"} · ${code.last_api_message || "none"}`,
-    `Queue counts: pending ${code.pending_count}, success ${code.success_count}, ` +
-      `already redeemed ${code.already_redeemed_count}, review/failed ${code.failed_count}`
   ].join("\n")
 }
 
