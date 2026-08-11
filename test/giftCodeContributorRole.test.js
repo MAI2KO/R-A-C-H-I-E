@@ -23,6 +23,8 @@ function discordRoles({ existingRole = null, manageRoles = true, createdEditable
   const roles = new Map(existingRole ? [[existingRole.id, existingRole]] : [])
   const createInputs = []
   const assigned = []
+  const privateMessages = []
+  const messagesByNonce = new Map()
   const member = {
     roles: {
       cache: { has: roleId => assigned.includes(roleId) },
@@ -58,7 +60,24 @@ function discordRoles({ existingRole = null, manageRoles = true, createdEditable
     roles,
     createInputs,
     assigned,
-    client: { guilds: { async fetch() { return guild } } }
+    privateMessages,
+    client: {
+      guilds: { async fetch() { return guild } },
+      users: {
+        async fetch(userId) {
+          return {
+            async send(payload) {
+              const existing = messagesByNonce.get(payload.nonce)
+              if (payload.enforceNonce && existing) return existing
+              const message = { ...payload, userId }
+              messagesByNonce.set(payload.nonce, message)
+              privateMessages.push(message)
+              return message
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -149,7 +168,7 @@ function rewardService(repository, discord, { workerId = "reward-worker", now } 
   })
 }
 
-test("bot creates one persisted zero-permission non-mentionable candy role", async () => {
+test("bot creates the candy role and privately confirms a successful contributor reward", async () => {
   const repository = rewardRepository()
   const discord = discordRoles()
   await rewardService(repository, discord).onAutoRedemptionEnabled(repository.events[0])
@@ -163,6 +182,13 @@ test("bot creates one persisted zero-permission non-mentionable candy role", asy
   assert.equal(repository.settings.contributor_role_id, "created-1")
   assert.deepEqual(discord.assigned, ["created-1"])
   assert.equal(repository.completions.length, 1)
+  assert.equal(discord.privateMessages.length, 1)
+  assert.equal(discord.privateMessages[0].content, "Nice find. Have a 🍭")
+  assert.equal(discord.privateMessages[0].enforceNonce, true)
+
+  await rewardService(repository, discord, { workerId: "after-restart" })
+    .onAutoRedemptionEnabled(repository.events[0])
+  assert.equal(discord.privateMessages.length, 1, "completed reward confirmation replayed after restart")
 })
 
 test("persisted contributor role is reused without creation", async () => {
@@ -200,6 +226,8 @@ test("missing Manage Roles is contained and a later retry awards after correctio
   assert.equal(repository.failures.length, 1)
   assert.equal(repository.completions.length, 0)
   assert.equal(repository.settings.contributor_role_status, "error")
+  assert.equal(discord.privateMessages.length, 1)
+  assert.equal(discord.privateMessages[0].content, "Nice find. I owe you a 🍭.")
 
   discord.state.manageRoles = true
   currentTime = new Date("2026-08-11T12:06:00Z")
@@ -207,6 +235,7 @@ test("missing Manage Roles is contained and a later retry awards after correctio
   assert.equal(discord.createInputs.length, 1)
   assert.equal(repository.completions.length, 1)
   assert.deepEqual(discord.assigned, ["created-1"])
+  assert.equal(discord.privateMessages.length, 1, "role retry duplicated the contributor confirmation")
 })
 
 test("hierarchy failure retains the created role and retries without another creation", async () => {

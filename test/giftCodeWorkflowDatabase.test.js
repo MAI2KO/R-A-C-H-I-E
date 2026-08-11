@@ -167,6 +167,7 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     assert.equal(redemptionClaims.filter(Boolean).length, 1)
     const firstRedemption = redemptionClaims.find(Boolean)
     assert.equal(firstRedemption.location_number_snapshot, "700")
+    assert.equal(firstRedemption.owner_account_count, 2)
     const retryAt = new Date("2026-08-11T10:01:00Z")
     await wos.finishRedemption({
       claim: firstRedemption,

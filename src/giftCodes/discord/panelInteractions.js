@@ -231,6 +231,20 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, terms }) {
   }
 }
 
+function formatCommunityStats(stats) {
+  return [
+    "**Community Statistics**",
+    `Players using Auto-Redeem: ${stats.auto_redeem_players}`,
+    `Characters covered: ${stats.enabled_accounts}`,
+    `Successful redemptions: ${stats.successful_redemptions}`,
+    `Verified gift codes: ${stats.verified_codes}`,
+    `Already claimed: ${stats.already_redeemed}`,
+    `Successful this month: ${stats.successful_this_month}`,
+    `Latest verified code: ${stats.latest_verified_code || "None"}`,
+    `Unique contributors: ${stats.unique_contributors}`
+  ].join("\n")
+}
+
 async function acknowledge(interaction) {
   if (interaction.isModalSubmit?.() || interaction.isChatInputCommand?.()) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral })
@@ -531,18 +545,7 @@ async function handleGiftCodePanelInteraction(interaction, {
     if (customId.startsWith(IDS.adminStats)) {
       const stats = await community.communityStats(interaction.guildId)
       await interaction.editReply({
-        content: [
-          "**Community Statistics**",
-          `Registered users: ${stats.registered_users}`,
-          `Registered accounts: ${stats.registered_accounts}`,
-          `Auto-redemption enabled: ${stats.enabled_accounts}`,
-          `Successful redemptions: ${stats.successful_redemptions}`,
-          `Already claimed: ${stats.already_redeemed}`,
-          `Verified gift codes: ${stats.verified_codes}`,
-          `Successful this month: ${stats.successful_this_month}`,
-          `Latest verified code: ${stats.latest_verified_code || "None"}`,
-          `Unique contributors: ${stats.unique_contributors}`
-        ].join("\n"),
+        content: formatCommunityStats(stats),
         components: []
       })
       return true
@@ -580,6 +583,7 @@ module.exports = {
   giftPanel,
   registrationModal,
   adminPanel,
+  formatCommunityStats,
   isPanelInteraction,
   handleGiftCodePanelInteraction
 }

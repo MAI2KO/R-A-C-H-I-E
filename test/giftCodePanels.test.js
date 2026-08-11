@@ -13,6 +13,7 @@ const {
   giftPanel,
   registrationModal,
   adminPanel,
+  formatCommunityStats,
   handleGiftCodePanelInteraction
 } = require("../src/giftCodes/discord/panelInteractions")
 const {
@@ -140,6 +141,24 @@ test("admin panel reports worker and configuration health without private record
   ])
 })
 
+test("community statistics use engagement wording without pricing or guarantees", () => {
+  const output = formatCommunityStats({
+    auto_redeem_players: 8,
+    enabled_accounts: 10,
+    successful_redemptions: 42,
+    verified_codes: 3,
+    already_redeemed: 7,
+    successful_this_month: 12,
+    latest_verified_code: "ABC123",
+    unique_contributors: 2
+  })
+  assert.match(output, /Players using Auto-Redeem: 8/)
+  assert.match(output, /Characters covered: 10/)
+  assert.match(output, /Successful redemptions: 42/)
+  assert.match(output, /Verified gift codes: 3/)
+  assert.doesNotMatch(output, /\b(?:free|paid|premium|subscription|protected)\b/i)
+})
+
 function discordFixture({
   roleEditable = true,
   channelAvailable = true,
@@ -150,6 +169,9 @@ function discordFixture({
   const edits = []
   const assigned = []
   const created = []
+  const privateMessages = []
+  const messagesByNonce = new Map()
+  const fetchedMessages = []
   const roles = new Map()
   const role = {
     id: "456",
@@ -173,7 +195,7 @@ function discordFixture({
     isSendable: () => channelAvailable,
     permissionsFor: () => ({ has: () => channelAvailable }),
     async send(payload) { sent.push(payload); return message },
-    messages: { async fetch() { return message } }
+    messages: { async fetch(messageId) { fetchedMessages.push(messageId); return message } }
   }
   const guild = {
     members: {
@@ -192,11 +214,29 @@ function discordFixture({
     }
   }
   return {
-    client: { guilds: { async fetch() { return guild } } },
+    client: {
+      guilds: { async fetch() { return guild } },
+      users: {
+        async fetch(userId) {
+          return {
+            async send(payload) {
+              const existing = messagesByNonce.get(payload.nonce)
+              if (payload.enforceNonce && existing) return existing
+              const sentMessage = { ...payload, userId }
+              messagesByNonce.set(payload.nonce, sentMessage)
+              privateMessages.push(sentMessage)
+              return sentMessage
+            }
+          }
+        }
+      }
+    },
     sent,
     edits,
     assigned,
     created,
+    privateMessages,
+    fetchedMessages,
     roles,
     channel,
     role
@@ -224,15 +264,19 @@ test("community messages expose aggregates and location but never full Player ID
   assert.ok(!codeMessage.includes("282021376"))
   const joined = joinMessage(payload, {
     registered_users: 47,
+    auto_redeem_players: 40,
     enabled_accounts: 63,
     successful_redemptions: 418
   }, { enabledCount: 2, successfulRedemptions: 14 }, wos, 2)
   assert.match(joined, /State: 689/)
-  assert.match(joined, /Accounts enabled: 2 \/ 2/)
+  assert.match(joined, /Gift Code Auto-Redeem Activated/)
+  assert.match(joined, /Characters covered: 2 \/ 2/)
+  assert.match(joined, /Players using Auto-Redeem: 40/)
   assert.ok(!joined.includes("Player ID"))
+  assert.doesNotMatch(`${codeMessage}\n${joined}`, /\b(?:free|paid|premium|subscription)\b/i)
 })
 
-test("new-code announcement and contributor role are idempotent and isolated from failures", async () => {
+test("new-code announcement and contributor confirmation are idempotent while duplicates stay silent", async () => {
   const discord = discordFixture()
   const completed = []
   const events = [
@@ -284,6 +328,18 @@ test("new-code announcement and contributor role are idempotent and isolated fro
   assert.equal(discord.sent.length, 1)
   assert.equal(discord.assigned.length, 1)
   assert.equal(completed.length, 2)
+  assert.equal(discord.privateMessages.length, 1)
+  assert.equal(discord.privateMessages[0].content, "Nice find. Have a 🍭")
+
+  const duplicateOnly = discordFixture()
+  const duplicateService = createGiftCodeCommunityService({
+    repository: { async prepareCodeEngagement() { return [] } },
+    client: duplicateOnly.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  assert.equal(await duplicateService.onCodeActivated("duplicate-code", 0), 0)
+  assert.equal(duplicateOnly.privateMessages.length, 0)
 })
 
 test("unmanageable reward role and missing channel are contained", async () => {
@@ -333,6 +389,7 @@ test("unmanageable reward role and missing channel are contained", async () => {
 test("progress edits one stored message and finalizes aggregate state", async () => {
   const discord = discordFixture()
   let completion
+  let resultStatus
   const event = {
     id: "44444444-4444-4444-8444-444444444444",
     gift_code_id: "code-id",
@@ -340,7 +397,8 @@ test("progress edits one stored message and finalizes aggregate state", async ()
     message_id: "789"
   }
   const repository = {
-    async claimProgressRefresh() {
+    async claimProgressRefresh(_giftCodeId, status) {
+      resultStatus = status
       return {
         event,
         progress: { successful: 2, already_redeemed: 1, account_issues: 0, restricted: 0, remaining: 0, total: 3 },
@@ -369,8 +427,58 @@ test("progress edits one stored message and finalizes aggregate state", async ()
   assert.equal(await service.onRedemptionUpdated("code-id", "success"), true)
   assert.equal(discord.sent.length, 0)
   assert.equal(discord.edits.length, 1)
+  assert.deepEqual(discord.fetchedMessages, ["789"])
+  assert.equal(resultStatus, "success")
   assert.match(discord.edits[0].content, /Remaining: 0/)
   assert.equal(completion.finalized, true)
+})
+
+test("already-redeemed progress reuses the message while coalesced results do not edit", async () => {
+  const discord = discordFixture()
+  let calls = 0
+  const event = {
+    id: "55555555-5555-4555-8555-555555555555",
+    gift_code_id: "code-id",
+    channel_id: "123",
+    message_id: "789"
+  }
+  const repository = {
+    async claimProgressRefresh(_giftCodeId, resultStatus) {
+      calls += 1
+      assert.equal(resultStatus, "already_redeemed")
+      if (calls === 1) return null
+      return {
+        event,
+        progress: { successful: 1, already_redeemed: 2, account_issues: 0, restricted: 0, remaining: 1, total: 4 },
+        completed: 3
+      }
+    },
+    async getEventPayload() {
+      return {
+        ...event,
+        guild_id: "777",
+        gift_code_channel_id: "123",
+        discord_user_id: "999",
+        code: "ABC",
+        metadata: { queuedCount: 4 }
+      }
+    },
+    async completeEvent() {},
+    async failEvent() { throw new Error("must not fail") }
+  }
+  const service = createGiftCodeCommunityService({
+    repository,
+    client: discord.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  assert.equal(await service.onRedemptionUpdated("code-id", "already_redeemed"), false)
+  assert.equal(discord.edits.length, 0, "coalesced result edited the public message")
+  assert.equal(await service.onRedemptionUpdated("code-id", "already_redeemed"), true)
+  assert.deepEqual(discord.fetchedMessages, ["789"])
+  assert.equal(discord.edits.length, 1)
+  assert.match(discord.edits[0].content, /Already claimed: 2/)
+  assert.match(discord.edits[0].content, /Remaining: 1/)
 })
 
 test("native selector IDs remain distinct and scoped to the consolidated panel", () => {

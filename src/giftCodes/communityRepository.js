@@ -396,6 +396,9 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
            COUNT(DISTINCT a.id) FILTER (
              WHERE a.is_active = true AND a.gift_redemption_enabled = true
            )::integer AS enabled_accounts,
+           COUNT(DISTINCT a.discord_user_id) FILTER (
+             WHERE a.is_active = true AND a.gift_redemption_enabled = true
+           )::integer AS auto_redeem_players,
            COUNT(DISTINCT r.id) FILTER (WHERE r.status = 'success')::integer AS successful_redemptions,
            COUNT(DISTINCT r.id) FILTER (WHERE r.status = 'already_redeemed')::integer AS already_redeemed,
            COUNT(DISTINCT r.id) FILTER (

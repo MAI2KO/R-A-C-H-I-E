@@ -401,15 +401,38 @@ test("redemption processor records result before DM and DM failure does not alte
   assert.deepEqual(order, ["persist:success", "claim-dm", "send-dm", "dm:false"])
 })
 
-test("notification text uses profile terminology and notifier contains DM failures", async () => {
+test("player redemption DMs are concise, profile aware, masked when needed and contain failures", async () => {
   const claim = {
     code: "ABC",
-    player_id_snapshot: "123",
+    player_id_snapshot: "282021376",
     location_number_snapshot: "521",
-    discord_user_id: "999"
+    discord_user_id: "999",
+    owner_account_count: 1,
+    response_metadata: { rawResponse: "must-not-leak" },
+    api_message: "Century internal response"
   }
-  assert.match(notificationMessage(claim, "success", "kingshot"), /Kingdom 521/)
-  assert.match(notificationMessage({ ...claim, location_number_snapshot: "689" }, "invalid_player", "wos"), /State 689/)
+  assert.equal(
+    notificationMessage(claim, "success", "wos"),
+    "ABC redeemed. Check your in-game mail."
+  )
+  assert.equal(
+    notificationMessage(claim, "already_redeemed", "wos"),
+    "ABC was already claimed on this character. You're good."
+  )
+  assert.equal(
+    notificationMessage({ ...claim, location_number_snapshot: "689" }, "invalid_player", "wos"),
+    "I couldn't redeem ABC. Check that this character is still in State 689."
+  )
+  assert.equal(
+    notificationMessage(claim, "invalid_player", "kingshot"),
+    "I couldn't redeem ABC. Check that this character is still in Kingdom 521."
+  )
+  const multiple = { ...claim, location_number_snapshot: "689", owner_account_count: 2 }
+  for (const status of ["success", "already_redeemed", "invalid_player"]) {
+    const message = notificationMessage(multiple, status, "wos")
+    assert.match(message, /Player ID \*\*\*1376/)
+    assert.doesNotMatch(message, /282021376|must-not-leak|Century internal response/)
+  }
   const notifier = createDiscordGiftNotifier({
     client: { users: { async fetch() { throw Object.assign(new Error("closed"), { code: 50007 }) } } },
     gameProfile: "wos",

@@ -66,6 +66,8 @@ success / already redeemed -> private DM attempt
 
 The optional verifier is configured independently per profile and is never selected from registered users. Verification `success` consumes the reward on that verifier; this is expected and is not bypassed. `already_redeemed` also proves Century recognises the code. Both outcomes activate the code and transactionally fan out idempotent work to active opted-in accounts.
 
+Production has verified a verifier-level `success` response and a player-level `already_redeemed` response. A player-level `success` has intentionally not been manufactured by repeatedly sourcing an account that has not claimed a known code. The next naturally occurring new code should provide that observation; no bypass or special test path exists for it.
+
 Expired and invalid codes stop before fan-out. Invalid verifier information blocks the candidate without calling it invalid. Eligibility/redeeming limits remain restricted review states. Rate limits and temporary failures get durable backoff. Unknown responses retain HTTP status, Century `code`, `err_code`, `msg`, profile, endpoint metadata, and timestamps; they never trigger fan-out or crash the loop.
 
 ## Century Client And Classification

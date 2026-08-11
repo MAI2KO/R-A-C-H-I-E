@@ -437,7 +437,14 @@ function createGiftCodeRepository(pool, gameProfile) {
         )
         const result = await client.query(
           `WITH work AS (
-             SELECT r.id, a.player_id, a.state_or_kingdom_number
+             SELECT r.id, a.player_id, a.state_or_kingdom_number,
+                    a.discord_user_id,
+                    (
+                      SELECT COUNT(*)::integer FROM player_accounts owned
+                       WHERE owned.game_profile = a.game_profile
+                         AND owned.discord_user_id = a.discord_user_id
+                         AND owned.is_active = true
+                    ) AS owner_account_count
                FROM gift_code_redemptions r
                JOIN player_accounts a
                  ON a.id = r.player_account_id AND a.game_profile = r.game_profile
@@ -466,7 +473,7 @@ function createGiftCodeRepository(pool, gameProfile) {
             WHERE r.id = work.id AND r.game_profile = $1
             RETURNING r.*,
               (SELECT code FROM gift_codes WHERE id = r.gift_code_id AND game_profile = r.game_profile) AS code,
-              (SELECT discord_user_id FROM player_accounts WHERE id = r.player_account_id AND game_profile = r.game_profile) AS discord_user_id`,
+              work.discord_user_id, work.owner_account_count`,
           [gameProfile, now, workerId, leaseSeconds]
         )
         await client.query("COMMIT")

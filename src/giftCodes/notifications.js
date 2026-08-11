@@ -1,24 +1,31 @@
 const { profileTerminology } = require("./terminology")
 
+function maskedPlayerId(playerId) {
+  const value = String(playerId || "")
+  return `***${value.slice(-4)}`
+}
+
 function notificationMessage(claim, status, gameProfile) {
   const terms = profileTerminology(gameProfile)
-  const identity = `${terms.playerLabel} ${claim.player_id_snapshot} in ` +
-    `${terms.locationLabel} ${claim.location_number_snapshot}`
+  const identity = Number(claim.owner_account_count) > 1
+    ? ` for ${terms.playerLabel} ${maskedPlayerId(claim.player_id_snapshot)}`
+    : ""
   if (status === "success") {
-    return `Gift code ${claim.code} was redeemed successfully for ${identity}.`
+    return `${claim.code} redeemed${identity}. Check your in-game mail.`
   }
   if (status === "already_redeemed") {
-    return `Gift code ${claim.code} had already been claimed for ${identity}.`
+    const character = identity || " on this character"
+    return `${claim.code} was already claimed${character}. You're good.`
   }
   if (status === "invalid_player") {
-    return `Gift code ${claim.code} could not be redeemed for ${identity}. Please confirm your ` +
-      `${terms.locationLabel} is current with /player location.`
+    return `I couldn't redeem ${claim.code}${identity}. Check that this character is still in ` +
+      `${terms.locationLabel} ${claim.location_number_snapshot}.`
   }
   if (status === "restricted") {
-    return `Gift code ${claim.code} is not available for ${identity}.`
+    return `${claim.code} could not be redeemed on this character.`
   }
   if (status === "unknown") {
-    return `Gift code ${claim.code} returned an unrecognised result for ${identity}. An administrator can review it.`
+    return `${claim.code} returned an unrecognised result. An administrator can review it.`
   }
   return null
 }
@@ -39,4 +46,4 @@ function createDiscordGiftNotifier({ client, gameProfile, logger = console }) {
   }
 }
 
-module.exports = { notificationMessage, createDiscordGiftNotifier }
+module.exports = { maskedPlayerId, notificationMessage, createDiscordGiftNotifier }

@@ -6,6 +6,8 @@ const PUBLIC_MENTIONS = userId => ({ parse: [], users: userId ? [userId] : [] })
 const TEXT_CHANNEL_TYPES = new Set([ChannelType.GuildText, ChannelType.GuildAnnouncement])
 const CONTRIBUTOR_ROLE_NAME = "🍭"
 const CONTRIBUTOR_RETRY_MS = 5 * 60 * 1000
+const CONTRIBUTOR_CONFIRMATION = "Nice find. Have a 🍭"
+const CONTRIBUTOR_FALLBACK = "Nice find. I owe you a 🍭."
 
 class ContributorRoleError extends Error {
   constructor(code, message) {
@@ -39,20 +41,24 @@ function codeProgressMessage(payload, progress, terms, { initial = false } = {})
 
 function joinMessage(payload, stats, accountStats, terms, maximumEnabled) {
   return [
-    "**Automatic Gift Codes**",
+    "**Gift Code Auto-Redeem Activated**",
     "",
-    `<@${payload.discord_user_id}> has joined automatic gift-code redemption.`,
+    `<@${payload.discord_user_id}> is now set up for automatic gift-code redemption.`,
     "",
     `Game: ${terms.gameName}`,
     `${terms.locationLabel}: ${payload.state_or_kingdom_number}`,
-    `Accounts enabled: ${accountStats.enabledCount} / ${maximumEnabled}`,
+    `Characters covered: ${accountStats.enabledCount} / ${maximumEnabled}`,
     `Their successful redemptions: ${accountStats.successfulRedemptions}`,
     "",
     "**Community**",
-    `Registered players: ${stats.registered_users}`,
-    `Enabled accounts: ${stats.enabled_accounts}`,
+    `Players using Auto-Redeem: ${stats.auto_redeem_players}`,
+    `Characters covered: ${stats.enabled_accounts}`,
     `Successful redemptions: ${stats.successful_redemptions}`
   ].join("\n")
+}
+
+function eventNonce(eventId) {
+  return BigInt(`0x${eventId.replaceAll("-", "").slice(0, 16)}`).toString()
 }
 
 function createGiftCodeCommunityService({
@@ -191,11 +197,32 @@ function createGiftCodeCommunityService({
     if (!member.roles.cache.has(role.id)) await member.roles.add(role)
   }
 
+  async function sendContributorConfirmation(payload, eventId, awarded) {
+    try {
+      const user = await client.users.fetch(payload.discord_user_id)
+      await user.send({
+        content: awarded ? CONTRIBUTOR_CONFIRMATION : CONTRIBUTOR_FALLBACK,
+        nonce: eventNonce(eventId),
+        enforceNonce: true
+      })
+      return true
+    } catch (error) {
+      logger.warn(`[Gift codes] Contributor confirmation failed: ${safeDiscordError(error)}`)
+      return false
+    }
+  }
+
   async function deliverClaimedEvent(event) {
     const payload = await repository.getEventPayload(event.id)
     if (!payload) throw new Error("engagement payload unavailable")
     if (payload.event_type === "contributor_role") {
-      await assignContributorRole(payload)
+      try {
+        await assignContributorRole(payload)
+      } catch (error) {
+        await sendContributorConfirmation(payload, event.id, false)
+        throw error
+      }
+      await sendContributorConfirmation(payload, event.id, true)
       return repository.completeEvent(event.id, workerId, { now: now() })
     }
     const guild = await resolveGuild(payload.guild_id)
@@ -208,7 +235,7 @@ function createGiftCodeCommunityService({
       const message = await channel.send({
         content: joinMessage(payload, stats, accountRows, terms, maximumEnabledAccounts),
         allowedMentions: PUBLIC_MENTIONS(payload.discord_user_id),
-        nonce: BigInt(`0x${event.id.replaceAll("-", "").slice(0, 16)}`).toString(),
+        nonce: eventNonce(event.id),
         enforceNonce: true
       })
       return repository.completeEvent(event.id, workerId, {
@@ -222,7 +249,7 @@ function createGiftCodeCommunityService({
     const message = await channel.send({
       content: codeProgressMessage(payload, progress, terms, { initial: true }),
       allowedMentions: PUBLIC_MENTIONS(payload.discord_user_id),
-      nonce: BigInt(`0x${event.id.replaceAll("-", "").slice(0, 16)}`).toString(),
+      nonce: eventNonce(event.id),
       enforceNonce: true
     })
     const completed = progress.successful + progress.already_redeemed +
@@ -372,8 +399,11 @@ function createGiftCodeCommunityService({
 module.exports = {
   PUBLIC_MENTIONS,
   CONTRIBUTOR_ROLE_NAME,
+  CONTRIBUTOR_CONFIRMATION,
+  CONTRIBUTOR_FALLBACK,
   ContributorRoleError,
   safeDiscordError,
+  eventNonce,
   codeProgressMessage,
   joinMessage,
   createGiftCodeCommunityService

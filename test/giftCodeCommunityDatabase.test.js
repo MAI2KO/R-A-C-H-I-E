@@ -227,6 +227,7 @@ test("community configuration, auto-redemption cap and engagement state are dura
 
     const stats = await wosCommunity.communityStats(guild)
     assert.equal(stats.registered_users, 1)
+    assert.equal(stats.auto_redeem_players, 1)
     assert.equal(stats.registered_accounts, 4)
     assert.equal(stats.enabled_accounts, 2)
     assert.equal(stats.verified_codes, 1)
