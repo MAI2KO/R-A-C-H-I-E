@@ -104,19 +104,64 @@ function createGiftCodeRepository(pool, gameProfile) {
       )).rows[0] || null
     },
 
-    async setAutoRedemption({ discordUserId, playerId, enabled }) {
+    async setAutoRedemption({
+      discordUserId,
+      playerId,
+      enabled,
+      guildId = null,
+      maximumEnabledAccounts = 2
+    }) {
       const client = await pool.connect()
       try {
         await client.query("BEGIN")
-        const account = (await client.query(
-          `UPDATE player_accounts
-              SET gift_redemption_enabled = $4, updated_at_utc = now()
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtext($1))",
+          [`gift-auto:${gameProfile}:${discordUserId}`]
+        )
+        const current = (await client.query(
+          `SELECT * FROM player_accounts
             WHERE game_profile = $1 AND discord_user_id = $2
               AND player_id = $3 AND is_active = true
-            RETURNING *`,
-          [gameProfile, discordUserId, playerId, Boolean(enabled)]
+            FOR UPDATE`,
+          [gameProfile, discordUserId, playerId]
         )).rows[0] || null
-        if (account && enabled) {
+        if (!current) {
+          await client.query("COMMIT")
+          return { account: null, limitReached: false, enabledCount: 0, engagementEvent: null }
+        }
+        const beforeCount = (await client.query(
+          `SELECT COUNT(*)::integer AS count
+             FROM player_accounts
+            WHERE game_profile = $1 AND discord_user_id = $2
+              AND is_active = true AND gift_redemption_enabled = true`,
+          [gameProfile, discordUserId]
+        )).rows[0].count
+        if (enabled && !current.gift_redemption_enabled && beforeCount >= maximumEnabledAccounts) {
+          await client.query("COMMIT")
+          return {
+            account: current,
+            limitReached: true,
+            enabledCount: beforeCount,
+            engagementEvent: null
+          }
+        }
+        const changed = current.gift_redemption_enabled !== Boolean(enabled)
+        const account = changed ? (await client.query(
+          `UPDATE player_accounts
+              SET gift_redemption_enabled = $4, updated_at_utc = now()
+            WHERE id = $1 AND game_profile = $2 AND discord_user_id = $3
+            RETURNING *`,
+          [current.id, gameProfile, discordUserId, Boolean(enabled)]
+        )).rows[0] : current
+        if (guildId) {
+          await client.query(
+            `INSERT INTO player_account_guilds (game_profile, guild_id, player_account_id)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [gameProfile, guildId, account.id]
+          )
+        }
+        let engagementEvent = null
+        if (enabled) {
           const activeCodes = (await client.query(
             `SELECT id FROM gift_codes
               WHERE game_profile = $1 AND status = 'active'
@@ -136,6 +181,23 @@ function createGiftCodeRepository(pool, gameProfile) {
               ]
             )
           }
+          if (changed && guildId) {
+            engagementEvent = (await client.query(
+              `INSERT INTO gift_code_engagement_events (
+                 id, game_profile, guild_id, event_type,
+                 player_account_id, discord_user_id
+               )
+               SELECT $1::uuid, $2::varchar, $3::varchar,
+                      'auto_redeem_join'::varchar, $4::uuid, $5::varchar
+                 FROM gift_code_guild_settings s
+                WHERE s.game_profile = $2 AND s.guild_id = $3
+                  AND s.announcements_enabled = true
+                  AND s.gift_code_channel_id IS NOT NULL
+               ON CONFLICT DO NOTHING
+               RETURNING *`,
+              [crypto.randomUUID(), gameProfile, guildId, account.id, discordUserId]
+            )).rows[0] || null
+          }
         } else if (account && !enabled) {
           await client.query(
             `UPDATE gift_code_redemptions
@@ -148,8 +210,11 @@ function createGiftCodeRepository(pool, gameProfile) {
             [gameProfile, account.id, [...REDEMPTION_WORK_STATES, "claimed"]]
           )
         }
+        const enabledCount = enabled
+          ? beforeCount + (changed ? 1 : 0)
+          : Math.max(0, beforeCount - (changed ? 1 : 0))
         await client.query("COMMIT")
-        return account
+        return { account, limitReached: false, enabledCount, engagementEvent }
       } catch (error) {
         await client.query("ROLLBACK")
         throw error
@@ -181,6 +246,21 @@ function createGiftCodeRepository(pool, gameProfile) {
             AND ($3::varchar IS NULL OR a.player_id = $3)
           ORDER BY a.is_active DESC, a.is_primary DESC, a.created_at_utc, a.id`,
         [gameProfile, discordUserId, playerId]
+      )
+      return result.rows
+    },
+
+    async redemptionHistory(playerAccountId, limit = 10) {
+      const result = await pool.query(
+        `SELECT r.status, r.completed_at_utc, r.attempted_at_utc,
+                r.location_number_snapshot, g.code
+           FROM gift_code_redemptions r
+           JOIN gift_codes g
+             ON g.id = r.gift_code_id AND g.game_profile = r.game_profile
+          WHERE r.game_profile = $1 AND r.player_account_id = $2
+          ORDER BY COALESCE(r.completed_at_utc, r.attempted_at_utc, r.created_at_utc) DESC, r.id
+          LIMIT $3`,
+        [gameProfile, playerAccountId, Math.min(25, Math.max(1, Number(limit) || 10))]
       )
       return result.rows
     },

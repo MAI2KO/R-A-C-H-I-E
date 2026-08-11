@@ -48,10 +48,22 @@ function giftWorkerConfig(env = process.env) {
   })
 }
 
+function giftAccountConfig(env = process.env) {
+  return Object.freeze({
+    maximumAutoRedeemAccountsPerUser: boundedInteger(
+      env.GIFT_CODE_MAX_AUTO_REDEEM_ACCOUNTS_PER_USER,
+      2,
+      1,
+      20
+    )
+  })
+}
+
 module.exports = {
   verificationWorkerIsEnabled,
   redemptionWorkerIsEnabled,
   verifierEnvironmentNames,
   getVerifierAccount,
-  giftWorkerConfig
+  giftWorkerConfig,
+  giftAccountConfig
 }

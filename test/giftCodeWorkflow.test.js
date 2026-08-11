@@ -21,8 +21,8 @@ const {
 const { createGiftCodeService } = require("../src/giftCodes/service")
 const { notificationMessage, createDiscordGiftNotifier } = require("../src/giftCodes/notifications")
 const {
-  buildGiftCommand,
-  buildGiftAdminCommand,
+  buildGiftCodesCommand,
+  buildGiftCodesAdminCommand,
   getGiftCommandData
 } = require("../src/giftCodes/discord/commands")
 const {
@@ -175,7 +175,16 @@ test("gift settings target one owned account and preserve profile terminology", 
     },
     async setAutoRedemption(input) {
       calls.push(input)
-      return { player_id: input.playerId, state_or_kingdom_number: "689", gift_redemption_enabled: input.enabled }
+      return {
+        account: {
+          player_id: input.playerId,
+          state_or_kingdom_number: "689",
+          gift_redemption_enabled: input.enabled
+        },
+        limitReached: false,
+        enabledCount: 1,
+        engagementEvent: null
+      }
     }
   }
   const service = createGiftCodeService({ repository, gameProfile: "wos" })
@@ -186,15 +195,21 @@ test("gift settings target one owned account and preserve profile terminology", 
   })
   assert.equal(service.terms.locationLabel, "State")
   assert.equal(account.player_id, "222")
-  assert.deepEqual(calls.at(-1), { discordUserId: "999", playerId: "222", enabled: true })
+  assert.deepEqual(calls.at(-1), {
+    discordUserId: "999",
+    playerId: "222",
+    enabled: true,
+    guildId: null,
+    maximumEnabledAccounts: 2
+  })
 })
 
-test("gift commands register for both profiles and status uses State or Kingdom wording", () => {
-  const wos = buildGiftCommand("wos").toJSON()
-  const kingshot = buildGiftCommand("kingshot").toJSON()
-  const admin = buildGiftAdminCommand("wos").toJSON()
-  assert.equal(wos.name, "gift")
-  assert.equal(admin.name, "gift-admin")
+test("gift panel commands register for both profiles and status uses State or Kingdom wording", () => {
+  const wos = buildGiftCodesCommand("wos").toJSON()
+  const kingshot = buildGiftCodesCommand("kingshot").toJSON()
+  const admin = buildGiftCodesAdminCommand("wos").toJSON()
+  assert.equal(wos.name, "gift-codes")
+  assert.equal(admin.name, "gift-codes-admin")
   assert.match(JSON.stringify(wos), /Whiteout Survival/)
   assert.match(JSON.stringify(kingshot), /Kingshot/)
   const account = {
@@ -231,6 +246,7 @@ test("verification processor leaves candidates pending when verifier is absent",
 
 test("verification processor persists classification and never exposes verifier identifiers in logs", async () => {
   const logs = []
+  const warnings = []
   let finished
   const claim = { id: "code-id", code: "ABC", verification_attempt_count: 1 }
   const processor = createVerificationProcessor({
@@ -244,9 +260,18 @@ test("verification processor persists classification and never exposes verifier 
     },
     client: { async redeem() { return centuryResult("already_redeemed", { errCode: 40008 }) } },
     verifier: { configured: true, playerId: "987654321", locationNumber: "689" },
+    community: {
+      async onCodeActivated() {
+        throw Object.assign(new Error("role hierarchy"), { code: "CONTRIBUTOR_ROLE_HIERARCHY" })
+      }
+    },
     config,
     botInstanceName: "test",
-    logger: { log(value) { logs.push(value) }, error() {} },
+    logger: {
+      log(value) { logs.push(value) },
+      warn(value) { warnings.push(value) },
+      error() {}
+    },
     now: () => new Date("2026-08-11T10:00:02Z"),
     workerId: "verify-worker"
   })
@@ -254,6 +279,7 @@ test("verification processor persists classification and never exposes verifier 
   assert.equal(finished.codeStatus, "active")
   assert.equal(finished.verificationState, "complete")
   assert.ok(logs.every(line => !line.includes("987654321") && !line.includes("689")))
+  assert.match(warnings[0], /Community activation failed/)
 })
 
 test("redemption processor records result before DM and DM failure does not alter it", async () => {

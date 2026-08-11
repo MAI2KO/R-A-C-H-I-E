@@ -76,6 +76,7 @@ function createVerificationProcessor({
   verifier,
   config,
   botInstanceName,
+  community = null,
   logger = console,
   now = () => new Date(),
   workerId = `verify-${process.pid}-${randomUUID()}`
@@ -103,6 +104,13 @@ function createVerificationProcessor({
       ...transition,
       botInstanceName
     })
+    if (completed.giftCode.status === "active" && community) {
+      try {
+        await community.onCodeActivated(completed.giftCode.id, completed.queued.length)
+      } catch (error) {
+        logger.warn(`[Gift codes] Community activation failed: ${sanitizeWorkerError(error)}`)
+      }
+    }
     if (result.classification.state === "invalid_player") {
       logger.error(JSON.stringify({
         event: "gift_code_verifier_configuration_error",
@@ -163,6 +171,7 @@ function createRedemptionProcessor({
   repository,
   client,
   notifier,
+  community = null,
   config,
   logger = console,
   now = () => new Date(),
@@ -209,6 +218,13 @@ function createRedemptionProcessor({
         ...transition
       })
       await notify(claim, transition.status)
+      if (community && !transition.retryable) {
+        try {
+          await community.onRedemptionUpdated(claim.gift_code_id, transition.status)
+        } catch (error) {
+          logger.warn(`[Gift codes] Community progress failed: ${sanitizeWorkerError(error)}`)
+        }
+      }
       logger.log(JSON.stringify({
         event: "gift_code_redemption",
         game_profile: repository.gameProfile,

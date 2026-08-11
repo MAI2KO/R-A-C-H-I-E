@@ -21,6 +21,7 @@ const {
   resolveSendableChannel
 } = require("./eventSchedulerService")
 const {
+  creationSessions,
   handleEventCreationModalOpeningInteraction,
   handleEventCreationInteraction
 } = require("./eventCreationInteractions")
@@ -539,7 +540,10 @@ async function replyUnavailable(interaction) {
   await safelyRespondToInteraction(interaction, payload)
 }
 
-async function handleSchedulerModalOpeningInteraction(interaction, { health }) {
+async function handleSchedulerModalOpeningInteraction(
+  interaction,
+  { health, creationSessionStore = creationSessions }
+) {
   if (await handleStateEventModalOpeningInteraction(interaction, { health })) return true
   if (interaction.isButton?.() && interaction.customId === IDS.identity) {
     await interaction.showModal(buildAllianceIdentityModal(
@@ -580,7 +584,10 @@ async function handleSchedulerModalOpeningInteraction(interaction, { health }) {
   }
   if (await handleAllianceManagementModalOpeningInteraction(interaction, { health })) return true
   if (await handleEventManagementModalOpeningInteraction(interaction, { health })) return true
-  return handleEventCreationModalOpeningInteraction(interaction, { health })
+  return handleEventCreationModalOpeningInteraction(interaction, {
+    health,
+    sessionStore: creationSessionStore
+  })
 }
 
 async function handleEventSchedulerInteraction(
@@ -593,6 +600,7 @@ async function handleEventSchedulerInteraction(
     roundupNow = () => new Date(),
     roundupFormatter = formatWeeklyRoundup,
     roundupTargetResolver = resolveSendableChannel,
+    creationSessionStore = creationSessions,
     logger = console
   } = {}
 ) {
@@ -602,7 +610,10 @@ async function handleEventSchedulerInteraction(
     if (await handleEventSchedulerHelpInteraction(interaction)) return true
 
     const health = healthProvider()
-    if (await handleSchedulerModalOpeningInteraction(interaction, { health })) return true
+    if (await handleSchedulerModalOpeningInteraction(interaction, {
+      health,
+      creationSessionStore
+    })) return true
 
     await acknowledgeSchedulerInteraction(interaction)
     if (!health.available) {
@@ -635,6 +646,7 @@ async function handleEventSchedulerInteraction(
     if (await handleEventCreationInteraction(interaction, {
       repository,
       health,
+      sessionStore: creationSessionStore,
       loadHome: (repo, id) => loadHome(repo, id, interaction.client)
     })) return true
 

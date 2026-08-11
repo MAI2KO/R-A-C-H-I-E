@@ -28,8 +28,7 @@ const {
   schedulerInteractionWasHandled
 } = require("./src/interactionResponses")
 const { getPlayerCommandData, getGiftCommandData } = require("./src/giftCodes/discord/commands")
-const { handlePlayerInteraction } = require("./src/giftCodes/discord/interactions")
-const { handleGiftInteraction } = require("./src/giftCodes/discord/giftInteractions")
+const { handleGiftCodePanelInteraction } = require("./src/giftCodes/discord/panelInteractions")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -1764,8 +1763,7 @@ client.once("clientReady", () => {
 
 client.on("interactionCreate", async interaction => {
   try {
-    if (await handleGiftInteraction(interaction, { userCanManageServer })) return
-    if (await handlePlayerInteraction(interaction)) return
+    if (await handleGiftCodePanelInteraction(interaction, { userCanManageServer })) return
 
     if (await schedulerInteractionWasHandled(
       interaction,

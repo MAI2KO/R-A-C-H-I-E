@@ -2,6 +2,7 @@ const { profileTerminology } = require("./terminology")
 const {
   PlayerValidationError,
   normalizeDiscordUserId,
+  normalizeGuildId,
   normalizePlayerId,
   normalizeLocationNumber
 } = require("./validation")
@@ -27,16 +28,18 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
   return {
     terms,
 
-    async register({ discordUserId, playerId, locationNumber }) {
+    async register({ discordUserId, playerId, locationNumber, guildId = null }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const player = normalizePlayerId(playerId, terms.playerLabel)
       const location = normalizeLocationNumber(locationNumber, terms.locationLabel)
+      const guild = guildId ? normalizeGuildId(guildId) : null
       let account
       try {
         account = await repository.registerAccount({
           discordUserId: owner,
           playerId: player,
-          locationNumber: location
+          locationNumber: location,
+          guildId: guild
         })
       } catch (error) {
         if (duplicatePlayerError(error)) {
@@ -63,6 +66,12 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
         return account ? [account] : []
       }
       return repository.listOwnedAccounts(owner)
+    },
+
+    async linkToGuild({ discordUserId, guildId }) {
+      const owner = normalizeDiscordUserId(discordUserId)
+      const guild = normalizeGuildId(guildId)
+      return repository.linkOwnedAccountsToGuild(owner, guild)
     },
 
     async changeLocation({ discordUserId, playerId, locationNumber }) {

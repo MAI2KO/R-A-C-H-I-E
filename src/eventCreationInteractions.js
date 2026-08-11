@@ -293,8 +293,41 @@ function buildMessagesModal(sessionId, data = {}) {
     )
 }
 
-function opaqueToken() {
-  return crypto.randomBytes(6).toString("base64url")
+function opaqueAllianceToken(allianceId) {
+  const encoded = Buffer.from(String(allianceId), "utf8").toString("base64url")
+  const checksum = crypto.createHash("sha256").update(`alliance:${encoded}`).digest("base64url").slice(0, 8)
+  return `${encoded}.${checksum}`
+}
+
+function decodeAllianceToken(token) {
+  const [encoded, checksum, extra] = String(token || "").split(".")
+  if (!encoded || !checksum || extra !== undefined) return null
+  const expected = crypto.createHash("sha256").update(`alliance:${encoded}`).digest("base64url").slice(0, 8)
+  if (checksum !== expected) return null
+  try {
+    const allianceId = Buffer.from(encoded, "base64url").toString("utf8")
+    return allianceId && Buffer.from(allianceId, "utf8").toString("base64url") === encoded
+      ? allianceId
+      : null
+  } catch {
+    return null
+  }
+}
+
+function initialCreationData() {
+  return {
+    allianceId: null,
+    allianceName: null,
+    recurrenceDays: 7,
+    advanceReminderMinutes: null,
+    advanceReminderMessage: null,
+    reminderAtStart: false,
+    finalReminderMessage: null,
+    publishToAlliance: true,
+    publishToState: false,
+    includeInWeeklyRoundup: false,
+    groups: []
+  }
 }
 
 function buildAllianceSelectionView(sessionId, alliances, page, total, selectedAllianceId) {
@@ -302,7 +335,7 @@ function buildAllianceSelectionView(sessionId, alliances, page, total, selectedA
   const tokenMap = {}
   const tokenNameMap = {}
   const options = alliances.map(alliance => {
-    const token = opaqueToken()
+    const token = opaqueAllianceToken(alliance.id)
     tokenMap[token] = String(alliance.id)
     tokenNameMap[token] = alliance.alliance_name
     return {
@@ -389,18 +422,34 @@ async function handleEventCreationModalOpeningInteraction(
 
   if (interaction.isStringSelectMenu?.()
     && customId.startsWith(CREATION_IDS.allianceSelectPrefix)) {
-    const sessionId = idSuffix(customId, CREATION_IDS.allianceSelectPrefix)
-    const session = sessionStore.get(sessionId, context)
+    let sessionId = idSuffix(customId, CREATION_IDS.allianceSelectPrefix)
+    let session
+    try {
+      session = sessionStore.get(sessionId, context)
+    } catch (error) {
+      if (error?.code !== "SESSION_NOT_FOUND") throw error
+      const recoveredAllianceId = decodeAllianceToken(interaction.values?.[0])
+      if (!recoveredAllianceId) {
+        throw new EventValidationError("That alliance selection has expired.")
+      }
+      sessionId = sessionStore.create(context, {
+        ...initialCreationData(),
+        allianceId: recoveredAllianceId
+      })
+      session = sessionStore.get(sessionId, context)
+    }
     if (session.data.allianceChangeOnly) return false
     const selectedToken = interaction.values?.[0]
     const allianceId = session.data.allianceTokenMap?.[selectedToken]
+      || decodeAllianceToken(selectedToken)
     const allianceName = session.data.allianceTokenNameMap?.[selectedToken]
-    if (!allianceId || !allianceName) {
+      || (String(session.data.allianceId) === String(allianceId) ? session.data.allianceName : null)
+    if (!allianceId) {
       throw new EventValidationError("That alliance selection has expired.")
     }
     const updated = sessionStore.update(sessionId, context, {
       allianceId,
-      allianceName,
+      allianceName: allianceName || null,
       allianceTokenMap: null,
       allianceTokenNameMap: null
     })
@@ -689,19 +738,7 @@ async function handleEventCreationInteraction(
       })
       return true
     }
-    const sessionId = sessionStore.create(context, {
-      allianceId: null,
-      allianceName: null,
-      recurrenceDays: 7,
-      advanceReminderMinutes: null,
-      advanceReminderMessage: null,
-      reminderAtStart: false,
-      finalReminderMessage: null,
-      publishToAlliance: true,
-      publishToState: false,
-      includeInWeeklyRoundup: false,
-      groups: []
-    })
+    const sessionId = sessionStore.create(context, initialCreationData())
     await renderAllianceSelection(
       interaction,
       repository,
@@ -1103,6 +1140,9 @@ module.exports = {
   buildImageUploadModal,
   buildMessagesModal,
   buildAllianceSelectionView,
+  opaqueAllianceToken,
+  decodeAllianceToken,
+  initialCreationData,
   renderAllianceSelection,
   buildTimingView,
   buildPublishingView,

@@ -21,6 +21,10 @@ function normalizeDiscordUserId(value) {
   return normalizeNumericIdentifier(value, "Discord user ID", 32)
 }
 
+function normalizeGuildId(value) {
+  return normalizeNumericIdentifier(value, "Discord server ID", 32)
+}
+
 function normalizePlayerId(value, playerLabel = "Player ID") {
   return normalizeNumericIdentifier(value, playerLabel, 32)
 }
@@ -44,6 +48,7 @@ module.exports = {
   PlayerValidationError,
   normalizeNumericIdentifier,
   normalizeDiscordUserId,
+  normalizeGuildId,
   normalizePlayerId,
   normalizeLocationNumber,
   normalizeGiftCode

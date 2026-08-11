@@ -3,7 +3,7 @@ const assert = require("node:assert/strict")
 const { MessageFlags } = require("discord.js")
 
 const { profileTerminology } = require("../src/giftCodes/terminology")
-const { buildPlayerCommand, getPlayerCommandData } = require("../src/giftCodes/discord/commands")
+const { buildPlayerRegisterCommand, getPlayerCommandData } = require("../src/giftCodes/discord/commands")
 const { handlePlayerInteraction } = require("../src/giftCodes/discord/interactions")
 const { createPlayerService, PlayerAccountError } = require("../src/giftCodes/playerService")
 const { signingMaterial, signRequestFields } = require("../src/giftCodes/signing")
@@ -26,12 +26,10 @@ test("profile terminology consistently distinguishes State and Kingdom", () => {
   assert.throws(() => profileTerminology("other"), /Unsupported/)
 })
 
-test("player command uses profile-specific option names and feature gating", () => {
-  const wos = buildPlayerCommand("wos").toJSON()
-  const kingshot = buildPlayerCommand("kingshot").toJSON()
-  assert.equal(wos.name, "player")
-  assert.equal(wos.options[0].options[1].name, "state")
-  assert.equal(kingshot.options[0].options[1].name, "kingdom")
+test("player registration panel command is profile aware and feature gated", () => {
+  const wos = buildPlayerRegisterCommand("wos").toJSON()
+  const kingshot = buildPlayerRegisterCommand("kingshot").toJSON()
+  assert.equal(wos.name, "player-register")
   assert.match(wos.description, /Whiteout Survival/)
   assert.match(kingshot.description, /Kingshot/)
   assert.equal(getPlayerCommandData({ PLAYER_GIFT_CODES_ENABLED: "false" }), null)
@@ -72,7 +70,8 @@ test("player service validates ownership inputs and does not roll back after mir
   assert.deepEqual(calls[0], {
     discordUserId: "999",
     playerId: "12345",
-    locationNumber: "689"
+    locationNumber: "689",
+    guildId: null
   })
   assert.match(calls[1], /Optional mirror failed/)
   assert.equal((await service.view({ discordUserId: "999", playerId: "12345" })).length, 1)

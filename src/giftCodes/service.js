@@ -1,5 +1,11 @@
-const { normalizeDiscordUserId, normalizeGiftCode, normalizePlayerId } = require("./validation")
+const {
+  normalizeDiscordUserId,
+  normalizeGuildId,
+  normalizeGiftCode,
+  normalizePlayerId
+} = require("./validation")
 const { profileTerminology } = require("./terminology")
+const { giftAccountConfig } = require("./config")
 
 class GiftCodeError extends Error {
   constructor(code, message) {
@@ -20,8 +26,9 @@ const SUBMISSION_LABELS = Object.freeze({
   disabled: "known but disabled"
 })
 
-function createGiftCodeService({ repository, gameProfile }) {
+function createGiftCodeService({ repository, gameProfile, env = process.env }) {
   const terms = profileTerminology(gameProfile)
+  const accountConfig = giftAccountConfig(env)
 
   async function selectOwnedAccount(discordUserId, playerId = null) {
     const owner = normalizeDiscordUserId(discordUserId)
@@ -39,13 +46,17 @@ function createGiftCodeService({ repository, gameProfile }) {
   return Object.freeze({
     terms,
 
-    async submit({ discordUserId, code, isAdmin = false }) {
+    async submit({ discordUserId, guildId = null, code, isAdmin = false }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const exactCode = normalizeGiftCode(code)
       const recorded = await repository.recordSubmission({
         code: exactCode,
         submittedByDiscordUserId: owner,
-        metadata: { submissionKind: isAdmin ? "admin" : "user", transport: "discord" }
+        metadata: {
+          submissionKind: isAdmin ? "admin" : "user",
+          transport: "discord",
+          guildId: guildId ? normalizeGuildId(guildId) : null
+        }
       })
       return {
         ...recorded,
@@ -55,24 +66,47 @@ function createGiftCodeService({ repository, gameProfile }) {
       }
     },
 
-    async setAutomaticRedemption({ discordUserId, playerId = null, enabled }) {
+    async setAutomaticRedemption({ discordUserId, guildId = null, playerId = null, enabled }) {
       const account = await selectOwnedAccount(discordUserId, playerId)
       if (!account.is_active) {
         throw new GiftCodeError("PLAYER_INACTIVE", `That ${terms.playerLabel} is inactive.`)
       }
-      const updated = await repository.setAutoRedemption({
+      const result = await repository.setAutoRedemption({
         discordUserId: normalizeDiscordUserId(discordUserId),
         playerId: account.player_id,
-        enabled: Boolean(enabled)
+        enabled: Boolean(enabled),
+        guildId: guildId ? normalizeGuildId(guildId) : null,
+        maximumEnabledAccounts: accountConfig.maximumAutoRedeemAccountsPerUser
       })
-      if (!updated) throw new GiftCodeError("PLAYER_NOT_FOUND", `No active ${terms.playerLabel} was found.`)
-      return updated
+      if (!result?.account) throw new GiftCodeError("PLAYER_NOT_FOUND", `No active ${terms.playerLabel} was found.`)
+      if (result.limitReached) {
+        throw new GiftCodeError(
+          "AUTO_REDEEM_ACCOUNT_LIMIT",
+          `You can currently enable automatic gift-code redemption for up to ` +
+          `${accountConfig.maximumAutoRedeemAccountsPerUser} ${terms.gameName} accounts. ` +
+          "Disable one before enabling another."
+        )
+      }
+      return {
+        ...result.account,
+        enabled_count: result.enabledCount,
+        engagement_event: result.engagementEvent,
+        maximum_enabled: accountConfig.maximumAutoRedeemAccountsPerUser
+      }
     },
 
     async status({ discordUserId, playerId = null }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const selectedPlayer = playerId ? normalizePlayerId(playerId, terms.playerLabel) : null
       return repository.accountStatuses(owner, selectedPlayer)
+    },
+
+    async history({ discordUserId, playerId = null, limit = 10 }) {
+      const account = await selectOwnedAccount(discordUserId, playerId)
+      return {
+        account,
+        redemptions: await repository.redemptionHistory(account.id, limit)
+      }
     },
 
     async adminStatus() {

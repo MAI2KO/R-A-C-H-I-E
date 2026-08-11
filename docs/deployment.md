@@ -98,8 +98,8 @@ Do not introduce Railway service IDs, private hostnames, deployment APIs, or per
 
 ## Gift-Code Rollout
 
-1. Stage A: deploy migration 012 and code with both workers off. Verify both bots and existing commands before enabling any Century traffic.
-2. Stage B: configure only the matching profile verifier, enable verification only, submit one known valid or already-redeemed code with `/gift-admin verify`, and inspect its classification and observed headers.
+1. Stage A: deploy migrations 012 and 013 and code with both workers off. Verify both bots and existing commands before enabling any Century traffic.
+2. Stage B: configure only the matching profile verifier, enable verification only, submit one known valid or already-redeemed code with `/gift-codes-admin` controlled verification, and inspect its classification and observed headers.
 3. Stage C: register and opt in one controlled player, enable the redemption worker, and verify one code/account path including its DM result.
 4. Stage D: expand to a small opted-in group while reviewing retries, unknown responses, and rate-limit observations.
 5. Stage E: permit broader voluntary opt-in only after production evidence supports it.

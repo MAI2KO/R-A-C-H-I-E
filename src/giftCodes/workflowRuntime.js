@@ -15,6 +15,9 @@ const {
   sanitizeWorkerError
 } = require("./workers")
 const { createDiscordGiftNotifier } = require("./notifications")
+const { createGiftCodeCommunityRepository } = require("./communityRepository")
+const { createGiftCodeCommunityService } = require("./communityService")
+const { giftAccountConfig } = require("./config")
 
 let currentRuntime = null
 
@@ -36,6 +39,8 @@ function createGiftCodeWorkflowRuntime({
   let redemptionWorker = null
   let verificationProcessor = null
   let limiter = null
+  let community = null
+  let communityWorker = null
   let health = {
     started: false,
     reason: "not started",
@@ -56,7 +61,18 @@ function createGiftCodeWorkflowRuntime({
       try {
         const gameProfile = subsystem.gameProfile
         const repository = repositoryFactory(getPoolFn({ env, logger }), gameProfile)
+        const communityRepository = createGiftCodeCommunityRepository(
+          getPoolFn({ env, logger }),
+          gameProfile
+        )
         const config = giftWorkerConfig(env)
+        community = createGiftCodeCommunityService({
+          repository: communityRepository,
+          client,
+          gameProfile,
+          maximumEnabledAccounts: giftAccountConfig(env).maximumAutoRedeemAccountsPerUser,
+          logger
+        })
         const verifier = getVerifierAccount(gameProfile, env)
         limiter = new ConservativeRateLimiter({
           gameProfile,
@@ -70,12 +86,14 @@ function createGiftCodeWorkflowRuntime({
           verifier,
           config,
           botInstanceName: subsystem.botInstanceName,
+          community,
           logger
         })
         const redemptionProcessor = createRedemptionProcessor({
           repository,
           client: centuryClient,
           notifier: notifierFactory({ client, gameProfile, logger }),
+          community,
           config,
           logger
         })
@@ -89,8 +107,14 @@ function createGiftCodeWorkflowRuntime({
           intervalMs: config.pollIntervalMs,
           enabled: redemptionWorkerIsEnabled(env)
         })
+        communityWorker = createPollingWorker({
+          tick: community.recoverOne,
+          intervalMs: config.pollIntervalMs,
+          enabled: true
+        })
         const verificationStart = verificationWorker.start()
         const redemptionStart = redemptionWorker.start()
+        communityWorker.start()
         health = {
           started: true,
           reason: null,
@@ -113,7 +137,8 @@ function createGiftCodeWorkflowRuntime({
     async stop() {
       await Promise.all([
         verificationWorker?.stop(),
-        redemptionWorker?.stop()
+        redemptionWorker?.stop(),
+        communityWorker?.stop()
       ])
       return { stopped: true }
     },
@@ -131,6 +156,10 @@ function createGiftCodeWorkflowRuntime({
         redemptionRunning: redemptionWorker?.isRunning() || false,
         recentRateLimits: limiter?.getObservations().slice(-5) || []
       }
+    },
+
+    community() {
+      return community
     }
   }
   currentRuntime = Object.freeze(runtime)
