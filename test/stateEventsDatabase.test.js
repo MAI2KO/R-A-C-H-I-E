@@ -20,7 +20,7 @@ async function dropSchema(pool, schema) {
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
 }
 
-test("migrations 001-011 apply cleanly, reapply to zero, and serialize concurrent startup", {
+test("migrations 001-012 apply cleanly, reapply to zero, and serialize concurrent startup", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   const admin = new Pool({ connectionString: databaseUrl, max: 1 })
@@ -34,8 +34,8 @@ test("migrations 001-011 apply cleanly, reapply to zero, and serialize concurren
     clean = scopedPool(cleanSchema)
     const first = await runMigrations({ pool: clean, logger })
     const second = await runMigrations({ pool: clean, logger })
-    assert.equal(first.applied.length, 11)
-    assert.equal(first.applied.at(-1), "011_player_accounts_and_gift_codes.sql")
+    assert.equal(first.applied.length, 12)
+    assert.equal(first.applied.at(-1), "012_gift_code_workers.sql")
     assert.deepEqual(second.applied, [])
 
     await admin.query(`CREATE SCHEMA "${concurrentSchema}"`)
@@ -44,11 +44,11 @@ test("migrations 001-011 apply cleanly, reapply to zero, and serialize concurren
       runMigrations({ pool: concurrent, logger }),
       runMigrations({ pool: concurrent, logger })
     ])
-    assert.deepEqual(results.map(result => result.applied.length).sort((a, b) => a - b), [0, 11])
+    assert.deepEqual(results.map(result => result.applied.length).sort((a, b) => a - b), [0, 12])
     const versions = await concurrent.query(
       "SELECT version, COUNT(*)::integer AS count FROM schema_migrations GROUP BY version ORDER BY version"
     )
-    assert.equal(versions.rowCount, 11)
+    assert.equal(versions.rowCount, 12)
     assert.equal(versions.rows.find(row => row.version === "009_state_events.sql").count, 1)
     assert.equal(
       versions.rows.find(row => row.version === "010_cross_midnight_event_groups.sql").count,
@@ -56,6 +56,10 @@ test("migrations 001-011 apply cleanly, reapply to zero, and serialize concurren
     )
     assert.equal(
       versions.rows.find(row => row.version === "011_player_accounts_and_gift_codes.sql").count,
+      1
+    )
+    assert.equal(
+      versions.rows.find(row => row.version === "012_gift_code_workers.sql").count,
       1
     )
   } finally {

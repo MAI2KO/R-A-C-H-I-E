@@ -26,6 +26,8 @@ Optional on either profile:
 
 ```text
 PLAYER_GIFT_CODES_ENABLED=true
+GIFT_CODE_VERIFICATION_ENABLED=false
+GIFT_CODE_REDEMPTION_WORKER_ENABLED=false
 CENTURY_MINIMUM_DELAY_MS=1000
 CENTURY_MAXIMUM_RETRIES=2
 CENTURY_BACKOFF_BASE_MS=2000
@@ -33,6 +35,8 @@ CENTURY_BACKOFF_CAP_MS=60000
 ```
 
 The adapters include signing suffixes observed in the current official public browser clients and independently validated against real official requests. These are public-client implementation details, not secrets or credentials, and may change. `CENTURY_WOS_SIGNING_SUFFIX` and `CENTURY_KINGSHOT_SIGNING_SUFFIX` are optional emergency compatibility overrides; a non-empty environment value takes precedence over the built-in value.
+
+Verifier characters are independently optional per profile: `WOS_GIFT_VERIFY_FID` with `WOS_GIFT_VERIFY_KID`, or `KINGSHOT_GIFT_VERIFY_FID` with `KINGSHOT_GIFT_VERIFY_KID`. Never print these identifiers in normal logs. Enabling verification without a complete valid pair leaves candidates pending and reports the verifier as unavailable. No registered player is selected as an implicit verifier.
 
 Each service keeps its own `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and any `OPENAI_API_KEY`/`BANTER_PROFILE` configuration. Do not combine Apps Script deployments or booking sheets.
 
@@ -91,3 +95,13 @@ If a release must be reverted, revert only application code, keep the database b
 Railway is one deployment target, not an application dependency. `npm run migrate`, the bot processes, and future worker/API processes use ordinary environment variables and standard PostgreSQL connectivity. They can run under systemd, Docker, Docker Compose, or another scheduler against local, external, or managed PostgreSQL.
 
 Do not introduce Railway service IDs, private hostnames, deployment APIs, or persistent local-file assumptions into business logic. Services should remain stateless outside PostgreSQL. Future cache/queue providers must be accessed through an abstraction so deployment can move without rewriting player, gift-code, or redemption rules.
+
+## Gift-Code Rollout
+
+1. Stage A: deploy migration 012 and code with both workers off. Verify both bots and existing commands before enabling any Century traffic.
+2. Stage B: configure only the matching profile verifier, enable verification only, submit one known valid or already-redeemed code with `/gift-admin verify`, and inspect its classification and observed headers.
+3. Stage C: register and opt in one controlled player, enable the redemption worker, and verify one code/account path including its DM result.
+4. Stage D: expand to a small opted-in group while reviewing retries, unknown responses, and rate-limit observations.
+5. Stage E: permit broader voluntary opt-in only after production evidence supports it.
+
+Command registration occurs during normal bot startup through the existing global Discord command registration call. Deploying commands live is a separate operational act and is not performed by tests. Keep `GIFT_CODE_VERIFICATION_ENABLED=false` and `GIFT_CODE_REDEMPTION_WORKER_ENABLED=false` until their respective rollout stages.

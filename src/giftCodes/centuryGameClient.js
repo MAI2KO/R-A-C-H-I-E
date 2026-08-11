@@ -12,6 +12,31 @@ function formEncodedPayload(fields) {
   return form.toString()
 }
 
+function rateLimitMetadata(headers = {}) {
+  const normalized = {}
+  for (const [key, value] of Object.entries(headers || {})) {
+    normalized[String(key).toLowerCase()] = Array.isArray(value) ? value[0] : value
+  }
+  return {
+    limit: normalized["x-ratelimit-limit"] ?? null,
+    remaining: normalized["x-ratelimit-remaining"] ?? null,
+    reset: normalized["x-ratelimit-reset"] ?? null,
+    retryAfter: normalized["retry-after"] ?? null
+  }
+}
+
+function boundedResponseData(data, maximumCharacters = 4000) {
+  try {
+    const serialized = JSON.stringify(data ?? null)
+    if (serialized.length > maximumCharacters) {
+      return { truncated: true, originalCharacters: serialized.length }
+    }
+    return JSON.parse(serialized)
+  } catch {
+    return { unreadable: true }
+  }
+}
+
 function createCenturyGameClient({
   gameProfile,
   env = process.env,
@@ -41,11 +66,13 @@ function createCenturyGameClient({
       const url = `${adapter.apiBaseUrl}${adapter.redemptionPath}`
 
       return limiter.schedule(async () => {
+        const requestStartedAt = new Date(now())
         try {
           const response = await transport.post(url, body, {
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             validateStatus: () => true
           })
+          const responseReceivedAt = new Date(now())
           const classification = classifyCenturyResponse({
             httpStatus: response.status,
             data: response.data,
@@ -56,9 +83,15 @@ function createCenturyGameClient({
             headers: response.headers || {},
             classification,
             retryable: classification.retryable,
-            response: classification.raw
+            response: classification.raw,
+            responseData: boundedResponseData(response.data),
+            endpoint: adapter.redemptionPath,
+            rateLimit: rateLimitMetadata(response.headers),
+            requestStartedAt,
+            responseReceivedAt
           }
         } catch (error) {
+          const responseReceivedAt = new Date(now())
           return {
             httpStatus: null,
             headers: {},
@@ -70,7 +103,12 @@ function createCenturyGameClient({
             },
             retryable: true,
             response: { code: null, errCode: null, message: "Network request failed" },
-            errorCode: String(error?.code || "NETWORK_ERROR").slice(0, 100)
+            responseData: null,
+            errorCode: String(error?.code || "NETWORK_ERROR").slice(0, 100),
+            endpoint: adapter.redemptionPath,
+            rateLimit: {},
+            requestStartedAt,
+            responseReceivedAt
           }
         }
       })
@@ -78,4 +116,9 @@ function createCenturyGameClient({
   })
 }
 
-module.exports = { formEncodedPayload, createCenturyGameClient }
+module.exports = {
+  formEncodedPayload,
+  rateLimitMetadata,
+  boundedResponseData,
+  createCenturyGameClient
+}

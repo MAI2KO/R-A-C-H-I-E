@@ -7,7 +7,16 @@ function whiteoutAdapter(env = process.env) {
     frontendUrl: "https://wos-giftcode.centurygame.com",
     apiBaseUrl: "https://wos-giftcode-api.centurygame.com/api",
     redemptionPath: "/gift_code",
-    signingSuffix: String(env.CENTURY_WOS_SIGNING_SUFFIX || DEFAULT_SIGNING_SUFFIX)
+    signingSuffix: String(env.CENTURY_WOS_SIGNING_SUFFIX || DEFAULT_SIGNING_SUFFIX),
+    responseMappings: Object.freeze({
+      errCodes: Object.freeze({
+        20000: "success",
+        40008: "already_redeemed",
+        40007: "expired",
+        40014: "invalid_code",
+        40020: "invalid_player"
+      })
+    })
   })
 }
 

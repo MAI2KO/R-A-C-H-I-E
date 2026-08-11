@@ -201,7 +201,8 @@ test("Century responses classify known, temporary, rate-limited and unknown resu
   }).state, "success")
   assert.equal(classifyCenturyResponse({
     httpStatus: 200,
-    data: { code: 1, err_code: 40008, msg: "RECEIVED." }
+    data: { code: 1, err_code: 40008, msg: "RECEIVED." },
+    profileMappings: centuryAdapter("wos", {}).responseMappings
   }).state, "already_redeemed")
   assert.equal(classifyCenturyResponse({ httpStatus: 429, data: {} }).state, "rate_limited")
   assert.equal(classifyCenturyResponse({ httpStatus: 503, data: {} }).state, "temporary_error")

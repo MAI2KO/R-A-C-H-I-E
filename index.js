@@ -27,8 +27,9 @@ const {
   handleInteractionFailure,
   schedulerInteractionWasHandled
 } = require("./src/interactionResponses")
-const { getPlayerCommandData } = require("./src/giftCodes/discord/commands")
+const { getPlayerCommandData, getGiftCommandData } = require("./src/giftCodes/discord/commands")
 const { handlePlayerInteraction } = require("./src/giftCodes/discord/interactions")
+const { handleGiftInteraction } = require("./src/giftCodes/discord/giftInteractions")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -48,6 +49,7 @@ const client = new Client({
   ]
 })
 let allianceEventDeliveryRuntime = null
+let giftCodeWorkflowRuntime = null
 
 const pendingUnlinks = new Map()
 const pendingBookings = new Map()
@@ -1723,6 +1725,7 @@ const eventSchedulerHelpCommand = getEventSchedulerHelpCommandData()
 if (eventSchedulerHelpCommand) commands.push(eventSchedulerHelpCommand)
 const playerCommand = getPlayerCommandData()
 if (playerCommand) commands.push(playerCommand)
+commands.push(...getGiftCommandData())
 
 /* -------------------- COMMAND REGISTRATION -------------------- */
 
@@ -1754,12 +1757,14 @@ async function postToAppsScript(payload) {
 client.once("clientReady", () => {
   console.log(`Bot ready: ${client.user.tag}`)
   void allianceEventDeliveryRuntime?.start()
+  void giftCodeWorkflowRuntime?.start()
 })
 
 /* -------------------- COMMAND HANDLER -------------------- */
 
 client.on("interactionCreate", async interaction => {
   try {
+    if (await handleGiftInteraction(interaction, { userCanManageServer })) return
     if (await handlePlayerInteraction(interaction)) return
 
     if (await schedulerInteractionWasHandled(
@@ -3961,12 +3966,18 @@ channelMessageThresholds.set(channelId, getRandomBanterThreshold())
 const { initializeEventSchedulerSubsystem } = require("./src/eventSchedulerHealth")
 const { createAllianceEventDeliveryRuntime } = require("./src/allianceEventDeliveryRuntime")
 const { initializePlayerGiftCodesSubsystem } = require("./src/giftCodes/runtime")
+const { createGiftCodeWorkflowRuntime } = require("./src/giftCodes/workflowRuntime")
 
 /* -------------------- START BOT -------------------- */
 
 async function main() {
-  void initializePlayerGiftCodesSubsystem().catch(() => {
+  const giftCodeInitialization = initializePlayerGiftCodesSubsystem().catch(() => {
     console.error("[Player accounts] Initialization failed unexpectedly")
+    return null
+  })
+  giftCodeWorkflowRuntime = createGiftCodeWorkflowRuntime({
+    client,
+    initializationPromise: giftCodeInitialization
   })
   const schedulerInitialization = initializeEventSchedulerSubsystem().catch(() => {
     console.error("[Event scheduler] Initialization failed unexpectedly")

@@ -147,9 +147,20 @@ function createPlayerRepository(pool, gameProfile) {
         }
         await client.query(
           `UPDATE player_accounts
-              SET is_active = false, is_primary = false, updated_at_utc = now()
+              SET is_active = false, is_primary = false,
+                  gift_redemption_enabled = false, updated_at_utc = now()
             WHERE id = $1 AND game_profile = $2`,
           [account.id, gameProfile]
+        )
+        await client.query(
+          `UPDATE gift_code_redemptions
+              SET status = 'disabled', retryable = false, next_retry_at_utc = NULL,
+                  claimed_by_worker = NULL, claimed_at_utc = NULL,
+                  claimed_until_utc = NULL, notification_status = 'suppressed',
+                  updated_at_utc = now()
+            WHERE game_profile = $1 AND player_account_id = $2
+              AND status IN ('queued', 'claimed', 'rate_limited', 'temporary_error')`,
+          [gameProfile, account.id]
         )
         let replacement = null
         if (account.is_primary) {

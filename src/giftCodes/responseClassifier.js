@@ -1,9 +1,4 @@
-const KNOWN_ERROR_STATES = Object.freeze({
-  40008: "already_redeemed",
-  40007: "expired",
-  40014: "invalid_code",
-  40020: "invalid_player"
-})
+const KNOWN_ERROR_STATES = Object.freeze({ 20000: "success" })
 
 function integerOrNull(value) {
   const number = Number(value)
@@ -19,14 +14,22 @@ function classifyCenturyResponse({ httpStatus, data, profileMappings = {} }) {
   let state
   if (Number(httpStatus) === 429) state = "rate_limited"
   else if (Number(httpStatus) >= 500 || Number(httpStatus) === 408) state = "temporary_error"
-  else if (raw.code === 0 && raw.errCode === 20000) state = "success"
-  else state = profileMappings[raw.errCode] || KNOWN_ERROR_STATES[raw.errCode] || "unknown_response"
+  else {
+    const errCodes = profileMappings.errCodes || profileMappings
+    const codes = profileMappings.codes || {}
+    const messages = profileMappings.messages || {}
+    state = errCodes[raw.errCode]
+      || KNOWN_ERROR_STATES[raw.errCode]
+      || codes[raw.code]
+      || messages[raw.message]
+      || "unknown_response"
+  }
 
   return Object.freeze({
     state,
     retryable: ["rate_limited", "temporary_error"].includes(state),
     permanent: [
-      "already_redeemed", "expired", "invalid_code", "invalid_player",
+      "success", "already_redeemed", "expired", "invalid_code", "invalid_player",
       "eligibility_restriction", "redemption_limit"
     ].includes(state),
     raw

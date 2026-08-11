@@ -2,56 +2,86 @@
 
 ## Purpose And Scope
 
-PostgreSQL is the canonical identity and gift-code store for both bot profiles. Whiteout Survival uses **State** and Kingshot uses **Kingdom** in every player-facing response. One Discord user can own multiple characters in one or both profiles; Discord is an external owner identity, not the character's primary key.
+PostgreSQL is canonical for both profiles. Whiteout Survival uses **State** and Kingshot uses **Kingdom** in player-facing responses. Discord owns commands, PostgreSQL owns durable workflow state, and Apps Script booking identities remain unchanged.
 
-This phase implements `/player register`, `/player view`, `/player location`, and `/player remove`. The existing Apps Script-backed `/register`, `/my-info`, and `/unregister` booking commands are unchanged. Automatic redemption, scraping, global announcements, website identity, and bulk workers are intentionally absent.
+The subsystem supports canonical player accounts, controlled candidate submission, verification through an optional profile verifier, explicit per-account redemption opt-in, durable workers, private results, and authorized diagnostics. It does not scrape, import unknown feeds, bypass Century controls, publish mass announcements, or build the future website.
 
-## Data Model
+## Data And Service Boundaries
 
 ```text
 Discord user
   -> player_accounts (current character and current State/Kingdom)
        -> player_location_history (append-only transfers)
-       -> gift_code_redemptions (immutable player/location snapshots)
+       -> gift_code_redemptions (one durable identity per player/code)
+            -> gift_code_attempts (immutable API calls and location snapshots)
 
 gift_code_sources
   -> gift_code_submissions
-  -> gift_codes (exact case-sensitive code and verification state)
-       -> gift_code_redemptions
+  -> gift_codes (exact case and verification state)
 ```
 
-`player_accounts` uses UUID character identities and profile-scoped Player ID uniqueness. One partial unique index permits one active primary account per Discord user/profile. Registration makes the first active account primary. Removing an account is a soft deactivation; removing the primary promotes the oldest active account by creation time and UUID.
+Player registration, location changes, primary selection, and soft removal remain transactional and profile scoped. A transfer updates current location and append-only history together. A redemption refreshes its Player ID and State/Kingdom snapshot when each attempt is claimed, so later transfers do not rewrite attempt history and future codes use the new location.
 
-A location change locks the owned active account, updates its current number, and inserts history in the same transaction. Failed history insertion rolls back the account update. Redemption rows snapshot Player ID and State/Kingdom, so later transfers never rewrite audit history.
+Business logic follows `Discord -> service -> repository/client`. Repositories, services, and worker processors are reusable by a future HTTP API, website, or independently runnable process.
 
-## Gift-Code Provenance And Idempotency
+## Submission And Opt-In
 
-Gift codes preserve exact case in `gift_codes.code`; no code sent to Century is lowercased. Sources and submissions retain provenance, but `trusted=true` never marks a code verified. Every candidate remains eligible for a future official Century verifier.
+`/gift submit` trims surrounding whitespace but preserves exact code case. Every user/admin submission gets immutable provenance. Duplicate submissions reuse the existing candidate and do not create duplicate verification work; source trust never implies validity. New source adapters must enter through this same pipeline.
 
-One unique redemption row exists per profile, gift code, and player account. Its attempt count, status, retry schedule, and lease fields support restart/reclaim behavior without creating duplicate work. No worker consumes those rows in this phase.
+`/gift auto-enable`, `/gift auto-disable`, and `/gift status` operate on one owned account at a time. An omitted Player ID selects the current primary account; it never changes every character. Default is disabled. Enabling queues existing active codes for that account. Disabling or deactivating it disables unfinished work while retaining completed history.
 
-## Century Client
+## Controlled Workflow
 
-The shared client uses small Whiteout Survival and Kingshot adapters for official frontend/API URLs. Their built-in signing suffixes were observed in the current official public browser clients and independently validated against real official requests. They are shipped to browsers as public-client implementation details, not secrets or credentials, and may change. Non-empty `CENTURY_WOS_SIGNING_SUFFIX` and `CENTURY_KINGSHOT_SIGNING_SUFFIX` environment values override the defaults for emergency compatibility.
+```text
+User/admin submission
+        |
+        v
+gift_code_submissions -> candidate gift_code
+        |
+        v
+verification worker
+        |----> invalid / expired / restricted / unknown
+        v
+      active
+        |
+        v
+active opted-in player redemption rows
+        |
+        v
+serial rate-limited redemption worker
+        |----> retry / player issue / restricted / unknown
+        v
+success / already redeemed -> private DM attempt
+```
 
-Signing sorts and URL-encodes unsigned fields, appends the profile suffix, and computes MD5 once. The exact gift-code case is preserved. Logs must not include the suffix or complete signing material.
+The optional verifier is configured independently per profile and is never selected from registered users. Verification `success` consumes the reward on that verifier; this is expected and is not bypassed. `already_redeemed` also proves Century recognises the code. Both outcomes activate the code and transactionally fan out idempotent work to active opted-in accounts.
 
-The response classifier recognizes observed success, already-received, expired, missing-code, and player-error responses without treating that set as exhaustive. Unknown `code`, `err_code`, and `msg` values are returned and can be persisted by a future worker.
+Expired and invalid codes stop before fan-out. Invalid verifier information blocks the candidate without calling it invalid. Eligibility/redeeming limits remain restricted review states. Rate limits and temporary failures get durable backoff. Unknown responses retain HTTP status, Century `code`, `err_code`, `msg`, profile, endpoint metadata, and timestamps; they never trigger fan-out or crash the loop.
 
-No CAPTCHA, anti-bot, or rate-limit bypass exists. Unit tests inject transport and never contact Century.
+## Century Client And Classification
 
-## Conservative Rate Handling
+Whiteout Survival and Kingshot adapters own their official URLs, independently verified current browser-client signing defaults, optional emergency overrides, and profile-specific response mappings. The signing values are public-client implementation details, not credentials. Logs never contain them or complete signing material.
 
-Each profile limiter runs one request at a time. Defaults are a 1-second minimum spacing, two retries, 2-second exponential backoff, and a 60-second cap. `Retry-After` takes precedence when longer. HTTP 429 and temporary failures can retry; permanent classifications do not.
+Classification prioritizes `err_code`, then top-level code, then explicitly mapped stable messages, then `unknown_response`. WOS observations currently include `20000` success, `40008` already received, `40007` expired, `40014` not found, and `40020` user information error. Kingshot currently maps only independently verified success semantics; other codes remain unknown until observed and reviewed.
 
-The observed public limit is 30, but its reset interval and scope are **UNKNOWN**. The limiter captures HTTP status, `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after`, and request/response timestamps in a bounded 100-entry in-memory diagnostic buffer. This avoids unbounded database growth. A future worker may emit these records as structured logs with retention.
+No CAPTCHA, anti-bot, proxy, IP rotation, concurrency, or rate-limit bypass exists. Tests inject transport and never contact Century.
 
-## Google Sheet Compatibility
+## Retry And Rate Handling
 
-`playerMirror.js` defines the optional post-commit mirror boundary. The repository contains no confirmed Apps Script action for safely mirroring canonical Player IDs into the existing bot-users sheet, so the default implementation is intentionally a no-op. A future adapter must document the exact Apps Script contract, authenticate through existing environment configuration, log safe retryable failures, and never make Sheet success part of the PostgreSQL transaction.
+One limiter serializes verification and redemption requests per profile/process. Workers disable the client's internal retries so each response becomes a durable attempt before another request. `Retry-After` is obeyed, HTTP 429 and temporary transport/server failures use exponential database backoff, and `GIFT_CODE_MAX_ATTEMPTS` bounds automatic work. Exhaustion, restrictions, unknown responses, and configuration problems become terminal review states rather than tight loops.
+
+Bounded observations retain request/response timestamps, endpoint, HTTP status, `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-ratelimit-reset`, and `retry-after`. Remaining capacity near zero increases spacing conservatively; only explicit `Retry-After` defines a server-requested pause. The observed limit is 30, but the reset interval and whether scope is fixed/rolling or IP/endpoint/account based remain unknown. Future analysis should use ordinary retained traffic and must not deliberately exhaust the limit.
+
+PostgreSQL leases and `FOR UPDATE SKIP LOCKED` provide cross-process work ownership. A profile advisory lock plus one-row pacing state serializes Century request starts across overlapping same-profile processes. Stale claims and locks recover after crashes. Completed redemption rows are not claimable again, and uniqueness prevents a Railway/VPS restart from creating another player/code identity.
+
+## Notifications And Administration
+
+Successful, already-redeemed, invalid-player, restricted, and unknown player results may produce one concise DM attempt. Notification ownership is recorded before Discord delivery. DM failure is stored separately and never changes or retries the Century result. Invalid player information marks account verification failed and asks the owner to confirm their current State/Kingdom without guessing or deactivating it.
+
+`/gift-admin status`, `/gift-admin queue`, `/gift-admin code`, and `/gift-admin verify` use the existing server-management authorization callback. They show bounded counts and classifications, not verifier identifiers or player dumps. Controlled verification uses the same configured verifier, durable claim, idempotency, and rate limiter as automatic work; intentionally activating a candidate performs normal opt-in fan-out.
 
 ## Deployment And Portability
 
-Set `PLAYER_GIFT_CODES_ENABLED=true` with `GAME_PROFILE`, `BOT_INSTANCE_NAME`, and an ordinary `DATABASE_URL`. Initialization runs the same portable advisory-locked migrations used elsewhere. Database failure disables only `/player`; booking, minister, banter, and other Apps Script features continue.
+Set `PLAYER_GIFT_CODES_ENABLED=true` with `GAME_PROFILE`, `BOT_INSTANCE_NAME`, and ordinary `DATABASE_URL`. `GIFT_CODE_VERIFICATION_ENABLED` and `GIFT_CODE_REDEMPTION_WORKER_ENABLED` independently default to false. Configure `WOS_GIFT_VERIFY_FID`/`WOS_GIFT_VERIFY_KID` or `KINGSHOT_GIFT_VERIFY_FID`/`KINGSHOT_GIFT_VERIFY_KID` only for the matching verifier profile.
 
-Repositories, the Century client, and limiter do not depend on Discord or Railway. They can be imported by a website/API or independently runnable worker process on Linux, Docker Compose, or another platform using standard PostgreSQL. No durable files are written to deployment-local storage.
+Database, verifier, Century, or individual job failures remain contained to this subsystem. Booking, minister, scheduler, banter, and Apps Script behavior continue. Durable state stays in standard PostgreSQL; no Railway API or deployment-local persistent file is required. Follow the staged rollout in [Deployment](deployment.md) and never enable both workers automatically on first deployment.

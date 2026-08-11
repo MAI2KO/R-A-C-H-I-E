@@ -23,6 +23,8 @@ All durable application state uses standard PostgreSQL through `DATABASE_URL` an
 
 A future container deployment can run PostgreSQL, R.A.C.H.I.E, P.E.G.G.I.E, a website/API, and independently scaled background workers. A future external cache or queue must sit behind an interface; PostgreSQL remains the current durable queue/idempotency layer.
 
+Gift-code behavior follows `Discord -> service -> repository/client`. Candidate verification and player redemption processors are importable modules independent of Discord interaction handlers. PostgreSQL leases provide cross-process ownership; the in-process limiter controls only request pacing. `gift_code_attempts` stores each completed API call while the parent code/redemption rows hold current queue state.
+
 Scheduler failure is isolated. Discord login and existing slash-command registration do not wait for Postgres. When enabled, scheduler initialization validates ownership, connects, runs migrations, and records health. Failure closes the scheduler pool and leaves the rest of the bot running. Database-backed management returns a private unavailable response; static scheduler help remains usable.
 
 ## Scheduler Components

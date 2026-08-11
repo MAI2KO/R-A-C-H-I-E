@@ -7,7 +7,10 @@ function kingshotAdapter(env = process.env) {
     frontendUrl: "https://ks-giftcode.centurygame.com",
     apiBaseUrl: "https://kingshot-giftcode.centurygame.com/api",
     redemptionPath: "/gift_code",
-    signingSuffix: String(env.CENTURY_KINGSHOT_SIGNING_SUFFIX || DEFAULT_SIGNING_SUFFIX)
+    signingSuffix: String(env.CENTURY_KINGSHOT_SIGNING_SUFFIX || DEFAULT_SIGNING_SUFFIX),
+    responseMappings: Object.freeze({
+      errCodes: Object.freeze({ 20000: "success" })
+    })
   })
 }
 

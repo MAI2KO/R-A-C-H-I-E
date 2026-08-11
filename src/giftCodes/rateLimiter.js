@@ -56,26 +56,38 @@ class ConservativeRateLimiter {
     this.sleep = sleep
     this.tail = Promise.resolve()
     this.lastStartedAt = null
+    this.conservativeDelayMs = 0
     this.observations = []
   }
 
   recordObservation(result, endpointType, requestedAt, respondedAt) {
-    this.observations.push(rateLimitObservation({
+    const observation = rateLimitObservation({
       gameProfile: this.gameProfile,
       endpointType,
       httpStatus: result.httpStatus,
       headers: result.headers,
       requestedAt,
       respondedAt
-    }))
+    })
+    this.observations.push(observation)
     if (this.observations.length > this.maximumObservations) this.observations.shift()
+    const remaining = Number(observation.remaining)
+    if (Number.isFinite(remaining) && remaining <= 1) {
+      this.conservativeDelayMs = Math.min(
+        this.maximumBackoffMs,
+        Math.max(this.baseBackoffMs, this.minimumDelayMs * 5)
+      )
+    } else if (Number.isFinite(remaining) && remaining > 1) {
+      this.conservativeDelayMs = 0
+    }
   }
 
   async execute(operation, { endpointType = "gift_code", shouldRetry = result => result.retryable } = {}) {
     let attempt = 0
     while (true) {
       if (this.lastStartedAt !== null) {
-        const spacing = this.minimumDelayMs - (this.now() - this.lastStartedAt)
+        const spacing = Math.max(this.minimumDelayMs, this.conservativeDelayMs)
+          - (this.now() - this.lastStartedAt)
         if (spacing > 0) await this.sleep(spacing)
       }
       const requestedAt = this.now()
