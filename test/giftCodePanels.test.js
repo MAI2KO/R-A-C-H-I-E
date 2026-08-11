@@ -5,6 +5,7 @@ const path = require("node:path")
 const { ChannelType, MessageFlags } = require("discord.js")
 
 const { InteractionSessionStore } = require("../src/interactionSessions")
+const { createBanterConfigLookup } = require("../src/banterConfig")
 const { profileTerminology } = require("../src/giftCodes/terminology")
 const {
   IDS,
@@ -15,6 +16,7 @@ const {
   registrationModal,
   adminPanel,
   formatCommunityStats,
+  giftCodePanelFailureDiagnostics,
   handleGiftCodePanelInteraction
 } = require("../src/giftCodes/discord/panelInteractions")
 const {
@@ -39,6 +41,7 @@ const accounts = [
     is_primary: true,
     is_active: true,
     gift_redemption_enabled: true,
+    guild_gift_code_enrolled: true,
     last_redemption_status: "success"
   },
   {
@@ -48,6 +51,7 @@ const accounts = [
     is_primary: false,
     is_active: true,
     gift_redemption_enabled: false,
+    guild_gift_code_enrolled: false,
     last_redemption_status: null
   }
 ]
@@ -419,6 +423,22 @@ test("unmanageable reward role and missing channel are contained", async () => {
   }
 })
 
+test("gift-code channel validation reports an actionable configuration error", async () => {
+  const discord = discordFixture({ channelAvailable: false })
+  const service = createGiftCodeCommunityService({
+    repository: { async setChannel() { throw new Error("must not persist") } },
+    client: discord.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  await assert.rejects(
+    service.configureChannel("777", "123"),
+    error => error.code === "GIFT_CODE_CHANNEL_UNAVAILABLE"
+      && error.giftCodeHandler === "configure_channel_resolve"
+      && /visible text channel/.test(error.message)
+  )
+})
+
 test("progress edits one stored message and finalizes aggregate state", async () => {
   const discord = discordFixture()
   let completion
@@ -430,7 +450,8 @@ test("progress edits one stored message and finalizes aggregate state", async ()
     message_id: "789"
   }
   const repository = {
-    async claimProgressRefresh(_giftCodeId, status) {
+    async claimProgressRefresh(_giftCodeId, playerAccountId, status) {
+      assert.equal(playerAccountId, "account-id")
       resultStatus = status
       return {
         event,
@@ -457,7 +478,7 @@ test("progress edits one stored message and finalizes aggregate state", async ()
     gameProfile: "kingshot",
     logger: { warn() {} }
   })
-  assert.equal(await service.onRedemptionUpdated("code-id", "success"), true)
+  assert.equal(await service.onRedemptionUpdated("code-id", "account-id", "success"), true)
   assert.equal(discord.sent.length, 0)
   assert.equal(discord.edits.length, 1)
   assert.deepEqual(discord.fetchedMessages, ["789"])
@@ -476,8 +497,9 @@ test("already-redeemed progress reuses the message while coalesced results do no
     message_id: "789"
   }
   const repository = {
-    async claimProgressRefresh(_giftCodeId, resultStatus) {
+    async claimProgressRefresh(_giftCodeId, playerAccountId, resultStatus) {
       calls += 1
+      assert.equal(playerAccountId, "account-id")
       assert.equal(resultStatus, "already_redeemed")
       if (calls === 1) return null
       return {
@@ -505,9 +527,13 @@ test("already-redeemed progress reuses the message while coalesced results do no
     gameProfile: "wos",
     logger: { warn() {} }
   })
-  assert.equal(await service.onRedemptionUpdated("code-id", "already_redeemed"), false)
+  assert.equal(await service.onRedemptionUpdated(
+    "code-id", "account-id", "already_redeemed"
+  ), false)
   assert.equal(discord.edits.length, 0, "coalesced result edited the public message")
-  assert.equal(await service.onRedemptionUpdated("code-id", "already_redeemed"), true)
+  assert.equal(await service.onRedemptionUpdated(
+    "code-id", "account-id", "already_redeemed"
+  ), true)
   assert.deepEqual(discord.fetchedMessages, ["789"])
   assert.equal(discord.edits.length, 1)
   assert.match(discord.edits[0].content, /Already claimed: 2/)
@@ -520,7 +546,13 @@ test("native selector IDs remain distinct and scoped to the consolidated panel",
   assert.equal(IDS.adminRole, undefined)
 })
 
-function panelInteraction({ commandName = null, customId = null, modal = false, fields = {} } = {}) {
+function panelInteraction({
+  commandName = null,
+  customId = null,
+  modal = false,
+  fields = {},
+  values = []
+} = {}) {
   return {
     commandName,
     customId,
@@ -532,6 +564,7 @@ function panelInteraction({ commandName = null, customId = null, modal = false, 
     isChatInputCommand: () => Boolean(commandName),
     isModalSubmit: () => modal,
     fields: { getTextInputValue: name => fields[name] },
+    values,
     async deferReply(options) {
       assert.equal(options.flags, MessageFlags.Ephemeral)
       this.deferred = true
@@ -546,7 +579,10 @@ function panelDependencies({
   accounts,
   submissions = [],
   authorization = async () => true,
-  activePages = []
+  activePages = [],
+  adminDiagnostics = null,
+  community = null,
+  logger = { error() {} }
 } = {}) {
   const terms = profileTerminology("wos")
   return {
@@ -556,7 +592,6 @@ function panelDependencies({
     poolProvider: () => ({}),
     playerRepositoryFactory: () => ({}),
     playerServiceFactory: () => ({
-      async linkToGuild() {},
       async register({ playerId, locationNumber }) {
         const account = {
           id: `account-${playerId}`,
@@ -588,17 +623,20 @@ function panelDependencies({
           codes: [], activeCount: 0, expiredCount: 0, page, pageSize: 15
         }
       },
-      async adminStatus() { throw new Error("authorization must run before diagnostics") }
+      async adminStatus() {
+        if (!adminDiagnostics) throw new Error("authorization must run before diagnostics")
+        return adminDiagnostics
+      }
     }),
     communityRepositoryFactory: () => ({}),
-    communityServiceFactory: () => ({
+    communityServiceFactory: () => community || ({
       async configuration() { return { settings: null, channelAvailable: false, roleAvailable: false } }
     }),
     runtimeProvider: () => ({
       status: () => ({ verificationEnabled: true, verifierConfigured: true })
     }),
     env: { GIFT_CODE_MAX_AUTO_REDEEM_ACCOUNTS_PER_USER: "2" },
-    logger: { error() {} }
+    logger
   }
 }
 
@@ -694,4 +732,109 @@ test("gift-code administration retains the existing authorization gate", async (
   await handleGiftCodePanelInteraction(command, dependencies)
   assert.equal(authorizationCalls, 1)
   assert.match(command.edited.content, /do not have permission/)
+})
+
+function adminDiagnostics() {
+  return {
+    pending_candidates: 0,
+    active_codes: 0,
+    expired_codes: 0,
+    invalid_codes: 0,
+    restricted_review_codes: 0,
+    pending_redemptions: 0,
+    retry_count: 0
+  }
+}
+
+test("gift-code Configure Channel succeeds independently of banter Apps Script", async () => {
+  const banter = createBanterConfigLookup({
+    fetchAction: async () => { throw Object.assign(new Error("Apps Script 404"), { code: "ERR_BAD_REQUEST" }) },
+    logger: { warn() {} }
+  })
+  assert.equal((await banter.get("777777777777777777")).banterChannelId, "")
+  const configured = []
+  const community = {
+    async configuration() {
+      return { settings: null, channelAvailable: false, roleAvailable: false }
+    },
+    async configureChannel(guildId, channelId) { configured.push({ guildId, channelId }) }
+  }
+  const dependencies = panelDependencies({
+    accounts: [],
+    adminDiagnostics: adminDiagnostics(),
+    community
+  })
+  const command = panelInteraction({ commandName: "gift-codes-admin" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  const configureButton = command.edited.components
+    .flatMap(row => row.components)
+    .find(button => button.data.label === "Configure Channel")
+  const configure = panelInteraction({ customId: configureButton.data.custom_id })
+  await handleGiftCodePanelInteraction(configure, dependencies)
+  const select = panelInteraction({
+    customId: configure.edited.components[0].components[0].data.custom_id,
+    values: ["888888888888888888"]
+  })
+  await handleGiftCodePanelInteraction(select, dependencies)
+  assert.deepEqual(configured, [{
+    guildId: "777777777777777777",
+    channelId: "888888888888888888"
+  }])
+  assert.match(select.edited.content, /Gift Code Administration/)
+})
+
+test("PostgreSQL channel-configuration failure stays unavailable and logs safe SQLSTATE context", async () => {
+  const logs = []
+  const databaseError = Object.assign(
+    new Error("connection failed ADMIN_API_KEY=secret token=discord-token https://db.internal/path"),
+    { code: "08006" }
+  )
+  const dependencies = panelDependencies({
+    accounts: [],
+    adminDiagnostics: adminDiagnostics(),
+    community: {
+      async configuration() {
+        return { settings: null, channelAvailable: false, roleAvailable: false }
+      },
+      async configureChannel() {
+        databaseError.giftCodeHandler = "configure_channel_persist"
+        throw databaseError
+      }
+    },
+    logger: { error(value) { logs.push(value) } }
+  })
+  const command = panelInteraction({ commandName: "gift-codes-admin" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  const configureButton = command.edited.components
+    .flatMap(row => row.components)
+    .find(button => button.data.label === "Configure Channel")
+  const configure = panelInteraction({ customId: configureButton.data.custom_id })
+  await handleGiftCodePanelInteraction(configure, dependencies)
+  const select = panelInteraction({
+    customId: configure.edited.components[0].components[0].data.custom_id,
+    values: ["888888888888888888"]
+  })
+  await handleGiftCodePanelInteraction(select, dependencies)
+  assert.match(select.edited.content, /services are temporarily unavailable/)
+  assert.equal(logs.length, 1)
+  const diagnostic = JSON.parse(logs[0])
+  assert.equal(diagnostic.event, "gift_code_panel_failure")
+  assert.equal(diagnostic.game_profile, "wos")
+  assert.equal(diagnostic.guild_id, "777777777777777777")
+  assert.equal(diagnostic.interaction_category, "component")
+  assert.equal(diagnostic.handler, "configure_channel_persist")
+  assert.equal(diagnostic.error_code, "08006")
+  assert.doesNotMatch(logs[0], /secret|discord-token|db\.internal/)
+})
+
+test("gift-code failure diagnostics classify channel selection without logging custom IDs", () => {
+  const interaction = panelInteraction({ customId: `${IDS.adminChannelSelect}sensitive-session` })
+  const diagnostic = giftCodePanelFailureDiagnostics(
+    interaction,
+    { gameProfile: "wos" },
+    Object.assign(new Error("database unavailable"), { code: "57P01" })
+  )
+  assert.equal(diagnostic.handler, "configure_channel_select")
+  assert.equal(diagnostic.error_code, "57P01")
+  assert.doesNotMatch(JSON.stringify(diagnostic), /sensitive-session/)
 })

@@ -85,19 +85,6 @@ function createPlayerRepository(pool, gameProfile) {
       return result.rows[0] || null
     },
 
-    async linkOwnedAccountsToGuild(discordUserId, guildId) {
-      const result = await pool.query(
-        `INSERT INTO player_account_guilds (game_profile, guild_id, player_account_id)
-         SELECT game_profile, $3, id
-           FROM player_accounts
-          WHERE game_profile = $1 AND discord_user_id = $2
-         ON CONFLICT DO NOTHING
-         RETURNING player_account_id`,
-        [gameProfile, discordUserId, guildId]
-      )
-      return result.rowCount
-    },
-
     async updateLocation({ discordUserId, playerId, newNumber, changeSource = "user_command" }) {
       const client = await pool.connect()
       try {

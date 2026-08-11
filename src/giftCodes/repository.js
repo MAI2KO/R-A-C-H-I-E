@@ -154,12 +154,25 @@ function createGiftCodeRepository(pool, gameProfile) {
             RETURNING *`,
           [current.id, gameProfile, discordUserId, Boolean(enabled)]
         )).rows[0] : current
-        if (guildId) {
-          await client.query(
-            `INSERT INTO player_account_guilds (game_profile, guild_id, player_account_id)
-             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        let newlyEnrolledInGuild = false
+        if (guildId && enabled) {
+          const enrolment = (await client.query(
+            `INSERT INTO player_account_guilds (
+               game_profile, guild_id, player_account_id, gift_code_enrolled,
+               gift_code_first_enabled_at_utc, gift_code_updated_at_utc
+             ) VALUES ($1, $2, $3, true, now(), now())
+             ON CONFLICT (game_profile, guild_id, player_account_id) DO UPDATE
+               SET gift_code_enrolled = true,
+                   gift_code_first_enabled_at_utc = COALESCE(
+                     player_account_guilds.gift_code_first_enabled_at_utc,
+                     now()
+                   ),
+                   gift_code_updated_at_utc = now()
+             WHERE player_account_guilds.gift_code_enrolled = false
+             RETURNING *`,
             [gameProfile, guildId, account.id]
-          )
+          )).rows[0] || null
+          newlyEnrolledInGuild = Boolean(enrolment)
         }
         let engagementEvent = null
         if (enabled) {
@@ -182,7 +195,7 @@ function createGiftCodeRepository(pool, gameProfile) {
               ]
             )
           }
-          if (changed && guildId) {
+          if (newlyEnrolledInGuild && guildId) {
             engagementEvent = (await client.query(
               `INSERT INTO gift_code_engagement_events (
                  id, game_profile, guild_id, event_type,
@@ -215,7 +228,13 @@ function createGiftCodeRepository(pool, gameProfile) {
           ? beforeCount + (changed ? 1 : 0)
           : Math.max(0, beforeCount - (changed ? 1 : 0))
         await client.query("COMMIT")
-        return { account, limitReached: false, enabledCount, engagementEvent }
+        return {
+          account,
+          limitReached: false,
+          enabledCount,
+          engagementEvent,
+          guildEnrolled: guildId ? enabled || newlyEnrolledInGuild : false
+        }
       } catch (error) {
         await client.query("ROLLBACK")
         throw error
@@ -224,9 +243,16 @@ function createGiftCodeRepository(pool, gameProfile) {
       }
     },
 
-    async accountStatuses(discordUserId, playerId = null) {
+    async accountStatuses(discordUserId, playerId = null, guildId = null) {
       const result = await pool.query(
         `SELECT a.*,
+                EXISTS (
+                  SELECT 1 FROM player_account_guilds ag
+                   WHERE ag.game_profile = a.game_profile
+                     AND ag.player_account_id = a.id
+                     AND ag.guild_id = $4
+                     AND ag.gift_code_enrolled = true
+                ) AS guild_gift_code_enrolled,
                 COALESCE(stats.success_count, 0)::integer AS successful_redemptions,
                 latest.status AS last_redemption_status,
                 latest.api_message AS last_redemption_message
@@ -246,7 +272,7 @@ function createGiftCodeRepository(pool, gameProfile) {
           WHERE a.game_profile = $1 AND a.discord_user_id = $2
             AND ($3::varchar IS NULL OR a.player_id = $3)
           ORDER BY a.is_active DESC, a.is_primary DESC, a.created_at_utc, a.id`,
-        [gameProfile, discordUserId, playerId]
+        [gameProfile, discordUserId, playerId, guildId]
       )
       return result.rows
     },

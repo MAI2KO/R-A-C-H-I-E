@@ -30,10 +30,10 @@ function createGiftCodeService({ repository, gameProfile, env = process.env }) {
   const terms = profileTerminology(gameProfile)
   const accountConfig = giftAccountConfig(env)
 
-  async function selectOwnedAccount(discordUserId, playerId = null) {
+  async function selectOwnedAccount(discordUserId, playerId = null, guildId = null) {
     const owner = normalizeDiscordUserId(discordUserId)
     const selectedPlayer = playerId ? normalizePlayerId(playerId, terms.playerLabel) : null
-    const accounts = await repository.accountStatuses(owner, selectedPlayer)
+    const accounts = await repository.accountStatuses(owner, selectedPlayer, guildId)
     if (!accounts.length) {
       throw new GiftCodeError("PLAYER_NOT_FOUND", `No matching ${terms.playerLabel} was found.`)
     }
@@ -67,7 +67,8 @@ function createGiftCodeService({ repository, gameProfile, env = process.env }) {
     },
 
     async setAutomaticRedemption({ discordUserId, guildId = null, playerId = null, enabled }) {
-      const account = await selectOwnedAccount(discordUserId, playerId)
+      const guild = guildId ? normalizeGuildId(guildId) : null
+      const account = await selectOwnedAccount(discordUserId, playerId, guild)
       if (!account.is_active) {
         throw new GiftCodeError("PLAYER_INACTIVE", `That ${terms.playerLabel} is inactive.`)
       }
@@ -75,7 +76,7 @@ function createGiftCodeService({ repository, gameProfile, env = process.env }) {
         discordUserId: normalizeDiscordUserId(discordUserId),
         playerId: account.player_id,
         enabled: Boolean(enabled),
-        guildId: guildId ? normalizeGuildId(guildId) : null,
+        guildId: guild,
         maximumEnabledAccounts: accountConfig.maximumAutoRedeemAccountsPerUser
       })
       if (!result?.account) throw new GiftCodeError("PLAYER_NOT_FOUND", `No active ${terms.playerLabel} was found.`)
@@ -89,16 +90,18 @@ function createGiftCodeService({ repository, gameProfile, env = process.env }) {
       }
       return {
         ...result.account,
+        guild_gift_code_enrolled: result.guildEnrolled,
         enabled_count: result.enabledCount,
         engagement_event: result.engagementEvent,
         maximum_enabled: accountConfig.maximumAutoRedeemAccountsPerUser
       }
     },
 
-    async status({ discordUserId, playerId = null }) {
+    async status({ discordUserId, playerId = null, guildId = null }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const selectedPlayer = playerId ? normalizePlayerId(playerId, terms.playerLabel) : null
-      return repository.accountStatuses(owner, selectedPlayer)
+      const guild = guildId ? normalizeGuildId(guildId) : null
+      return repository.accountStatuses(owner, selectedPlayer, guild)
     },
 
     async history({ discordUserId, playerId = null, limit = 10 }) {

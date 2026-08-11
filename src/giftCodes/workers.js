@@ -226,7 +226,11 @@ function createRedemptionProcessor({
       await notify(claim, transition.status)
       if (community && !transition.retryable) {
         try {
-          await community.onRedemptionUpdated(claim.gift_code_id, transition.status)
+          await community.onRedemptionUpdated(
+            claim.gift_code_id,
+            claim.player_account_id,
+            transition.status
+          )
         } catch (error) {
           logger.warn(`[Gift codes] Community progress failed: ${sanitizeWorkerError(error)}`)
         }

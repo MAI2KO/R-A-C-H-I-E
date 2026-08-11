@@ -28,6 +28,14 @@ class ContributorRoleError extends Error {
   }
 }
 
+class GiftCodeCommunityError extends Error {
+  constructor(code, message) {
+    super(message)
+    this.name = "GiftCodeCommunityError"
+    this.code = code
+  }
+}
+
 function safeDiscordError(error) {
   return String(error?.code || error?.name || "discord_delivery_failed").slice(0, 100)
 }
@@ -95,11 +103,21 @@ function createGiftCodeCommunityService({
   async function resolveChannel(guild, channelId) {
     const channel = await guild.channels.fetch(channelId)
     if (!channel || !TEXT_CHANNEL_TYPES.has(channel.type) || !channel.isSendable?.()) {
-      throw new Error("configured gift-code channel is unavailable")
+      const error = new GiftCodeCommunityError(
+        "GIFT_CODE_CHANNEL_UNAVAILABLE",
+        "That channel is unavailable to the bot. Choose a visible text channel."
+      )
+      error.giftCodeHandler = "configure_channel_resolve"
+      throw error
     }
     const permissions = channel.permissionsFor?.(guild.members.me)
     if (permissions && !permissions.has(PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages)) {
-      throw new Error("configured gift-code channel is not sendable")
+      const error = new GiftCodeCommunityError(
+        "GIFT_CODE_CHANNEL_NOT_SENDABLE",
+        "The bot needs View Channel and Send Messages in that channel."
+      )
+      error.giftCodeHandler = "configure_channel_permissions"
+      throw error
     }
     return channel
   }
@@ -246,7 +264,7 @@ function createGiftCodeCommunityService({
     if (payload.event_type === "auto_redeem_join") {
       const [stats, accountRows] = await Promise.all([
         repository.communityStats(payload.guild_id),
-        repository.accountOwnerStats(payload.discord_user_id)
+        repository.accountOwnerStats(payload.discord_user_id, payload.guild_id)
       ])
       const message = await channel.send({
         content: joinMessage(payload, stats, accountRows, terms, maximumEnabledAccounts),
@@ -261,7 +279,7 @@ function createGiftCodeCommunityService({
         now: now()
       })
     }
-    const progress = await repository.codeProgress(payload.gift_code_id)
+    const progress = await repository.codeProgress(payload.gift_code_id, payload.guild_id)
     const message = await channel.send({
       content: codeProgressMessage(payload, progress, terms, { initial: true }),
       allowedMentions: PUBLIC_MENTIONS(payload.discord_user_id),
@@ -341,9 +359,26 @@ function createGiftCodeCommunityService({
     terms,
 
     async configureChannel(guildId, channelId) {
-      const guild = await resolveGuild(guildId)
-      const channel = await resolveChannel(guild, channelId)
-      return repository.setChannel(guildId, channel.id)
+      let guild
+      try {
+        guild = await resolveGuild(guildId)
+      } catch (error) {
+        error.giftCodeHandler = "configure_channel_guild"
+        throw error
+      }
+      let channel
+      try {
+        channel = await resolveChannel(guild, channelId)
+      } catch (error) {
+        error.giftCodeHandler ||= "configure_channel_resolve"
+        throw error
+      }
+      try {
+        return await repository.setChannel(guildId, channel.id)
+      } catch (error) {
+        error.giftCodeHandler = "configure_channel_persist"
+        throw error
+      }
     },
 
     async configuration(guildId) {
@@ -387,8 +422,14 @@ function createGiftCodeCommunityService({
       return deliverVerificationResult(claim)
     },
 
-    async onRedemptionUpdated(giftCodeId, resultStatus) {
-      const refresh = await repository.claimProgressRefresh(giftCodeId, resultStatus, workerId, now())
+    async onRedemptionUpdated(giftCodeId, playerAccountId, resultStatus) {
+      const refresh = await repository.claimProgressRefresh(
+        giftCodeId,
+        playerAccountId,
+        resultStatus,
+        workerId,
+        now()
+      )
       if (!refresh) return false
       try {
         const payload = await repository.getEventPayload(refresh.event.id)
@@ -460,6 +501,7 @@ module.exports = {
   CONTRIBUTOR_FALLBACK,
   VERIFICATION_RESULT_MESSAGES,
   ContributorRoleError,
+  GiftCodeCommunityError,
   safeDiscordError,
   eventNonce,
   verificationResultMessage,

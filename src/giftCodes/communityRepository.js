@@ -65,6 +65,19 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
           await client.query("COMMIT")
           return []
         }
+        const relevantQueuedCount = (await client.query(
+          `SELECT COUNT(DISTINCT r.id)::integer AS count
+             FROM gift_code_redemptions r
+             JOIN player_accounts a
+               ON a.id = r.player_account_id AND a.game_profile = r.game_profile
+             JOIN player_account_guilds ag
+               ON ag.player_account_id = a.id AND ag.game_profile = a.game_profile
+              AND ag.guild_id = $3 AND ag.gift_code_enrolled = true
+            WHERE r.game_profile = $1 AND r.gift_code_id = $2
+              AND a.is_active = true AND a.gift_redemption_enabled = true
+              AND r.status IN ('queued', 'claimed', 'rate_limited', 'temporary_error')`,
+          [gameProfile, giftCodeId, attribution.guild_id]
+        )).rows[0].count
         const events = []
         if (settings.announcements_enabled && settings.gift_code_channel_id) {
           const event = (await client.query(
@@ -76,8 +89,8 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
             [
               crypto.randomUUID(), gameProfile, attribution.guild_id,
               giftCodeId, attribution.submitted_by_discord_user_id,
-              Math.max(0, Number(queuedCount) || 0),
-              { queuedCount: Number(queuedCount) || 0 }
+              relevantQueuedCount,
+              { queuedCount: relevantQueuedCount }
             ]
           )).rows[0]
           if (event) events.push(event)
@@ -369,7 +382,7 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
       )).rows[0] || null
     },
 
-    async codeProgress(giftCodeId) {
+    async codeProgress(giftCodeId, guildId) {
       return (await pool.query(
         `SELECT
            COUNT(*) FILTER (WHERE status = 'success')::integer AS successful,
@@ -378,13 +391,18 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
            COUNT(*) FILTER (WHERE status = 'restricted')::integer AS restricted,
            COUNT(*) FILTER (WHERE status IN ('queued', 'claimed', 'rate_limited', 'temporary_error'))::integer AS remaining,
            COUNT(*)::integer AS total
-         FROM gift_code_redemptions
-         WHERE game_profile = $1 AND gift_code_id = $2`,
-        [gameProfile, giftCodeId]
+         FROM gift_code_redemptions r
+         JOIN player_account_guilds ag
+           ON ag.player_account_id = r.player_account_id
+          AND ag.game_profile = r.game_profile
+          AND ag.guild_id = $3
+          AND ag.gift_code_enrolled = true
+         WHERE r.game_profile = $1 AND r.gift_code_id = $2`,
+        [gameProfile, giftCodeId, guildId]
       )).rows[0]
     },
 
-    async accountOwnerStats(discordUserId) {
+    async accountOwnerStats(discordUserId, guildId) {
       return (await pool.query(
         `SELECT
            COUNT(DISTINCT a.id) FILTER (
@@ -392,14 +410,17 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
            )::integer AS "enabledCount",
            COUNT(r.id) FILTER (WHERE r.status = 'success')::integer AS "successfulRedemptions"
          FROM player_accounts a
+         JOIN player_account_guilds ag
+           ON ag.player_account_id = a.id AND ag.game_profile = a.game_profile
+          AND ag.guild_id = $3 AND ag.gift_code_enrolled = true
          LEFT JOIN gift_code_redemptions r
            ON r.player_account_id = a.id AND r.game_profile = a.game_profile
          WHERE a.game_profile = $1 AND a.discord_user_id = $2`,
-        [gameProfile, discordUserId]
+        [gameProfile, discordUserId, guildId]
       )).rows[0]
     },
 
-    async claimProgressRefresh(giftCodeId, resultStatus, workerId, now, {
+    async claimProgressRefresh(giftCodeId, playerAccountId, resultStatus, workerId, now, {
       minimumChange = 5,
       minimumSeconds = 60
     } = {}) {
@@ -449,8 +470,18 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
           WHERE game_profile = $1 AND gift_code_id = $2
             AND event_type = 'code_progress' AND status IN ('completed', 'claimed')
             AND finalized_at_utc IS NULL
+            AND EXISTS (
+              SELECT 1 FROM player_account_guilds ag
+               WHERE ag.game_profile = gift_code_engagement_events.game_profile
+                 AND ag.guild_id = gift_code_engagement_events.guild_id
+                 AND ag.player_account_id = $8
+                 AND ag.gift_code_enrolled = true
+            )
           RETURNING *`,
-        [gameProfile, giftCodeId, resultStatus, workerId, now, minimumChange, minimumSeconds]
+        [
+          gameProfile, giftCodeId, resultStatus, workerId, now,
+          minimumChange, minimumSeconds, playerAccountId
+        ]
       )).rows[0] || null
       if (!event || event.status !== "claimed" || event.claimed_by_worker !== workerId) return null
       const progress = {
@@ -491,6 +522,7 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
          FROM player_accounts a
          LEFT JOIN player_account_guilds ag
            ON ag.player_account_id = a.id AND ag.game_profile = a.game_profile
+          AND ag.gift_code_enrolled = true
          LEFT JOIN gift_code_redemptions r
            ON r.player_account_id = a.id AND r.game_profile = a.game_profile
          WHERE a.game_profile = $1

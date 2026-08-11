@@ -68,12 +68,6 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
       return repository.listOwnedAccounts(owner)
     },
 
-    async linkToGuild({ discordUserId, guildId }) {
-      const owner = normalizeDiscordUserId(discordUserId)
-      const guild = normalizeGuildId(guildId)
-      return repository.linkOwnedAccountsToGuild(owner, guild)
-    },
-
     async changeLocation({ discordUserId, playerId, locationNumber }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const player = normalizePlayerId(playerId, terms.playerLabel)

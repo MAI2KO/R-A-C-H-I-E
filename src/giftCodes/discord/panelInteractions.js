@@ -18,7 +18,7 @@ const { createPlayerService, PlayerAccountError } = require("../playerService")
 const { createGiftCodeRepository } = require("../repository")
 const { createGiftCodeService, GiftCodeError } = require("../service")
 const { createGiftCodeCommunityRepository } = require("../communityRepository")
-const { createGiftCodeCommunityService } = require("../communityService")
+const { createGiftCodeCommunityService, GiftCodeCommunityError } = require("../communityService")
 const { giftAccountConfig } = require("../config")
 const { PlayerValidationError } = require("../validation")
 const { getPlayerGiftCodesHealth } = require("../runtime")
@@ -152,8 +152,12 @@ function giftPanel({ sessionId, accounts, selected, terms, maximumEnabled }) {
     new ButtonBuilder().setCustomId(`${IDS.giftSubmit}${sessionId}`)
       .setLabel("Submit Gift Code").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`${IDS.giftToggle}${sessionId}`)
-      .setLabel(selected.gift_redemption_enabled ? "Disable Auto-Redeem" : "Enable Auto-Redeem")
-      .setStyle(selected.gift_redemption_enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      .setLabel(selected.gift_redemption_enabled
+        ? (selected.guild_gift_code_enrolled ? "Disable Auto-Redeem" : "Join This Server")
+        : "Enable Auto-Redeem")
+      .setStyle(selected.gift_redemption_enabled && selected.guild_gift_code_enrolled
+        ? ButtonStyle.Danger
+        : ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`${IDS.giftHistory}${sessionId}`)
       .setLabel("Redemption History").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`${IDS.giftActive}${sessionId}`)
@@ -167,6 +171,7 @@ function giftPanel({ sessionId, accounts, selected, terms, maximumEnabled }) {
       `Selected player: ${selected.player_id}`,
       `${terms.locationLabel}: ${selected.state_or_kingdom_number}`,
       `Auto-redemption: ${selected.gift_redemption_enabled ? "Enabled" : "Disabled"}`,
+      `This server: ${selected.guild_gift_code_enrolled ? "Enrolled" : "Not enrolled"}`,
       `Accounts enabled: ${enabledCount} / ${maximumEnabled}`,
       `Recent result: ${selected.last_redemption_status || "None"}`
     ].join("\n"),
@@ -289,6 +294,44 @@ function isPanelInteraction(interaction) {
   return COMMANDS.has(interaction.commandName) || String(interaction.customId || "").startsWith(PREFIX)
 }
 
+function giftCodePanelHandler(interaction) {
+  const customId = String(interaction.customId || "")
+  if (interaction.commandName) return `command:${interaction.commandName}`
+  const handlers = [
+    [IDS.adminChannelSelect, "configure_channel_select"],
+    [IDS.adminChannel, "configure_channel"],
+    [IDS.adminVerify, "verify_code"],
+    [IDS.adminInspect, "inspect_code"],
+    [IDS.adminQueue, "queue_status"],
+    [IDS.adminStats, "community_stats"],
+    [IDS.adminRefresh, "admin_refresh"]
+  ]
+  return handlers.find(([prefix]) => customId.startsWith(prefix))?.[1] || "panel_interaction"
+}
+
+function safePanelErrorMessage(error) {
+  return String(error?.message || "Gift-code panel failed")
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/(admin_api_key|authorization|token)\s*[=:]\s*\S+/gi, "$1=[redacted]")
+    .slice(0, 300)
+}
+
+function giftCodePanelFailureDiagnostics(interaction, health, error) {
+  const guildId = String(interaction.guildId || "")
+  return {
+    event: "gift_code_panel_failure",
+    game_profile: health?.gameProfile || "unknown",
+    guild_id: /^[0-9]{1,32}$/.test(guildId) ? guildId : undefined,
+    interaction_category: interaction.isChatInputCommand?.()
+      ? "command"
+      : interaction.isModalSubmit?.() ? "modal" : "component",
+    handler: String(error?.giftCodeHandler || giftCodePanelHandler(interaction)).slice(0, 100),
+    error_name: String(error?.name || "Error").slice(0, 100),
+    error_code: String(error?.code || "unknown").slice(0, 100),
+    error_message: safePanelErrorMessage(error)
+  }
+}
+
 async function handleGiftCodePanelInteraction(interaction, {
   userCanManageServer,
   healthProvider = getPlayerGiftCodesHealth,
@@ -380,8 +423,7 @@ async function handleGiftCodePanelInteraction(interaction, {
     }
 
     async function loadAccounts() {
-      await players.linkToGuild({ discordUserId: interaction.user.id, guildId: interaction.guildId })
-      return gifts.status({ discordUserId: interaction.user.id })
+      return gifts.status({ discordUserId: interaction.user.id, guildId: interaction.guildId })
     }
 
     async function renderPlayer(sessionId, preferredPlayerId = null) {
@@ -499,13 +541,17 @@ async function handleGiftCodePanelInteraction(interaction, {
       return true
     }
     if (customId.startsWith(IDS.giftToggle)) {
-      const accounts = await gifts.status({ discordUserId: interaction.user.id, playerId: session.data.selectedPlayerId })
+      const accounts = await gifts.status({
+        discordUserId: interaction.user.id,
+        playerId: session.data.selectedPlayerId,
+        guildId: interaction.guildId
+      })
       const current = accounts[0]
       const account = await gifts.setAutomaticRedemption({
         discordUserId: interaction.user.id,
         guildId: interaction.guildId,
         playerId: session.data.selectedPlayerId,
-        enabled: !current.gift_redemption_enabled
+        enabled: !(current.gift_redemption_enabled && current.guild_gift_code_enrolled)
       })
       await community.onAutoRedemptionEnabled(account.engagement_event)
       await renderGift(sessionId, account.player_id)
@@ -554,7 +600,12 @@ async function handleGiftCodePanelInteraction(interaction, {
     }
     if (customId.startsWith(IDS.adminChannelSelect)) {
       await community.configureChannel(interaction.guildId, interaction.values[0])
-      await renderAdmin(sessionId)
+      try {
+        await renderAdmin(sessionId)
+      } catch (error) {
+        error.giftCodeHandler = "configure_channel_reload"
+        throw error
+      }
       return true
     }
     if (customId.startsWith(IDS.verifyModal)) {
@@ -610,11 +661,14 @@ async function handleGiftCodePanelInteraction(interaction, {
     const expected = error instanceof PlayerValidationError
       || error instanceof PlayerAccountError
       || error instanceof GiftCodeError
+      || error instanceof GiftCodeCommunityError
       || error instanceof InteractionSessionError
     const message = expected
       ? error.message
       : "Player and gift-code services are temporarily unavailable."
-    if (!expected) logger.error(`[Gift codes] Panel failed: ${String(error?.code || error?.name || "error").slice(0, 100)}`)
+    if (!(error instanceof InteractionSessionError)) {
+      logger.error(JSON.stringify(giftCodePanelFailureDiagnostics(interaction, health, error)))
+    }
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ content: message, components: [] }).catch(() => {})
     } else {
@@ -635,6 +689,9 @@ module.exports = {
   registrationModal,
   adminPanel,
   formatCommunityStats,
+  giftCodePanelHandler,
+  safePanelErrorMessage,
+  giftCodePanelFailureDiagnostics,
   isPanelInteraction,
   handleGiftCodePanelInteraction
 }

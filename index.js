@@ -29,6 +29,7 @@ const {
 } = require("./src/interactionResponses")
 const { getPlayerCommandData, getGiftCommandData } = require("./src/giftCodes/discord/commands")
 const { handleGiftCodePanelInteraction } = require("./src/giftCodes/discord/panelInteractions")
+const { createBanterConfigLookup } = require("./src/banterConfig")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -75,8 +76,15 @@ const nameTriggerCooldowns = new Map()
 const BOOKING_PAGE_SIZE = 25
 const BOOKING_TTL_MS = 15 * 60 * 1000
 
-const banterConfigCache = new Map()
 const BANTER_CONFIG_TTL_MS = 5 * 60 * 1000
+const banterConfigLookup = createBanterConfigLookup({
+  ttlMs: BANTER_CONFIG_TTL_MS,
+  fetchAction: (action, guildId) => postToAppsScript({
+    action,
+    adminKey: process.env.ADMIN_API_KEY,
+    discordServerId: guildId
+  })
+})
 
 
 
@@ -943,36 +951,7 @@ async function sendAnnouncementToLinkedServers(interaction, announcement) {
 }
 
 async function getBanterConfigForGuild(guildId) {
-  const cached = banterConfigCache.get(guildId)
-
-  if (cached && Date.now() - cached.timestamp < BANTER_CONFIG_TTL_MS) {
-    return cached.data
-  }
-
-  const [channelResult, spiceResult] = await Promise.all([
-    postToAppsScript({
-      action: "get_banter_channel_for_server",
-      adminKey: process.env.ADMIN_API_KEY,
-      discordServerId: guildId
-    }),
-    postToAppsScript({
-      action: "get_banter_spice_for_server",
-      adminKey: process.env.ADMIN_API_KEY,
-      discordServerId: guildId
-    })
-  ])
-
-  const data = {
-    banterChannelId: String(channelResult.banter_channel_id || "").trim(),
-    spiceLevel: String(spiceResult.banter_spice_level || "standard").trim().toLowerCase()
-  }
-
-  banterConfigCache.set(guildId, {
-    data,
-    timestamp: Date.now()
-  })
-
-  return data
+  return banterConfigLookup.get(guildId)
 }
 
 async function triggerBanter(channel, messages, spiceLevel = "standard", channelId = null) {
@@ -2779,6 +2758,7 @@ client.on("interactionCreate", async interaction => {
     return
   }
 
+  banterConfigLookup.invalidate(interaction.guildId)
   await interaction.editReply(`✅ ${game.botName} banter channel set to #${channel.name}.`)
   return
 }
@@ -2802,6 +2782,7 @@ if (interaction.commandName === "clear-banter-channel") {
     return
   }
 
+  banterConfigLookup.invalidate(interaction.guildId)
   await interaction.editReply(`✅ ${game.botName} banter channel cleared.`)
   return
 }
@@ -2828,7 +2809,7 @@ if (interaction.commandName === "set-banter-spice") {
     return
   }
 
-  banterConfigCache.delete(interaction.guildId)
+  banterConfigLookup.invalidate(interaction.guildId)
 
   await interaction.editReply(`🔥 Banter spice level set to ${level}.`)
   return

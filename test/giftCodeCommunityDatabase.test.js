@@ -29,8 +29,8 @@ test("community configuration, auto-redemption cap and engagement state are dura
       options: `-c search_path=${schema}`
     })
     const first = await runMigrations({ pool, logger })
-    assert.equal(first.applied.length, 14)
-    assert.equal(first.applied.at(-1), "014_gift_code_community_reconciliation.sql")
+    assert.equal(first.applied.length, 15)
+    assert.equal(first.applied.at(-1), "015_gift_code_guild_enrolment.sql")
     assert.deepEqual((await runMigrations({ pool, logger })).applied, [])
 
     const wosCommunity = createGiftCodeCommunityRepository(pool, "wos")
@@ -209,6 +209,7 @@ test("community configuration, auto-redemption cap and engagement state are dura
     for (let index = 1; index < 5; index += 1) {
       assert.equal(await wosCommunity.claimProgressRefresh(
         firstSubmission.giftCode.id,
+        currentlyEnabled[0].id,
         "success",
         "progress-worker",
         new Date("2026-08-11T10:00:10Z")
@@ -216,6 +217,7 @@ test("community configuration, auto-redemption cap and engagement state are dura
     }
     const refresh = await wosCommunity.claimProgressRefresh(
       firstSubmission.giftCode.id,
+      currentlyEnabled[0].id,
       "already_redeemed",
       "progress-worker",
       new Date("2026-08-11T10:00:10Z")
@@ -348,6 +350,43 @@ test("migration 014 reconciles the earlier migration 013 community schema", {
     )).rows[0].indexdef
     assert.match(pendingIndex, /next_attempt_at_utc/)
     assert.match(pendingIndex, /failed/)
+
+    await pool.query(`
+      INSERT INTO player_accounts (
+        id, game_profile, discord_user_id, player_id, state_or_kingdom_number
+      ) VALUES (
+        '11111111-1111-4111-8111-111111111111', 'wos',
+        '100000000000000001', '200000001', '689'
+      );
+      INSERT INTO player_account_guilds (
+        game_profile, guild_id, player_account_id
+      ) VALUES (
+        'wos', '700000000000000001', '11111111-1111-4111-8111-111111111111'
+      );
+      INSERT INTO gift_code_engagement_events (
+        id, game_profile, guild_id, event_type, player_account_id, discord_user_id, status
+      ) VALUES (
+        '22222222-2222-4222-8222-222222222222', 'wos',
+        '700000000000000001', 'auto_redeem_join',
+        '11111111-1111-4111-8111-111111111111', '100000000000000001', 'completed'
+      );
+    `)
+
+    await fs.copyFile(
+      path.join(DEFAULT_MIGRATIONS_DIR, "015_gift_code_guild_enrolment.sql"),
+      path.join(migrationsDir, "015_gift_code_guild_enrolment.sql")
+    )
+    assert.deepEqual((await runMigrations({ pool, migrationsDir, logger })).applied, [
+      "015_gift_code_guild_enrolment.sql"
+    ])
+    assert.deepEqual((await runMigrations({ pool, migrationsDir, logger })).applied, [])
+    const legacyEnrolment = (await pool.query(
+      `SELECT gift_code_enrolled, gift_code_first_enabled_at_utc
+         FROM player_account_guilds
+        WHERE player_account_id = '11111111-1111-4111-8111-111111111111'`
+    )).rows[0]
+    assert.equal(legacyEnrolment.gift_code_enrolled, true)
+    assert.ok(legacyEnrolment.gift_code_first_enabled_at_utc)
 
     const community = createGiftCodeCommunityRepository(pool, "wos")
     const gifts = createGiftCodeRepository(pool, "wos")
