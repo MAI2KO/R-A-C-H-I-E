@@ -55,7 +55,7 @@ Set `PLAYER_GIFT_CODES_ENABLED=true` to register the profile-specific `/player-r
 
 Migration 011 also establishes case-sensitive gift codes, source/submission provenance, and restart-safe redemption identities with initial Player ID and State/Kingdom snapshots. It does not automatically redeem, discover, scrape, announce, or bulk-process codes. See [Player Accounts And Gift Codes](docs/player-gift-codes.md).
 
-Migration 012 adds durable verification claims, immutable API-attempt history, notification state, and concurrency-safe redemption workers. Migration 013 adds profile-scoped guild settings, account/guild links, and restart-safe engagement delivery state. `/gift-codes` provides candidate submission, per-account opt-in/out, history, and private status. `/gift-codes-admin` provides authorized diagnostics, native channel configuration, contributor-role health, community statistics, and controlled one-code verification. Both live Century workers default to disabled.
+Migration 012 adds durable verification claims, immutable API-attempt history, notification state, and concurrency-safe redemption workers. Migration 013 adds profile-scoped guild settings, account/guild links, and restart-safe engagement delivery state. Migration 014 reconciles earlier applied 013 schemas with the final contributor-role and engagement-retry contract. `/gift-codes` provides candidate submission, per-account opt-in/out, history, and private status. `/gift-codes-admin` provides authorized diagnostics, native channel configuration, contributor-role health, community statistics, and controlled one-code verification. Both live Century workers default to disabled.
 
 ## Installation
 
@@ -98,7 +98,7 @@ When only the player/gift-code subsystem is enabled, the same portable command i
 PLAYER_GIFT_CODES_ENABLED=true npm run migrate
 ```
 
-Migration files are append-only. Migrations 001 through 010 own the scheduler and state-event history described above. Migration 011 adds canonical profile-scoped player accounts, transfer history, gift codes, submissions, sources, and durable redemption identities. Migration 012 adds controlled verification/redemption claims and per-call attempt history. Migration 013 adds gift-code guild settings, account/guild links, and idempotent community-engagement events. Existing channels, schedules, state links, sent history, booking sheets, and Apps Script records are preserved. Run migrations again to confirm that zero files reapply.
+Migration files are append-only. Migrations 001 through 010 own the scheduler and state-event history described above. Migration 011 adds canonical profile-scoped player accounts, transfer history, gift codes, submissions, sources, and durable redemption identities. Migration 012 adds controlled verification/redemption claims and per-call attempt history. Migration 013 adds gift-code guild settings, account/guild links, and idempotent community-engagement events. Migration 014 safely reconciles an earlier applied 013 revision without changing existing engagement records. Existing channels, schedules, state links, sent history, booking sheets, and Apps Script records are preserved. Run migrations again to confirm that zero files reapply.
 
 ## Testing
 

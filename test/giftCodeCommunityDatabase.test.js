@@ -1,8 +1,11 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const fs = require("node:fs/promises")
+const os = require("node:os")
+const path = require("node:path")
 const { Pool } = require("pg")
 
-const { runMigrations } = require("../src/migrate")
+const { DEFAULT_MIGRATIONS_DIR, runMigrations } = require("../src/migrate")
 const { createPlayerRepository } = require("../src/giftCodes/playerRepository")
 const { createPlayerService } = require("../src/giftCodes/playerService")
 const { createGiftCodeRepository } = require("../src/giftCodes/repository")
@@ -26,8 +29,8 @@ test("community configuration, auto-redemption cap and engagement state are dura
       options: `-c search_path=${schema}`
     })
     const first = await runMigrations({ pool, logger })
-    assert.equal(first.applied.length, 13)
-    assert.equal(first.applied.at(-1), "013_gift_code_community.sql")
+    assert.equal(first.applied.length, 14)
+    assert.equal(first.applied.at(-1), "014_gift_code_community_reconciliation.sql")
     assert.deepEqual((await runMigrations({ pool, logger })).applied, [])
 
     const wosCommunity = createGiftCodeCommunityRepository(pool, "wos")
@@ -232,5 +235,182 @@ test("community configuration, auto-redemption cap and engagement state are dura
     await pool?.end().catch(() => {})
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
     await admin.end()
+  }
+})
+
+test("migration 014 reconciles the earlier migration 013 community schema", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 })
+  const schema = `gift_community_reconcile_${process.pid}_${Date.now()}`
+  const migrationsDir = await fs.mkdtemp(path.join(os.tmpdir(), "rachie-community-migrations-"))
+  let pool
+  try {
+    await admin.query(`CREATE SCHEMA "${schema}"`)
+    pool = new Pool({
+      connectionString: databaseUrl,
+      max: 8,
+      options: `-c search_path=${schema}`
+    })
+    const files = (await fs.readdir(DEFAULT_MIGRATIONS_DIR))
+      .filter(file => /^\d+.*\.sql$/.test(file) && file < "014_")
+    await Promise.all(files.map(file => fs.copyFile(
+      path.join(DEFAULT_MIGRATIONS_DIR, file),
+      path.join(migrationsDir, file)
+    )))
+    assert.equal((await runMigrations({ pool, migrationsDir, logger })).applied.length, 13)
+
+    // Reproduce the exact schema drift from the earlier applied 013 revision.
+    await pool.query(`
+      ALTER TABLE gift_code_guild_settings
+        DROP CONSTRAINT gift_code_guild_settings_role_status_check,
+        DROP COLUMN contributor_role_status,
+        DROP COLUMN contributor_role_last_error,
+        DROP COLUMN contributor_role_claimed_by,
+        DROP COLUMN contributor_role_claimed_until_utc;
+      DROP INDEX gift_code_engagement_pending_idx;
+      ALTER TABLE gift_code_engagement_events DROP COLUMN next_attempt_at_utc;
+      CREATE INDEX gift_code_engagement_pending_idx
+        ON gift_code_engagement_events (game_profile, status, created_at_utc, id)
+        WHERE status IN ('pending', 'claimed');
+      INSERT INTO gift_code_guild_settings (
+        game_profile, guild_id, contributor_role_id
+      ) VALUES
+        ('wos', '700000000000000001', '900000000000000001'),
+        ('wos', '700000000000000002', NULL);
+    `)
+    await fs.copyFile(
+      path.join(DEFAULT_MIGRATIONS_DIR, "014_gift_code_community_reconciliation.sql"),
+      path.join(migrationsDir, "014_gift_code_community_reconciliation.sql")
+    )
+
+    const concurrent = await Promise.all([
+      runMigrations({ pool, migrationsDir, logger }),
+      runMigrations({ pool, migrationsDir, logger })
+    ])
+    assert.deepEqual(concurrent.map(result => result.applied.length).sort(), [0, 1])
+    assert.deepEqual(concurrent.flatMap(result => result.applied), [
+      "014_gift_code_community_reconciliation.sql"
+    ])
+    assert.deepEqual((await runMigrations({ pool, migrationsDir, logger })).applied, [])
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count FROM schema_migrations
+        WHERE version = '014_gift_code_community_reconciliation.sql'`
+    )).rows[0].count, 1)
+
+    const columns = (await pool.query(
+      `SELECT table_name, column_name, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = $1
+          AND table_name IN ('gift_code_guild_settings', 'gift_code_engagement_events')`,
+      [schema]
+    )).rows
+    for (const name of [
+      "contributor_role_status", "contributor_role_last_error",
+      "contributor_role_claimed_by", "contributor_role_claimed_until_utc"
+    ]) {
+      assert.ok(columns.some(column =>
+        column.table_name === "gift_code_guild_settings" && column.column_name === name
+      ), `missing reconciled settings column ${name}`)
+    }
+    const roleStatus = columns.find(column =>
+      column.table_name === "gift_code_guild_settings"
+        && column.column_name === "contributor_role_status"
+    )
+    assert.equal(roleStatus.is_nullable, "NO")
+    assert.match(roleStatus.column_default, /unconfigured/)
+    const reconciledSettings = (await pool.query(
+      `SELECT guild_id, contributor_role_status
+         FROM gift_code_guild_settings
+        WHERE guild_id IN ('700000000000000001', '700000000000000002')
+        ORDER BY guild_id`
+    )).rows
+    assert.deepEqual(reconciledSettings, [
+      { guild_id: "700000000000000001", contributor_role_status: "ready" },
+      { guild_id: "700000000000000002", contributor_role_status: "unconfigured" }
+    ])
+    const roleConstraint = (await pool.query(
+      `SELECT convalidated
+         FROM pg_constraint
+        WHERE conrelid = 'gift_code_guild_settings'::regclass
+          AND conname = 'gift_code_guild_settings_role_status_check'`
+    )).rows[0]
+    assert.deepEqual(roleConstraint, { convalidated: true })
+    assert.ok(columns.some(column =>
+      column.table_name === "gift_code_engagement_events"
+        && column.column_name === "next_attempt_at_utc"
+    ))
+    const pendingIndex = (await pool.query(
+      `SELECT indexdef FROM pg_indexes
+        WHERE schemaname = $1 AND indexname = 'gift_code_engagement_pending_idx'`,
+      [schema]
+    )).rows[0].indexdef
+    assert.match(pendingIndex, /next_attempt_at_utc/)
+    assert.match(pendingIndex, /failed/)
+
+    const community = createGiftCodeCommunityRepository(pool, "wos")
+    const gifts = createGiftCodeRepository(pool, "wos")
+    const guildId = "777777777777777777"
+    const ownerId = "111111111111111111"
+    await community.setChannel(guildId, "888888888888888888")
+    const submission = await gifts.recordSubmission({
+      code: "ReconciledCode",
+      submittedByDiscordUserId: ownerId,
+      metadata: { guildId }
+    })
+    await pool.query(
+      `UPDATE gift_codes SET status = 'active', verification_state = 'complete',
+          verified_at_utc = now() WHERE id = $1`,
+      [submission.giftCode.id]
+    )
+    const events = await community.prepareCodeEngagement(submission.giftCode.id, 2)
+    assert.deepEqual(events.map(event => event.event_type).sort(), ["code_progress", "contributor_role"])
+
+    const roleClaim = await community.claimContributorRoleProvision(
+      guildId, "role-worker", new Date("2026-08-11T10:00:00Z")
+    )
+    assert.equal(roleClaim.contributor_role_status, "claiming")
+    assert.equal((await community.completeContributorRoleProvision(
+      guildId, "role-worker", "999999999999999999", new Date("2026-08-11T10:00:01Z")
+    )).contributor_role_status, "ready")
+
+    const roleEvent = events.find(event => event.event_type === "contributor_role")
+    assert.ok(await community.claimEvent(
+      roleEvent.id, "role-event-worker", new Date("2026-08-11T10:00:02Z")
+    ))
+    assert.equal((await community.completeEvent(roleEvent.id, "role-event-worker", {
+      now: new Date("2026-08-11T10:00:03Z")
+    })).status, "completed")
+
+    const progressEvent = events.find(event => event.event_type === "code_progress")
+    assert.ok(await community.claimEvent(
+      progressEvent.id, "event-worker", new Date("2026-08-11T10:01:00Z")
+    ))
+    await community.failEvent(
+      progressEvent.id,
+      "event-worker",
+      "TEST_RETRY",
+      new Date("2026-08-11T10:01:01Z"),
+      { retryAt: new Date("2026-08-11T10:01:02Z") }
+    )
+    const retry = await community.claimNextPending(
+      "retry-worker", new Date("2026-08-11T10:01:03Z")
+    )
+    assert.equal(retry.id, progressEvent.id)
+    const completed = await community.completeEvent(progressEvent.id, "retry-worker", {
+      channelId: "888888888888888888",
+      messageId: "555555555555555555",
+      progressCount: 1,
+      progress: { successful: 1, already_redeemed: 0, account_issues: 0, restricted: 0, remaining: 1 },
+      now: new Date("2026-08-11T10:01:04Z")
+    })
+    assert.equal(completed.progress_successful, 1)
+    assert.equal(completed.next_attempt_at_utc, null)
+    assert.equal((await community.communityStats(guildId)).verified_codes, 1)
+  } finally {
+    await pool?.end().catch(() => {})
+    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
+    await admin.end()
+    await fs.rm(migrationsDir, { recursive: true, force: true })
   }
 })
