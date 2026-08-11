@@ -408,6 +408,34 @@ function createGiftCodeRepository(pool, gameProfile) {
               AND processing_status IN ('pending_verification', 'received')`,
           [gameProfile, updated.id, updated.code]
         )
+        if (updated.status !== "active" && verificationState !== "retry") {
+          await client.query(
+            `UPDATE gift_code_submissions
+                SET raw_metadata = jsonb_set(
+                  raw_metadata,
+                  '{verificationResultNotification}',
+                  jsonb_build_object(
+                    'status', 'pending',
+                    'classification', $3::varchar,
+                    'createdAt', $4::timestamptz
+                  ),
+                  true
+                )
+              WHERE id = (
+                SELECT id FROM gift_code_submissions
+                 WHERE game_profile = $1
+                   AND submitted_code = $2
+                   AND duplicate_of_gift_code_id IS NULL
+                   AND submitted_by_discord_user_id IS NOT NULL
+                   AND raw_metadata->>'submissionKind' = 'user'
+                 ORDER BY received_at_utc, id
+                 LIMIT 1
+              )
+                AND game_profile = $1
+                AND NOT raw_metadata ? 'verificationResultNotification'`,
+            [gameProfile, updated.code, fields.classification, now]
+          )
+        }
         await client.query("COMMIT")
         return { giftCode: updated, queued }
       } catch (error) {
@@ -593,8 +621,13 @@ function createGiftCodeRepository(pool, gameProfile) {
     async diagnostics() {
       const counts = (await pool.query(
         `SELECT
-           COUNT(*) FILTER (WHERE verification_state IN ('pending', 'retry'))::integer AS pending_candidates,
-           COUNT(*) FILTER (WHERE status = 'active')::integer AS active_codes
+           COUNT(*) FILTER (WHERE verification_state IN ('pending', 'retry', 'claimed'))::integer AS pending_candidates,
+           COUNT(*) FILTER (WHERE status = 'active')::integer AS active_codes,
+           COUNT(*) FILTER (WHERE status = 'expired')::integer AS expired_codes,
+           COUNT(*) FILTER (WHERE status = 'invalid')::integer AS invalid_codes,
+           COUNT(*) FILTER (
+             WHERE status IN ('restricted', 'unknown') OR verification_state = 'review'
+           )::integer AS restricted_review_codes
          FROM gift_codes WHERE game_profile = $1`,
         [gameProfile]
       )).rows[0]
@@ -608,6 +641,35 @@ function createGiftCodeRepository(pool, gameProfile) {
         [gameProfile]
       )).rows[0]
       return { ...counts, ...queue }
+    },
+
+    async activeCodeVisibility({ page = 0, pageSize = 15 } = {}) {
+      const safePage = Math.max(0, Math.floor(Number(page) || 0))
+      const safePageSize = Math.min(25, Math.max(1, Math.floor(Number(pageSize) || 15)))
+      const [counts, codes] = await Promise.all([
+        pool.query(
+          `SELECT
+             COUNT(*) FILTER (WHERE status = 'active')::integer AS active_count,
+             COUNT(*) FILTER (WHERE status = 'expired')::integer AS expired_count
+           FROM gift_codes WHERE game_profile = $1`,
+          [gameProfile]
+        ),
+        pool.query(
+          `SELECT code, verified_at_utc
+             FROM gift_codes
+            WHERE game_profile = $1 AND status = 'active'
+            ORDER BY verified_at_utc DESC NULLS LAST, first_seen_at_utc DESC, id DESC
+            LIMIT $2 OFFSET $3`,
+          [gameProfile, safePageSize, safePage * safePageSize]
+        )
+      ])
+      return {
+        codes: codes.rows,
+        activeCount: counts.rows[0].active_count,
+        expiredCount: counts.rows[0].expired_count,
+        page: safePage,
+        pageSize: safePageSize
+      }
     },
 
     async codeDiagnostics(code) {

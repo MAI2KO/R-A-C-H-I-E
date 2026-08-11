@@ -11,6 +11,7 @@ const {
   selectedAccount,
   playerPanel,
   giftPanel,
+  activeCodesPanel,
   registrationModal,
   adminPanel,
   formatCommunityStats,
@@ -104,14 +105,40 @@ test("gift panel exposes public submission, one-account toggle and cap state", (
   assert.match(panel.content, /Accounts enabled: 1 \/ 2/)
   assert.match(panel.content, /Recent result: success/)
   assert.deepEqual(panel.components.at(-1).components.map(button => button.data.label), [
-    "Submit Gift Code", "Disable Auto-Redeem", "Redemption History", "Change Player"
+    "Submit Gift Code", "Disable Auto-Redeem", "Redemption History", "Active Codes", "Change Player"
   ])
   const noAccount = giftPanel({
     sessionId: "s", accounts: [], selected: null, terms: wos, maximumEnabled: 2
   })
   assert.deepEqual(noAccount.components[0].components.map(button => button.data.label), [
-    "Submit Gift Code", "Register Player"
+    "Submit Gift Code", "Active Codes", "Register Player"
   ])
+})
+
+test("active-code panel lists only supplied active codes and paginates cleanly", () => {
+  const first = activeCodesPanel({
+    sessionId: "s",
+    visibility: {
+      codes: [{ code: "NEWEST" }, { code: "OLDER" }],
+      activeCount: 17,
+      expiredCount: 27,
+      page: 0,
+      pageSize: 15
+    }
+  })
+  assert.match(first.content, /NEWEST\nOLDER/)
+  assert.match(first.content, /Active codes: 17/)
+  assert.match(first.content, /Expired codes recorded: 27/)
+  assert.match(first.content, /Page 1 of 2/)
+  assert.equal(first.components[0].components[0].data.disabled, true)
+  assert.equal(first.components[0].components[2].data.disabled, false)
+
+  const empty = activeCodesPanel({
+    sessionId: "s",
+    visibility: { codes: [], activeCount: 0, expiredCount: 4, page: 0, pageSize: 15 }
+  })
+  assert.match(empty.content, /No active gift codes/)
+  assert.doesNotMatch(empty.content, /INVALID|REVIEW|RESTRICTED/)
 })
 
 test("admin panel reports worker and configuration health without private records", () => {
@@ -122,6 +149,9 @@ test("admin panel reports worker and configuration health without private record
     diagnostics: {
       pending_candidates: 2,
       active_codes: 3,
+      expired_codes: 4,
+      invalid_codes: 5,
+      restricted_review_codes: 6,
       pending_redemptions: 4,
       retry_count: 1
     },
@@ -134,6 +164,9 @@ test("admin panel reports worker and configuration health without private record
   })
   assert.match(panel.content, /Gift-code channel: <#123>/)
   assert.match(panel.content, /Contributor reward role: Unable to create\/assign/)
+  assert.match(panel.content, /Expired codes: 4/)
+  assert.match(panel.content, /Invalid codes: 5/)
+  assert.match(panel.content, /Restricted\/review: 6/)
   assert.ok(!panel.content.includes("Player ID"))
   assert.deepEqual(panel.components.flatMap(row => row.components).map(button => button.data.label), [
     "Configure Channel", "Verify Code", "Inspect Code",
@@ -509,7 +542,12 @@ function panelInteraction({ commandName = null, customId = null, modal = false, 
   }
 }
 
-function panelDependencies({ accounts, submissions = [], authorization = async () => true } = {}) {
+function panelDependencies({
+  accounts,
+  submissions = [],
+  authorization = async () => true,
+  activePages = []
+} = {}) {
   const terms = profileTerminology("wos")
   return {
     sessions: new InteractionSessionStore({ maximumSessions: 20 }),
@@ -544,6 +582,11 @@ function panelDependencies({ accounts, submissions = [], authorization = async (
       async submit(input) {
         submissions.push(input)
         return { giftCode: { code: input.code.trim() }, outcome: "new candidate" }
+      },
+      async activeCodes({ page }) {
+        return activePages[page] || {
+          codes: [], activeCount: 0, expiredCount: 0, page, pageSize: 15
+        }
       },
       async adminStatus() { throw new Error("authorization must run before diagnostics") }
     }),
@@ -618,6 +661,26 @@ test("ordinary users can submit candidates without invoking admin authorization"
   assert.equal(submissions[0].code, "  MixedCaseCode  ")
   assert.equal(submissions[0].isAdmin, undefined)
   assert.match(submission.edited.content, /new candidate/)
+})
+
+test("ordinary users can page through profile-scoped active codes", async () => {
+  const dependencies = panelDependencies({
+    accounts: [],
+    activePages: [
+      { codes: [{ code: "NEWEST" }], activeCount: 16, expiredCount: 2, page: 0, pageSize: 15 },
+      { codes: [{ code: "OLDEST" }], activeCount: 16, expiredCount: 2, page: 1, pageSize: 15 }
+    ]
+  })
+  const command = panelInteraction({ commandName: "gift-codes" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  const activeButton = command.edited.components[0].components.find(button => button.data.label === "Active Codes")
+  const active = panelInteraction({ customId: activeButton.data.custom_id })
+  await handleGiftCodePanelInteraction(active, dependencies)
+  assert.match(active.edited.content, /NEWEST/)
+  const next = panelInteraction({ customId: active.edited.components[0].components[2].data.custom_id })
+  await handleGiftCodePanelInteraction(next, dependencies)
+  assert.match(next.edited.content, /OLDEST/)
+  assert.match(next.edited.content, /Page 2 of 2/)
 })
 
 test("gift-code administration retains the existing authorization gate", async () => {

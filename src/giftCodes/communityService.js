@@ -8,6 +8,17 @@ const CONTRIBUTOR_ROLE_NAME = "🍭"
 const CONTRIBUTOR_RETRY_MS = 5 * 60 * 1000
 const CONTRIBUTOR_CONFIRMATION = "Nice find. Have a 🍭"
 const CONTRIBUTOR_FALLBACK = "Nice find. I owe you a 🍭."
+const VERIFICATION_RESULT_MESSAGES = Object.freeze({
+  invalid_code: "That code doesn't look valid.",
+  expired: "That code has expired.",
+  eligibility_restriction: "I couldn't confirm that code, so I haven't added it.",
+  redemption_limit: "I couldn't confirm that code, so I haven't added it.",
+  upstream_rejection: "I couldn't verify that code right now. I'll leave it for review.",
+  temporary_error: "I couldn't verify that code right now. I'll leave it for review.",
+  rate_limited: "I couldn't verify that code right now. I'll leave it for review.",
+  invalid_player: "I couldn't verify that code right now. I'll leave it for review.",
+  unknown_response: "I couldn't verify that code, so I've left it for review."
+})
 
 class ContributorRoleError extends Error {
   constructor(code, message) {
@@ -59,6 +70,11 @@ function joinMessage(payload, stats, accountStats, terms, maximumEnabled) {
 
 function eventNonce(eventId) {
   return BigInt(`0x${eventId.replaceAll("-", "").slice(0, 16)}`).toString()
+}
+
+function verificationResultMessage(classification) {
+  return VERIFICATION_RESULT_MESSAGES[classification]
+    || VERIFICATION_RESULT_MESSAGES.unknown_response
 }
 
 function createGiftCodeCommunityService({
@@ -295,6 +311,32 @@ function createGiftCodeCommunityService({
     }
   }
 
+  async function deliverVerificationResult(claim) {
+    if (!claim) return false
+    try {
+      const user = await client.users.fetch(claim.submitted_by_discord_user_id)
+      await user.send({
+        content: verificationResultMessage(claim.classification),
+        nonce: eventNonce(claim.id),
+        enforceNonce: true
+      })
+      await repository.finishVerificationResultNotification(claim.id, workerId, {
+        sent: true,
+        now: now()
+      })
+      return true
+    } catch (error) {
+      const errorCode = safeDiscordError(error)
+      await repository.finishVerificationResultNotification(claim.id, workerId, {
+        sent: false,
+        now: now(),
+        errorCode
+      }).catch(() => {})
+      logger.warn(`[Gift codes] Verification result notification failed: ${errorCode}`)
+      return false
+    }
+  }
+
   return Object.freeze({
     terms,
 
@@ -335,6 +377,16 @@ function createGiftCodeCommunityService({
       return events.length
     },
 
+    async onVerificationResult(giftCodeId) {
+      const claim = await repository.claimVerificationResultNotification(
+        workerId,
+        now(),
+        60,
+        giftCodeId
+      )
+      return deliverVerificationResult(claim)
+    },
+
     async onRedemptionUpdated(giftCodeId, resultStatus) {
       const refresh = await repository.claimProgressRefresh(giftCodeId, resultStatus, workerId, now())
       if (!refresh) return false
@@ -363,6 +415,11 @@ function createGiftCodeCommunityService({
     },
 
     async recoverOne() {
+      const notification = await repository.claimVerificationResultNotification(workerId, now())
+      if (notification) {
+        await deliverVerificationResult(notification)
+        return 1
+      }
       const event = await repository.claimNextPending(workerId, now())
       if (!event) return 0
       try {
@@ -401,9 +458,11 @@ module.exports = {
   CONTRIBUTOR_ROLE_NAME,
   CONTRIBUTOR_CONFIRMATION,
   CONTRIBUTOR_FALLBACK,
+  VERIFICATION_RESULT_MESSAGES,
   ContributorRoleError,
   safeDiscordError,
   eventNonce,
+  verificationResultMessage,
   codeProgressMessage,
   joinMessage,
   createGiftCodeCommunityService

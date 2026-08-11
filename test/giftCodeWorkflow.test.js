@@ -18,6 +18,10 @@ const {
   createRedemptionProcessor,
   createPollingWorker
 } = require("../src/giftCodes/workers")
+const {
+  createGiftCodeCommunityService,
+  verificationResultMessage
+} = require("../src/giftCodes/communityService")
 const { createGiftCodeService } = require("../src/giftCodes/service")
 const { notificationMessage, createDiscordGiftNotifier } = require("../src/giftCodes/notifications")
 const {
@@ -151,6 +155,7 @@ test("verification state machine distinguishes valid, invalid, blocked, restrict
 test("upstream rejection does not activate or fan out a candidate", async () => {
   let finished
   let activationCalls = 0
+  let feedbackCalls = 0
   const processor = createVerificationProcessor({
     repository: {
       gameProfile: "wos",
@@ -162,7 +167,10 @@ test("upstream rejection does not activate or fan out a candidate", async () => 
     },
     client: { async redeem() { return centuryResult("upstream_rejection", { httpStatus: 403, errCode: null }) } },
     verifier: { configured: true, playerId: "123", locationNumber: "689" },
-    community: { async onCodeActivated() { activationCalls += 1 } },
+    community: {
+      async onCodeActivated() { activationCalls += 1 },
+      async onVerificationResult() { feedbackCalls += 1 }
+    },
     config,
     botInstanceName: "test",
     logger: { log() {}, warn() {}, error() {} },
@@ -172,6 +180,117 @@ test("upstream rejection does not activate or fan out a candidate", async () => 
   assert.equal(finished.codeStatus, "unknown")
   assert.equal(finished.verificationState, "review")
   assert.equal(activationCalls, 0)
+  assert.equal(feedbackCalls, 1)
+})
+
+test("verification-result feedback is concise, truthful and contains no API details", () => {
+  assert.equal(verificationResultMessage("invalid_code"), "That code doesn't look valid.")
+  assert.equal(verificationResultMessage("expired"), "That code has expired.")
+  assert.equal(
+    verificationResultMessage("eligibility_restriction"),
+    "I couldn't confirm that code, so I haven't added it."
+  )
+  assert.equal(
+    verificationResultMessage("upstream_rejection"),
+    "I couldn't verify that code right now. I'll leave it for review."
+  )
+  assert.equal(
+    verificationResultMessage("temporary_error"),
+    "I couldn't verify that code right now. I'll leave it for review."
+  )
+  assert.equal(
+    verificationResultMessage("unknown_response"),
+    "I couldn't verify that code, so I've left it for review."
+  )
+  for (const classification of [
+    "invalid_code", "expired", "eligibility_restriction",
+    "upstream_rejection", "temporary_error", "unknown_response"
+  ]) {
+    assert.doesNotMatch(verificationResultMessage(classification), /HTTP|err_code|Century|403|20000/i)
+  }
+})
+
+test("verification-result notification is not duplicated after service restart", async () => {
+  const sent = []
+  let notification = {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    submitted_by_discord_user_id: "999",
+    submitted_code: "ABC",
+    classification: "upstream_rejection"
+  }
+  const repository = {
+    async claimVerificationResultNotification() {
+      const claimed = notification
+      notification = null
+      return claimed
+    },
+    async finishVerificationResultNotification(id, workerId, result) {
+      assert.equal(id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      assert.equal(result.sent, true)
+    },
+    async claimNextPending() { return null }
+  }
+  const client = {
+    users: {
+      async fetch() {
+        return { async send(payload) { sent.push(payload) } }
+      }
+    }
+  }
+  const first = createGiftCodeCommunityService({
+    repository, client, gameProfile: "wos", workerId: "worker-a", logger: { warn() {} }
+  })
+  assert.equal(await first.recoverOne(), 1)
+  const restarted = createGiftCodeCommunityService({
+    repository, client, gameProfile: "wos", workerId: "worker-b", logger: { warn() {} }
+  })
+  assert.equal(await restarted.recoverOne(), 0)
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].content, "I couldn't verify that code right now. I'll leave it for review.")
+  assert.equal(sent[0].enforceNonce, true)
+})
+
+test("meaningful non-active verification outcomes are delivered privately", async () => {
+  const outcomes = [
+    ["invalid_code", "That code doesn't look valid."],
+    ["expired", "That code has expired."],
+    ["redemption_limit", "I couldn't confirm that code, so I haven't added it."],
+    ["upstream_rejection", "I couldn't verify that code right now. I'll leave it for review."],
+    ["unknown_response", "I couldn't verify that code, so I've left it for review."]
+  ]
+  const sent = []
+  let index = 0
+  const repository = {
+    async claimVerificationResultNotification() {
+      const classification = outcomes[index]?.[0]
+      if (!classification) return null
+      index += 1
+      return {
+        id: `${String(index).padStart(8, "0")}-0000-4000-8000-000000000000`,
+        submitted_by_discord_user_id: "999",
+        classification
+      }
+    },
+    async finishVerificationResultNotification() {}
+  }
+  const service = createGiftCodeCommunityService({
+    repository,
+    client: {
+      users: {
+        async fetch(userId) {
+          assert.equal(userId, "999")
+          return { async send(payload) { sent.push(payload) } }
+        }
+      }
+    },
+    gameProfile: "wos",
+    workerId: "feedback-worker",
+    logger: { warn() {} }
+  })
+  for (const outcome of outcomes) assert.equal(await service.onVerificationResult(outcome[0]), true)
+  assert.deepEqual(sent.map(message => message.content), outcomes.map(([, message]) => message))
+  assert.ok(sent.every(message => message.enforceNonce === true))
+  assert.doesNotMatch(JSON.stringify(sent), /HTTP|err_code|Century|403|20000/i)
 })
 
 test("stored edge metadata and Inspect Code remain useful without exposing raw response data", () => {
@@ -198,6 +317,9 @@ test("stored edge metadata and Inspect Code remain useful without exposing raw r
     failed_count: 0
   })
   assert.match(output, /HTTP status: 403/)
+  assert.match(output, /Current status: unknown/)
+  assert.match(output, /Current verification state: review/)
+  assert.match(output, /Latest recorded verification attempt/)
   assert.match(output, /Century err_code: None/)
   assert.match(output, /Response type: HTML/)
   assert.match(output, /Classification: Upstream Rejection/)

@@ -104,6 +104,89 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
       }
     },
 
+    async claimVerificationResultNotification(workerId, now, leaseSeconds = 60, giftCodeId = null) {
+      return (await pool.query(
+        `WITH due AS (
+           SELECT s.id
+             FROM gift_code_submissions s
+            WHERE s.game_profile = $1
+              AND s.duplicate_of_gift_code_id IS NULL
+              AND s.submitted_by_discord_user_id IS NOT NULL
+              AND ($5::uuid IS NULL OR EXISTS (
+                SELECT 1 FROM gift_codes g
+                 WHERE g.id = $5 AND g.game_profile = s.game_profile
+                   AND g.code = s.submitted_code
+              ))
+              AND (
+                s.raw_metadata #>> '{verificationResultNotification,status}' = 'pending'
+                OR (
+                  s.raw_metadata #>> '{verificationResultNotification,status}' = 'failed'
+                  AND (s.raw_metadata #>> '{verificationResultNotification,nextAttemptAt}')::timestamptz <= $2
+                )
+                OR (
+                  s.raw_metadata #>> '{verificationResultNotification,status}' = 'sending'
+                  AND (s.raw_metadata #>> '{verificationResultNotification,claimedUntil}')::timestamptz <= $2
+                )
+              )
+            ORDER BY s.received_at_utc, s.id
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+         )
+         UPDATE gift_code_submissions s
+            SET raw_metadata = jsonb_set(
+              s.raw_metadata,
+              '{verificationResultNotification}',
+              (s.raw_metadata->'verificationResultNotification') || jsonb_build_object(
+                'status', 'sending',
+                'claimedBy', $3::varchar,
+                'claimedAt', $2::timestamptz,
+                'claimedUntil', $2::timestamptz + ($4 * interval '1 second'),
+                'attemptCount', COALESCE(
+                  (s.raw_metadata #>> '{verificationResultNotification,attemptCount}')::integer,
+                  0
+                ) + 1
+              ),
+              true
+            )
+           FROM due
+          WHERE s.id = due.id AND s.game_profile = $1
+         RETURNING s.id, s.submitted_code, s.submitted_by_discord_user_id,
+                   s.raw_metadata #>> '{verificationResultNotification,classification}' AS classification`,
+        [gameProfile, now, workerId, leaseSeconds, giftCodeId]
+      )).rows[0] || null
+    },
+
+    async finishVerificationResultNotification(submissionId, workerId, {
+      sent,
+      now = new Date(),
+      errorCode = null
+    }) {
+      const status = sent ? "sent" : "failed"
+      const retryAt = sent ? null : new Date(now.getTime() + 5 * 60 * 1000)
+      return (await pool.query(
+        `UPDATE gift_code_submissions s
+            SET raw_metadata = jsonb_set(
+              s.raw_metadata,
+              '{verificationResultNotification}',
+              (s.raw_metadata->'verificationResultNotification') || jsonb_build_object(
+                'status', $4::varchar,
+                'claimedBy', NULL,
+                'claimedAt', NULL,
+                'claimedUntil', NULL,
+                'sentAt', CASE WHEN $5::boolean THEN to_jsonb($6::timestamptz) ELSE 'null'::jsonb END,
+                'lastError', $7::varchar,
+                'nextAttemptAt', to_jsonb($8::timestamptz)
+              ),
+              true
+            )
+          WHERE s.id = $1 AND s.game_profile = $2
+            AND s.raw_metadata #>> '{verificationResultNotification,status}' = 'sending'
+            AND s.raw_metadata #>> '{verificationResultNotification,claimedBy}' = $3
+          RETURNING s.*`,
+        [submissionId, gameProfile, workerId, status, Boolean(sent), now, errorCode, retryAt]
+      )).rows[0] || null
+    },
+
     async claimContributorRoleProvision(guildId, workerId, now, leaseSeconds = 60) {
       await pool.query(
         `INSERT INTO gift_code_guild_settings (game_profile, guild_id)

@@ -26,14 +26,16 @@ function formatCodeDiagnostics(code) {
       : "unknown_response")
   const lines = [
     `**Gift code ${code.code}**`,
-    `Status: ${code.status}`,
-    `Verification: ${code.verification_state}`
+    `Current status: ${code.status}`,
+    `Current verification state: ${code.verification_state}`
   ]
   if (code.first_seen_at_utc) {
     lines.push(`First seen: <t:${Math.floor(new Date(code.first_seen_at_utc).getTime() / 1000)}:f>`)
   }
   lines.push(
     `Source: ${code.source_name || code.source_type || "Discord submission"}`,
+    "",
+    "**Latest recorded verification attempt**",
     `HTTP status: ${displayValue(code.verification_http_status)}`,
     `Century err_code: ${displayValue(code.last_err_code)}`,
     `Response type: ${titleCase(response.responseType || legacyResponseType || "unknown")}`,

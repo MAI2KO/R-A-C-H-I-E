@@ -113,6 +113,10 @@ function createGiftCodeService({ repository, gameProfile, env = process.env }) {
       return repository.diagnostics()
     },
 
+    async activeCodes({ page = 0, pageSize = 15 } = {}) {
+      return repository.activeCodeVisibility({ page, pageSize })
+    },
+
     async adminCode(code) {
       return repository.codeDiagnostics(normalizeGiftCode(code))
     }

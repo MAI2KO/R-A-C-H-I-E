@@ -110,6 +110,12 @@ function createVerificationProcessor({
       } catch (error) {
         logger.warn(`[Gift codes] Community activation failed: ${sanitizeWorkerError(error)}`)
       }
+    } else if (community && transition.verificationState !== "retry") {
+      try {
+        await community.onVerificationResult(completed.giftCode.id)
+      } catch (error) {
+        logger.warn(`[Gift codes] Verification feedback failed: ${sanitizeWorkerError(error)}`)
+      }
     }
     if (result.classification.state === "invalid_player") {
       logger.error(JSON.stringify({

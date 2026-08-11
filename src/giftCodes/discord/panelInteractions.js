@@ -36,6 +36,9 @@ const IDS = Object.freeze({
   giftToggle: `${PREFIX}gt:`,
   giftHistory: `${PREFIX}gh:`,
   giftChange: `${PREFIX}gc:`,
+  giftActive: `${PREFIX}gal:`,
+  giftActivePrevious: `${PREFIX}gap:`,
+  giftActiveNext: `${PREFIX}gan:`,
   giftRegister: `${PREFIX}gr:`,
   registerModal: `${PREFIX}rm:`,
   locationModal: `${PREFIX}lm:`,
@@ -135,6 +138,8 @@ function giftPanel({ sessionId, accounts, selected, terms, maximumEnabled }) {
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`${IDS.giftSubmit}${sessionId}`)
           .setLabel("Submit Gift Code").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`${IDS.giftActive}${sessionId}`)
+          .setLabel("Active Codes").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(`${IDS.giftRegister}${sessionId}`)
           .setLabel("Register Player").setStyle(ButtonStyle.Secondary)
       )]
@@ -151,6 +156,8 @@ function giftPanel({ sessionId, accounts, selected, terms, maximumEnabled }) {
       .setStyle(selected.gift_redemption_enabled ? ButtonStyle.Danger : ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`${IDS.giftHistory}${sessionId}`)
       .setLabel("Redemption History").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${IDS.giftActive}${sessionId}`)
+      .setLabel("Active Codes").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`${IDS.giftChange}${sessionId}`)
       .setLabel("Change Player").setStyle(ButtonStyle.Secondary)
   ))
@@ -164,6 +171,28 @@ function giftPanel({ sessionId, accounts, selected, terms, maximumEnabled }) {
       `Recent result: ${selected.last_redemption_status || "None"}`
     ].join("\n"),
     components
+  }
+}
+
+function activeCodesPanel({ sessionId, visibility }) {
+  const totalPages = Math.max(1, Math.ceil(visibility.activeCount / visibility.pageSize))
+  const page = Math.min(visibility.page, totalPages - 1)
+  const codeLines = visibility.codes.length
+    ? visibility.codes.map(row => row.code)
+    : ["No active gift codes."]
+  return {
+    content: `**Active Gift Codes**\n\n${codeLines.join("\n")}\n\n` +
+      `Active codes: ${visibility.activeCount}\n` +
+      `Expired codes recorded: ${visibility.expiredCount}` +
+      (totalPages > 1 ? `\nPage ${page + 1} of ${totalPages}` : ""),
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${IDS.giftActivePrevious}${sessionId}`)
+        .setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder().setCustomId(`${IDS.giftChange}${sessionId}`)
+        .setLabel("Back").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`${IDS.giftActiveNext}${sessionId}`)
+        .setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1)
+    )]
   }
 }
 
@@ -211,8 +240,11 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, terms }) {
       `Gift-code channel: ${channel}`,
       `Contributor reward role: ${role}`,
       "",
-      `Pending candidates: ${diagnostics.pending_candidates}`,
+      `Pending verification: ${diagnostics.pending_candidates}`,
       `Active codes: ${diagnostics.active_codes}`,
+      `Expired codes: ${diagnostics.expired_codes}`,
+      `Invalid codes: ${diagnostics.invalid_codes}`,
+      `Restricted/review: ${diagnostics.restricted_review_codes}`,
       `Pending redemptions: ${diagnostics.pending_redemptions}`,
       `Retry queue: ${diagnostics.retry_count}`
     ].join("\n"),
@@ -372,6 +404,12 @@ async function handleGiftCodePanelInteraction(interaction, {
       }))
     }
 
+    async function renderActiveCodes(sessionId, page = 0) {
+      const visibility = await gifts.activeCodes({ page, pageSize: 15 })
+      sessions.update(sessionId, context, { panel: "active-codes", activeCodesPage: visibility.page })
+      await interaction.editReply(activeCodesPanel({ sessionId, visibility }))
+    }
+
     async function renderAdmin(sessionId) {
       const [diagnostics, configuration] = await Promise.all([
         gifts.adminStatus(),
@@ -489,6 +527,18 @@ async function handleGiftCodePanelInteraction(interaction, {
       })
       return true
     }
+    if (customId.startsWith(IDS.giftActive)) {
+      await renderActiveCodes(sessionId, 0)
+      return true
+    }
+    if (customId.startsWith(IDS.giftActivePrevious)) {
+      await renderActiveCodes(sessionId, Math.max(0, Number(session.data.activeCodesPage || 0) - 1))
+      return true
+    }
+    if (customId.startsWith(IDS.giftActiveNext)) {
+      await renderActiveCodes(sessionId, Number(session.data.activeCodesPage || 0) + 1)
+      return true
+    }
 
     if (customId.startsWith(IDS.adminChannel)) {
       await interaction.editReply({
@@ -581,6 +631,7 @@ module.exports = {
   accountMenu,
   playerPanel,
   giftPanel,
+  activeCodesPanel,
   registrationModal,
   adminPanel,
   formatCommunityStats,
