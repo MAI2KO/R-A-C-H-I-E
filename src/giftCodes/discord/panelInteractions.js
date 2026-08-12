@@ -276,7 +276,7 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, sourceStat
       `Official Discord mirror: ${mirrorChannels.length ? `Enabled (${mirrorChannels.length})` : "Not configured"}`,
       `Last mirror observation: ${sourceTime(latestSourceValue(mirrors, "last_observation_at_utc"))}`,
       `Last mirror candidate: ${sourceTime(latestSourceValue(mirrors, "last_candidate_at_utc"))}`,
-      `${terms.gameName === "Whiteout Survival" ? "WOSRewards" : "KingshotRewards"}: ${runtime.sourcePollingEnabled ? "Enabled" : "Disabled"}`,
+      `Public catalogue: ${runtime.sourcePollingEnabled ? "Enabled" : "Disabled"}`,
       `Last poll: ${sourceTime(catalogue?.last_poll_at_utc)}`,
       `Last successful poll: ${sourceTime(catalogue?.last_successful_poll_at_utc)}`,
       `Codes observed: ${catalogue?.observations_count || 0}`,
