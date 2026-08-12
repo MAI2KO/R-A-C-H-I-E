@@ -12,6 +12,7 @@ function whiteoutAdapter(env = process.env) {
       errCodes: Object.freeze({
         20000: "success",
         40008: "already_redeemed",
+        40011: "redemption_limit",
         40007: "expired",
         40014: "invalid_code",
         40020: "invalid_player"

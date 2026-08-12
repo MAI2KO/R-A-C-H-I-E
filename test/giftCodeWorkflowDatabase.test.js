@@ -8,7 +8,7 @@ const { createPlayerService } = require("../src/giftCodes/playerService")
 const { createGiftCodeRepository } = require("../src/giftCodes/repository")
 const { centuryAdapter } = require("../src/giftCodes/adapters")
 const { classifyCenturyResponse } = require("../src/giftCodes/responseClassifier")
-const { verificationTransition } = require("../src/giftCodes/workers")
+const { verificationTransition, redemptionTransition } = require("../src/giftCodes/workers")
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const silentLogger = { log() {}, error() {} }
@@ -109,12 +109,28 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
       playerId: "10001",
       locationNumber: "521"
     })
+    const kingshotB = await kingshotPlayers.register({
+      discordUserId: "333333333333333333",
+      playerId: "20002",
+      locationNumber: "522"
+    })
+    const kingshotC = await kingshotPlayers.register({
+      discordUserId: "444444444444444444",
+      playerId: "30003",
+      locationNumber: "523"
+    })
     const wos = createGiftCodeRepository(pool, "wos")
     const ks = createGiftCodeRepository(pool, "kingshot")
     await wos.setAutoRedemption({ discordUserId: owner, playerId: opted.player_id, enabled: true })
     await wos.setAutoRedemption({ discordUserId: otherOwner, playerId: inactive.player_id, enabled: true })
     await wosPlayers.remove({ discordUserId: otherOwner, playerId: inactive.player_id })
     await ks.setAutoRedemption({ discordUserId: owner, playerId: kingshot.player_id, enabled: true })
+    await ks.setAutoRedemption({
+      discordUserId: "333333333333333333", playerId: kingshotB.player_id, enabled: true
+    })
+    await ks.setAutoRedemption({
+      discordUserId: "444444444444444444", playerId: kingshotC.player_id, enabled: true
+    })
 
     const source = await wos.createSource({ sourceType: "discord_user", sourceName: "Discord submissions" })
     const submission = await wos.recordSubmission({
@@ -229,6 +245,113 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
       "SELECT COUNT(*)::integer AS count FROM gift_code_redemptions WHERE game_profile = 'kingshot'"
     )).rows[0].count, 0)
 
+    const limitedCandidate = await ks.recordSubmission({
+      code: "MixedTypeKS",
+      submittedByDiscordUserId: owner
+    })
+    const limitedClaim = await ks.claimVerification({
+      workerId: "verify-type-limit",
+      now: claimTime,
+      leaseSeconds: 60,
+      code: limitedCandidate.giftCode.code,
+      manual: true
+    })
+    const limitedClassification = classifyCenturyResponse({
+      httpStatus: 200,
+      data: {
+        code: 1,
+        data: [],
+        msg: "The same type of Gift Code can only be redeemed once.",
+        err_code: 40011
+      },
+      profileMappings: kingshotMappings
+    })
+    const limitedVerification = verificationTransition(
+      limitedClassification.state,
+      limitedClaim.verification_attempt_count,
+      claimTime,
+      { maximumAttempts: 5, retryBaseSeconds: 60, retryCapSeconds: 3600 }
+    )
+    const activatedByLimit = await ks.finishVerification({
+      claim: limitedClaim,
+      workerId: limitedClaim.verification_claimed_by_worker,
+      result: apiResult("redemption_limit", {
+        errCode: 40011,
+        message: limitedClassification.raw.message
+      }),
+      now: new Date("2026-08-11T10:00:01Z"),
+      ...limitedVerification,
+      botInstanceName: "peggie-kingshot"
+    })
+    assert.equal(activatedByLimit.giftCode.status, "active")
+    assert.equal(activatedByLimit.giftCode.verification_state, "complete")
+    assert.equal(activatedByLimit.queued.length, 3)
+
+    const mixedResults = [
+      { classification: "redemption_limit", errCode: 40011, durableStatus: "restricted" },
+      { classification: "success", errCode: 20000, durableStatus: "success" },
+      { classification: "already_redeemed", errCode: 40008, durableStatus: "already_redeemed" }
+    ]
+    for (let index = 0; index < mixedResults.length; index += 1) {
+      const expected = mixedResults[index]
+      const claim = await ks.claimRedemption({
+        workerId: `mixed-redeem-${index}`,
+        now: new Date(`2026-08-11T10:01:0${index}Z`),
+        leaseSeconds: 60
+      })
+      assert.ok(claim)
+      const transition = redemptionTransition(
+        expected.classification,
+        claim.attempt_number,
+        claimTime,
+        { maximumAttempts: 5, retryBaseSeconds: 60, retryCapSeconds: 3600 }
+      )
+      assert.equal(transition.retryable, false)
+      assert.equal(transition.nextRetryAt, undefined)
+      await ks.finishRedemption({
+        claim,
+        workerId: claim.claimed_by_worker,
+        result: apiResult(expected.classification, {
+          errCode: expected.errCode,
+          message: expected.classification
+        }),
+        now: new Date(`2026-08-11T10:01:1${index}Z`),
+        ...transition
+      })
+      assert.equal(transition.status, expected.durableStatus)
+    }
+    assert.equal(await ks.claimRedemption({
+      workerId: "after-mixed-restart",
+      now: new Date("2026-08-11T11:00:00Z"),
+      leaseSeconds: 60
+    }), null)
+    const mixedRows = (await pool.query(
+      `SELECT r.status, a.classification
+         FROM gift_code_redemptions r
+         JOIN gift_code_attempts a
+           ON a.redemption_id = r.id AND a.game_profile = r.game_profile
+        WHERE r.game_profile = 'kingshot' AND r.gift_code_id = $1
+        ORDER BY a.created_at_utc, a.id`,
+      [limitedCandidate.giftCode.id]
+    )).rows
+    assert.deepEqual(mixedRows.map(row => row.classification), [
+      "redemption_limit", "success", "already_redeemed"
+    ])
+    assert.deepEqual(mixedRows.map(row => row.status), [
+      "restricted", "success", "already_redeemed"
+    ])
+    const mixedCounts = (await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'success')::integer AS success,
+         COUNT(*) FILTER (WHERE status = 'already_redeemed')::integer AS already,
+         COUNT(*) FILTER (WHERE status = 'restricted')::integer AS restricted
+       FROM gift_code_redemptions
+       WHERE game_profile = 'kingshot' AND gift_code_id = $1`,
+      [limitedCandidate.giftCode.id]
+    )).rows[0]
+    assert.deepEqual(mixedCounts, { success: 1, already: 1, restricted: 1 })
+    assert.equal((await ks.getCode("MixedTypeKS")).status, "active")
+
     await wosPlayers.changeLocation({
       discordUserId: owner,
       playerId: opted.player_id,
@@ -287,6 +410,12 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
       { attempt_number: 1, classification: "rate_limited", location_number_snapshot: "700" },
       { attempt_number: 2, classification: "success", location_number_snapshot: "701" }
     ])
+    const diagnostics = await wos.codeDiagnostics(submission.giftCode.code)
+    assert.equal(diagnostics.latest_verification_api_message, "RECEIVED.")
+    assert.equal(diagnostics.latest_verification_classification, "already_redeemed")
+    assert.equal(diagnostics.latest_redemption_api_message, "SUCCESS")
+    assert.equal(diagnostics.latest_redemption_classification, "success")
+    assert.equal(diagnostics.latest_redemption_player_id_snapshot, "10001")
     assert.equal(await wos.claimRedemption({
       workerId: "after-restart",
       now: new Date("2026-08-11T11:00:00Z"),

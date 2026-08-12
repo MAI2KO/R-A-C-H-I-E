@@ -726,6 +726,18 @@ function createGiftCodeRepository(pool, gameProfile) {
            COALESCE(r.success, 0)::integer AS success_count,
            COALESCE(r.already, 0)::integer AS already_redeemed_count,
            COALESCE(r.failed, 0)::integer AS failed_count,
+           verification.id AS latest_verification_attempt_id,
+           verification.http_status AS latest_verification_http_status,
+           verification.err_code AS latest_verification_err_code,
+           verification.api_message AS latest_verification_api_message,
+           verification.classification AS latest_verification_classification,
+           verification.response_metadata AS latest_verification_metadata,
+           redemption.id AS latest_redemption_attempt_id,
+           redemption.http_status AS latest_redemption_http_status,
+           redemption.err_code AS latest_redemption_err_code,
+           redemption.api_message AS latest_redemption_api_message,
+           redemption.classification AS latest_redemption_classification,
+           redemption.player_id_snapshot AS latest_redemption_player_id_snapshot,
            s.source_type, s.source_name
          FROM gift_codes g
          LEFT JOIN gift_code_sources s
@@ -739,6 +751,22 @@ function createGiftCodeRepository(pool, gameProfile) {
            FROM gift_code_redemptions r
            WHERE r.game_profile = g.game_profile AND r.gift_code_id = g.id
          ) r ON true
+         LEFT JOIN LATERAL (
+           SELECT id, http_status, err_code, api_message, classification, response_metadata
+             FROM gift_code_attempts a
+            WHERE a.game_profile = g.game_profile AND a.gift_code_id = g.id
+              AND a.attempt_type = 'verification'
+            ORDER BY a.attempt_number DESC, a.created_at_utc DESC, a.id DESC
+            LIMIT 1
+         ) verification ON true
+         LEFT JOIN LATERAL (
+           SELECT id, http_status, err_code, api_message, classification, player_id_snapshot
+             FROM gift_code_attempts a
+            WHERE a.game_profile = g.game_profile AND a.gift_code_id = g.id
+              AND a.attempt_type = 'redemption'
+            ORDER BY a.response_received_at_utc DESC, a.created_at_utc DESC, a.id DESC
+            LIMIT 1
+         ) redemption ON true
          WHERE g.game_profile = $1 AND g.code = $2`,
         [gameProfile, exactCode]
       )).rows[0] || null

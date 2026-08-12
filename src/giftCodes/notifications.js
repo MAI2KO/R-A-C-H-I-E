@@ -21,6 +21,9 @@ function notificationMessage(claim, status, gameProfile) {
     return `I couldn't redeem ${claim.code}${identity}. Check that this character is still in ` +
       `${terms.locationLabel} ${claim.location_number_snapshot}.`
   }
+  if (status === "redemption_limit") {
+    return `${claim.code} can't be claimed on this character - you've already used another code of this type.`
+  }
   if (status === "restricted") {
     return `${claim.code} could not be redeemed on this character.`
   }

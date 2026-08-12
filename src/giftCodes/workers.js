@@ -15,13 +15,13 @@ function retryDate(now, attemptNumber, config, retryAfterMs = 0) {
 }
 
 function verificationTransition(classification, attemptNumber, now, config, retryAfterMs = 0) {
-  if (["success", "already_redeemed"].includes(classification)) {
+  if (["success", "already_redeemed", "redemption_limit"].includes(classification)) {
     return { codeStatus: "active", verificationState: "complete" }
   }
   if (classification === "expired") return { codeStatus: "expired", verificationState: "complete" }
   if (classification === "invalid_code") return { codeStatus: "invalid", verificationState: "complete" }
   if (classification === "invalid_player") return { codeStatus: "candidate", verificationState: "blocked" }
-  if (["eligibility_restriction", "redemption_limit"].includes(classification)) {
+  if (classification === "eligibility_restriction") {
     return { codeStatus: "restricted", verificationState: "review" }
   }
   if (["rate_limited", "temporary_error"].includes(classification)) {
@@ -223,7 +223,10 @@ function createRedemptionProcessor({
         now: completedAt,
         ...transition
       })
-      await notify(claim, transition.status)
+      await notify(
+        claim,
+        result.classification.state === "redemption_limit" ? "redemption_limit" : transition.status
+      )
       if (community && !transition.retryable) {
         try {
           await community.onRedemptionUpdated(

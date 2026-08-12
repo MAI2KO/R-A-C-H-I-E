@@ -70,9 +70,17 @@ test("profile classifiers prioritize verified err_code mappings", () => {
   assert.deepEqual(wos.responseMappings.errCodes, {
     20000: "success",
     40008: "already_redeemed",
+    40011: "redemption_limit",
     40007: "expired",
     40014: "invalid_code",
     40020: "invalid_player"
+  })
+  assert.deepEqual(kingshot.responseMappings.errCodes, {
+    20000: "success",
+    40008: "already_redeemed",
+    40011: "redemption_limit",
+    40007: "expired",
+    40014: "invalid_code"
   })
   assert.equal(classifyCenturyResponse({
     httpStatus: 200,
@@ -89,6 +97,21 @@ test("profile classifiers prioritize verified err_code mappings", () => {
     data: { code: 0, err_code: 20000, msg: "SUCCESS" },
     profileMappings: kingshot.responseMappings
   }).state, "success")
+  for (const profile of ["wos", "kingshot"]) {
+    const limited = classifyCenturyResponse({
+      httpStatus: 200,
+      data: {
+        code: 1,
+        data: [],
+        msg: "The same type of Gift Code can only be redeemed once.",
+        err_code: 40011
+      },
+      profileMappings: centuryAdapter(profile, {}).responseMappings
+    })
+    assert.equal(limited.state, "redemption_limit")
+    assert.equal(limited.retryable, false)
+    assert.equal(limited.permanent, true)
+  }
 })
 
 test("Kingshot classifies exact verified expired and invalid-code payloads", () => {
@@ -166,6 +189,9 @@ test("verification state machine distinguishes valid, invalid, blocked, restrict
   assert.deepEqual(verificationTransition("already_redeemed", 1, now, config), {
     codeStatus: "active", verificationState: "complete"
   })
+  assert.deepEqual(verificationTransition("redemption_limit", 1, now, config), {
+    codeStatus: "active", verificationState: "complete"
+  })
   assert.deepEqual(verificationTransition("expired", 1, now, config), {
     codeStatus: "expired", verificationState: "complete"
   })
@@ -223,6 +249,56 @@ test("upstream rejection does not activate or fan out a candidate", async () => 
   assert.equal(finished.verificationState, "review")
   assert.equal(activationCalls, 0)
   assert.equal(feedbackCalls, 1)
+})
+
+test("verifier redemption limit recognises and activates codes for both profiles", async () => {
+  for (const gameProfile of ["wos", "kingshot"]) {
+    let finished
+    let activationCalls = 0
+    let feedbackCalls = 0
+    const processor = createVerificationProcessor({
+      repository: {
+        gameProfile,
+        async claimVerification() {
+          return { id: `${gameProfile}-code`, code: "TYPELIMIT", verification_attempt_count: 1 }
+        },
+        async finishVerification(input) {
+          finished = input
+          return {
+            giftCode: { id: `${gameProfile}-code`, status: input.codeStatus },
+            queued: [{ id: `${gameProfile}-redemption` }]
+          }
+        }
+      },
+      client: {
+        async redeem() {
+          return centuryResult("redemption_limit", {
+            errCode: 40011,
+            message: "The same type of Gift Code can only be redeemed once."
+          })
+        }
+      },
+      verifier: { configured: true, playerId: "123", locationNumber: "521" },
+      community: {
+        async onCodeActivated(_id, queuedCount) {
+          activationCalls += 1
+          assert.equal(queuedCount, 1)
+        },
+        async onVerificationResult() { feedbackCalls += 1 }
+      },
+      config,
+      botInstanceName: `test-${gameProfile}`,
+      logger: { log() {}, warn() {}, error() {} },
+      workerId: `verify-${gameProfile}`
+    })
+    assert.equal(await processor.tick(), 1)
+    assert.equal(finished.result.classification.state, "redemption_limit")
+    assert.equal(finished.codeStatus, "active")
+    assert.equal(finished.verificationState, "complete")
+    assert.equal(finished.nextRetryAt, undefined)
+    assert.equal(activationCalls, 1)
+    assert.equal(feedbackCalls, 0)
+  }
 })
 
 test("verification-result feedback is concise, truthful and contains no API details", () => {
@@ -366,6 +442,80 @@ test("stored edge metadata and Inspect Code remain useful without exposing raw r
   assert.match(output, /Response type: HTML/)
   assert.match(output, /Classification: Upstream Rejection/)
   assert.doesNotMatch(output, /Access denied/)
+})
+
+test("Inspect Code shows sanitized verification and latest redemption messages", () => {
+  const output = formatCodeDiagnostics({
+    code: "KSUNKNOWN",
+    status: "unknown",
+    verification_state: "review",
+    latest_verification_attempt_id: "verification-attempt",
+    latest_verification_http_status: 200,
+    latest_verification_err_code: 40011,
+    latest_verification_api_message: "VERIFY DETAIL 987654321 token=secret-value",
+    latest_verification_classification: "redemption_limit",
+    latest_verification_metadata: {
+      response: { responseType: "json", bodySummary: "RAW RESPONSE MUST NOT LEAK" }
+    },
+    latest_redemption_attempt_id: "redemption-attempt",
+    latest_redemption_http_status: 200,
+    latest_redemption_err_code: 40011,
+    latest_redemption_api_message: "Player 368775177 result sign=secret-signature @everyone",
+    latest_redemption_classification: "redemption_limit",
+    latest_redemption_player_id_snapshot: "368775177",
+    pending_count: 1,
+    success_count: 2,
+    already_redeemed_count: 3,
+    failed_count: 4
+  })
+
+  assert.match(output, /Century message: VERIFY DETAIL \[identifier redacted\] token=\[redacted\]/)
+  assert.match(output, /\*\*Latest player redemption\*\*/)
+  assert.match(output, /Century message: Player \[redacted\] result sign=\[redacted\] \[mention redacted\]/)
+  assert.equal((output.match(/Classification: Redemption Limit/g) || []).length, 2)
+  assert.equal((output.match(/Meaning: Another gift code of this type was already redeemed on this character/g) || []).length, 2)
+  assert.match(output, /Queue counts: pending 1, success 2, already redeemed 3, review\/failed 4/)
+  assert.doesNotMatch(output, /987654321|368775177|secret-value|secret-signature|RAW RESPONSE MUST NOT LEAK/)
+})
+
+test("Inspect Code reports historical messages that were not recorded", () => {
+  const output = formatCodeDiagnostics({
+    code: "OLDKS",
+    status: "unknown",
+    verification_state: "review",
+    latest_verification_attempt_id: "old-verification",
+    latest_verification_http_status: 200,
+    latest_verification_err_code: 40011,
+    latest_verification_api_message: null,
+    latest_verification_classification: "unknown_response",
+    latest_verification_metadata: { response: { responseType: "json" } },
+    latest_redemption_attempt_id: "old-redemption",
+    latest_redemption_http_status: 200,
+    latest_redemption_err_code: 40011,
+    latest_redemption_api_message: null,
+    latest_redemption_classification: "unknown_response",
+    pending_count: 0,
+    success_count: 0,
+    already_redeemed_count: 0,
+    failed_count: 1
+  })
+  assert.equal((output.match(/Century message: Not recorded/g) || []).length, 2)
+})
+
+test("unknown numeric responses remain unknown after resolving 40011", () => {
+  for (const profile of ["wos", "kingshot"]) {
+    const classified = classifyCenturyResponse({
+      httpStatus: 200,
+      data: { code: 1, data: [], msg: "UNVERIFIED RESPONSE", err_code: 49998 },
+      profileMappings: centuryAdapter(profile, {}).responseMappings
+    })
+    assert.equal(classified.state, "unknown_response")
+    assert.equal(classified.raw.message, "UNVERIFIED RESPONSE")
+    assert.deepEqual(verificationTransition(classified.state, 1, new Date(), config), {
+      codeStatus: "unknown",
+      verificationState: "review"
+    })
+  }
 })
 
 test("controlled live WOS harness is opt-in and makes exactly one injected request", async () => {
@@ -626,6 +776,52 @@ test("redemption processor records result before DM and DM failure does not alte
   assert.deepEqual(order, ["persist:success", "claim-dm", "send-dm", "dm:false"])
 })
 
+test("player redemption limit persists terminally and uses its specific notification", async () => {
+  const calls = []
+  const claim = {
+    id: "redemption-limit-id",
+    gift_code_id: "code-id",
+    player_account_id: "account-id",
+    code: "TYPELIMIT",
+    player_id_snapshot: "368775177",
+    location_number_snapshot: "521",
+    discord_user_id: "999",
+    attempt_number: 1
+  }
+  const processor = createRedemptionProcessor({
+    repository: {
+      gameProfile: "kingshot",
+      async claimRedemption() { return claim },
+      async finishRedemption(input) {
+        calls.push({ type: "persist", status: input.status, retryable: input.retryable })
+      },
+      async claimNotification() { return {} },
+      async finishNotification() {}
+    },
+    client: {
+      async redeem() {
+        return centuryResult("redemption_limit", {
+          errCode: 40011,
+          message: "The same type of Gift Code can only be redeemed once."
+        })
+      }
+    },
+    notifier: async (_claim, status) => {
+      calls.push({ type: "notify", status })
+      return { sent: true }
+    },
+    config,
+    logger: { log() {}, warn() {}, error() {} },
+    now: () => new Date("2026-08-11T10:00:02Z"),
+    workerId: "redeem-limit-worker"
+  })
+  assert.equal(await processor.tick(), 1)
+  assert.deepEqual(calls, [
+    { type: "persist", status: "restricted", retryable: false },
+    { type: "notify", status: "redemption_limit" }
+  ])
+})
+
 test("player redemption DMs are concise, profile aware, masked when needed and contain failures", async () => {
   const claim = {
     code: "ABC",
@@ -643,6 +839,10 @@ test("player redemption DMs are concise, profile aware, masked when needed and c
   assert.equal(
     notificationMessage(claim, "already_redeemed", "wos"),
     "ABC was already claimed on this character. You're good."
+  )
+  assert.equal(
+    notificationMessage(claim, "redemption_limit", "kingshot"),
+    "ABC can't be claimed on this character - you've already used another code of this type."
   )
   assert.equal(
     notificationMessage({ ...claim, location_number_snapshot: "689" }, "invalid_player", "wos"),

@@ -1,5 +1,18 @@
+const { sanitizedText } = require("../centuryGameClient")
+
 function displayValue(value) {
   return value === null || value === undefined || value === "" ? "None" : String(value)
+}
+
+function centuryMessage(value, redactedValues = []) {
+  if (value === null || value === undefined || value === "") return "Not recorded"
+  const sanitized = sanitizedText(value, redactedValues)
+    .replace(/@everyone|@here/gi, "[mention redacted]")
+    .replace(/<@!?\d+>/g, "[mention redacted]")
+    .replace(/\b\d{6,32}\b/g, "[identifier redacted]")
+    .replace(/[`*_~|]/g, "")
+    .slice(0, 300)
+  return sanitized || "Not recorded"
 }
 
 function titleCase(value) {
@@ -10,6 +23,13 @@ function titleCase(value) {
     .split("_")
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ")
+}
+
+function classificationMeaning(value) {
+  if (value === "redemption_limit") {
+    return "Another gift code of this type was already redeemed on this character"
+  }
+  return null
 }
 
 function formatCodeDiagnostics(code) {
@@ -24,6 +44,19 @@ function formatCodeDiagnostics(code) {
     || ([401, 403].includes(Number(code.verification_http_status))
       ? "upstream_rejection"
       : "unknown_response")
+  const hasVerificationAttempt = Boolean(code.latest_verification_attempt_id)
+  const verificationHttpStatus = hasVerificationAttempt
+    ? code.latest_verification_http_status
+    : code.verification_http_status
+  const verificationErrCode = hasVerificationAttempt
+    ? code.latest_verification_err_code
+    : code.last_err_code
+  const verificationMessage = hasVerificationAttempt
+    ? code.latest_verification_api_message
+    : code.last_api_message
+  const verificationMetadata = code.latest_verification_metadata || metadata
+  const verificationResponse = verificationMetadata.response || response
+  const verificationClassification = code.latest_verification_classification || classification
   const lines = [
     `**Gift code ${code.code}**`,
     `Current status: ${code.status}`,
@@ -36,14 +69,39 @@ function formatCodeDiagnostics(code) {
     `Source: ${code.source_name || code.source_type || "Discord submission"}`,
     "",
     "**Latest recorded verification attempt**",
-    `HTTP status: ${displayValue(code.verification_http_status)}`,
-    `Century err_code: ${displayValue(code.last_err_code)}`,
-    `Response type: ${titleCase(response.responseType || legacyResponseType || "unknown")}`,
-    `Classification: ${titleCase(classification)}`,
+    `HTTP status: ${displayValue(verificationHttpStatus)}`,
+    `Century err_code: ${displayValue(verificationErrCode)}`,
+    `Century message: ${centuryMessage(verificationMessage)}`,
+    `Response type: ${titleCase(verificationResponse.responseType || legacyResponseType || "unknown")}`,
+    `Classification: ${titleCase(verificationClassification)}`
+  )
+  const verificationMeaning = classificationMeaning(verificationClassification)
+  if (verificationMeaning) lines.push(`Meaning: ${verificationMeaning}`)
+  if (code.latest_redemption_attempt_id) {
+    lines.push(
+      "",
+      "**Latest player redemption**",
+      `HTTP status: ${displayValue(code.latest_redemption_http_status)}`,
+      `Century err_code: ${displayValue(code.latest_redemption_err_code)}`,
+      `Century message: ${centuryMessage(code.latest_redemption_api_message, [
+        code.latest_redemption_player_id_snapshot
+      ])}`,
+      `Classification: ${titleCase(code.latest_redemption_classification)}`
+    )
+    const redemptionMeaning = classificationMeaning(code.latest_redemption_classification)
+    if (redemptionMeaning) lines.push(`Meaning: ${redemptionMeaning}`)
+  }
+  lines.push(
     `Queue counts: pending ${code.pending_count}, success ${code.success_count}, ` +
       `already redeemed ${code.already_redeemed_count}, review/failed ${code.failed_count}`
   )
   return lines.join("\n")
 }
 
-module.exports = { displayValue, titleCase, formatCodeDiagnostics }
+module.exports = {
+  displayValue,
+  titleCase,
+  classificationMeaning,
+  centuryMessage,
+  formatCodeDiagnostics
+}
