@@ -1,10 +1,13 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const fs = require("node:fs")
+const path = require("node:path")
 
 const {
   parseSourceExpiry,
   parseDiscordMirrorMessage,
-  parseActiveCatalogueHtml
+  parseActiveCatalogueHtml,
+  parseWosActiveCatalogueHtml
 } = require("../src/giftCodes/sourceParsers")
 const {
   booleanFlag,
@@ -72,6 +75,33 @@ test("catalogue parser extracts only explicitly active catalogue entries", () =>
   assert.deepEqual(parseActiveCatalogueHtml(kingshotFixture), ["KsLive7"])
 })
 
+test("current WOS catalogue section extracts active cards only and preserves exact case", () => {
+  const fixture = fs.readFileSync(
+    path.join(__dirname, "fixtures", "wosRewardsActiveCatalogue.html"),
+    "utf8"
+  )
+  assert.deepEqual(parseWosActiveCatalogueHtml(fixture), [
+    "100gomYTKOR",
+    "GuDokYTKOR",
+    "2ndYoutubeKR"
+  ])
+  for (const excluded of ["GIFT2026", "ExpiredCode7", "FooterCode999"]) {
+    assert.equal(parseWosActiveCatalogueHtml(fixture).includes(excluded), false)
+  }
+})
+
+test("WOS catalogue parsing ignores arbitrary text and fails closed on structural drift", () => {
+  assert.deepEqual(parseWosActiveCatalogueHtml(`
+    <h2>Latest Whiteout Survival Codes</h2>
+    <p>RandomCode999</p><p>ABC123 Added yesterday Copy</p>
+  `), [])
+  assert.deepEqual(parseWosActiveCatalogueHtml(`
+    <h2>Active Gift Codes</h2>
+    <p>RandomCode999</p>
+    <article><strong>AlmostCode1</strong><span>Available now</span><button>Copy</button></article>
+  `), [])
+})
+
 test("catalogue adapters use bounded, timed ordinary GET requests and fail closed on markup", async () => {
   const calls = []
   const transport = {
@@ -94,6 +124,30 @@ test("catalogue adapters use bounded, timed ordinary GET requests and fail close
     transport: { async get() { return { data: "<html>changed</html>" } } }
   })
   await assert.rejects(malformed.fetchActiveCodes(), { code: "SOURCE_MARKUP_UNRECOGNISED" })
+
+  const malformedWos = createCatalogueAdapter({
+    gameProfile: "wos",
+    transport: {
+      async get() {
+        return {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+          data: "<html><h2>Changed Catalogue</h2></html>"
+        }
+      }
+    }
+  })
+  await assert.rejects(malformedWos.fetchActiveCodes(), error => {
+    assert.equal(error.code, "SOURCE_MARKUP_UNRECOGNISED")
+    assert.deepEqual(error.sourceDiagnostics, {
+      httpStatus: 200,
+      contentType: "text/html; charset=utf-8",
+      responseBytes: 39,
+      expectedStructure: "active_gift_codes_section"
+    })
+    assert.equal(error.message.includes("<html>"), false)
+    return true
+  })
 
   const oversized = createCatalogueAdapter({
     gameProfile: "kingshot",

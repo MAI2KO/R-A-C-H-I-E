@@ -1,5 +1,8 @@
 const axios = require("axios")
-const { parseActiveCatalogueHtml } = require("./sourceParsers")
+const {
+  parseActiveCatalogueHtml,
+  parseWosActiveCatalogueHtml
+} = require("./sourceParsers")
 const { safeSourceError } = require("./sourceIngestion")
 
 const CATALOGUES = Object.freeze({
@@ -40,11 +43,26 @@ function createCatalogueAdapter({
           code: "SOURCE_BODY_TOO_LARGE"
         })
       }
-      const codes = parseActiveCatalogueHtml(body)
+      const codes = gameProfile === "wos"
+        ? parseWosActiveCatalogueHtml(body)
+        : parseActiveCatalogueHtml(body)
       if (!codes.length) {
-        throw Object.assign(new Error("active catalogue markup was not recognised"), {
-          code: "SOURCE_MARKUP_UNRECOGNISED"
-        })
+        const contentType = String(response.headers?.["content-type"] || "")
+          .slice(0, 100) || null
+        throw Object.assign(
+          new Error("active catalogue markup was not recognised"),
+          {
+            code: "SOURCE_MARKUP_UNRECOGNISED",
+            sourceDiagnostics: {
+              httpStatus: Number(response.status) || null,
+              contentType,
+              responseBytes: Buffer.byteLength(body, "utf8"),
+              expectedStructure: gameProfile === "wos"
+                ? "active_gift_codes_section"
+                : "explicit_active_code_entry"
+            }
+          }
+        )
       }
       return codes
     }
@@ -111,7 +129,11 @@ function createCataloguePoller({
           event: "gift_code_catalogue_poll_failed",
           game_profile: gameProfile,
           source: adapter.name,
-          error_code: errorCode
+          error_code: errorCode,
+          http_status: error.sourceDiagnostics?.httpStatus,
+          content_type: error.sourceDiagnostics?.contentType,
+          response_bytes: error.sourceDiagnostics?.responseBytes,
+          expected_structure: error.sourceDiagnostics?.expectedStructure
         }))
         return { polled: true, failed: true, errorCode }
       }

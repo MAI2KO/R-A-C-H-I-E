@@ -70,9 +70,48 @@ function parseActiveCatalogueHtml(html) {
   return [...codes]
 }
 
+function parseWosActiveCatalogueHtml(html) {
+  const legacyCodes = parseActiveCatalogueHtml(html)
+  if (legacyCodes.length) return legacyCodes
+
+  const body = String(html || "")
+  const headings = [...body.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/gi)]
+  const activeHeadingIndex = headings.findIndex(match =>
+    decodeHtml(match[1]).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+      .toLowerCase() === "active gift codes"
+  )
+  if (activeHeadingIndex === -1) return []
+
+  const activeHeading = headings[activeHeadingIndex]
+  const sectionStart = activeHeading.index + activeHeading[0].length
+  const sectionEnd = headings[activeHeadingIndex + 1]?.index ?? body.length
+  const section = body.slice(sectionStart, sectionEnd)
+    .replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/(?:script|style)>/gi, "")
+  const tokens = decodeHtml(section)
+    .replace(/<[^>]+>/g, "\n")
+    .split(/\n+/)
+    .map(value => value.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+  const codes = new Set()
+  const addedDetailPattern = /^(?:just now|today|yesterday|\d+\s*[mhd]\s+ago|\d+\s+(?:minutes?|hours?|days?)\s+ago|\d{4}-\d{2}-\d{2})$/i
+  for (let index = 0; index <= tokens.length - 3; index += 1) {
+    const code = cleanCode(tokens[index])
+    if (!code) continue
+    const combinedAddedMatch = tokens[index + 1].match(/^Added\s+(.{1,40})$/i)
+    const combinedAdded = addedDetailPattern.test(combinedAddedMatch?.[1] || "") &&
+      /^Copy$/i.test(tokens[index + 2])
+    const splitAdded = /^Added$/i.test(tokens[index + 1]) &&
+      addedDetailPattern.test(tokens[index + 2] || "") && /^Copy$/i.test(tokens[index + 3])
+    if (!combinedAdded && !splitAdded) continue
+    codes.add(code)
+  }
+  return [...codes]
+}
+
 module.exports = {
   cleanCode,
   parseSourceExpiry,
   parseDiscordMirrorMessage,
-  parseActiveCatalogueHtml
+  parseActiveCatalogueHtml,
+  parseWosActiveCatalogueHtml
 }
