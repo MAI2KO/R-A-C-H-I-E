@@ -633,3 +633,175 @@ test("stored 40011 review attempts recover once without another Century request"
     await admin.end()
   }
 })
+
+test("admin re-verifies historical WOS protocol reviews with the current worker path", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 })
+  const schema = `gift_protocol_review_${process.pid}_${Date.now()}`
+  let pool
+  try {
+    await admin.query(`CREATE SCHEMA "${schema}"`)
+    pool = new Pool({
+      connectionString: databaseUrl,
+      max: 10,
+      options: `-c search_path=${schema}`
+    })
+    await runMigrations({ pool, logger: silentLogger })
+    await pool.query(
+      `INSERT INTO player_accounts (
+         id, game_profile, discord_user_id, player_id,
+         state_or_kingdom_number, gift_redemption_enabled
+       ) VALUES (
+         '20000000-0000-4000-8000-000000000001', 'wos',
+         '200000000000000001', '282021376', '689', true
+       )`
+    )
+    const repository = createGiftCodeRepository(pool, "wos")
+    const historical = await repository.recordSubmission({
+      code: "gogoWOS",
+      submittedByDiscordUserId: "200000000000000001"
+    })
+    const oldClaim = await repository.claimVerification({
+      workerId: "old-protocol",
+      now: new Date("2026-08-01T10:00:00Z"),
+      leaseSeconds: 60,
+      code: historical.giftCode.code,
+      manual: true
+    })
+    await repository.finishVerification({
+      claim: oldClaim,
+      workerId: "old-protocol",
+      result: apiResult("unknown_response", {
+        httpStatus: 403,
+        errCode: null,
+        message: ""
+      }),
+      now: new Date("2026-08-01T10:00:01Z"),
+      codeStatus: "unknown",
+      verificationState: "review"
+    })
+
+    assert.equal(await repository.claimVerification({
+      workerId: "automatic-before-admin",
+      now: new Date("2026-08-12T10:00:00Z"),
+      leaseSeconds: 60
+    }), null, "automatic workers must skip historical protocol reviews")
+    assert.equal((await repository.recordSubmission({ code: "gogoWOS" })).duplicate, true)
+    assert.equal(await repository.claimVerification({
+      workerId: "automatic-after-source-duplicate",
+      now: new Date("2026-08-12T10:00:01Z"),
+      leaseSeconds: 60
+    }), null, "source rediscovery must not requeue an existing review")
+
+    let requests = 0
+    let activations = 0
+    const config = {
+      leaseSeconds: 60,
+      maximumAttempts: 5,
+      retryBaseSeconds: 60,
+      retryCapSeconds: 3600
+    }
+    const client = {
+      adapter: centuryAdapter("wos", {}),
+      async redeem({ code }) {
+        requests += 1
+        if (code === "gogoWOS") {
+          return apiResult("success", { code: 0, errCode: 20000, message: "SUCCESS" })
+        }
+        if (code === "ExpiredFresh") {
+          return apiResult("expired", { errCode: 40007, message: "TIME ERROR." })
+        }
+        if (code === "InvalidFresh") {
+          return apiResult("invalid_code", { errCode: 40014, message: "CDK NOT FOUND." })
+        }
+        throw new Error("unexpected verification code")
+      }
+    }
+    const processor = createVerificationProcessor({
+      repository,
+      client,
+      verifier: { configured: true, playerId: "282021376", locationNumber: "689" },
+      community: {
+        async onCodeActivated() { activations += 1 },
+        async onVerificationResult() {}
+      },
+      config,
+      botInstanceName: "rachie-wos",
+      logger: silentLogger,
+      now: () => new Date("2026-08-12T11:00:00Z"),
+      workerId: "admin-reverify"
+    })
+    const recovered = await processor.verifyCode("gogoWOS")
+    assert.equal(recovered.processed, true)
+    assert.equal(recovered.recovered, undefined, "HTTP 403 requires a fresh request")
+    assert.equal(recovered.result.giftCode.status, "active")
+    assert.equal(recovered.result.giftCode.verification_state, "complete")
+    assert.equal(recovered.result.queued.length, 1)
+    assert.equal(requests, 1)
+    assert.equal(activations, 1)
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count FROM gift_code_redemptions
+        WHERE game_profile = 'wos' AND gift_code_id = $1`,
+      [historical.giftCode.id]
+    )).rows[0].count, 1)
+
+    assert.equal((await processor.verifyCode("gogoWOS")).processed, false)
+    assert.equal(requests, 1)
+    assert.equal(activations, 1)
+    const restarted = createVerificationProcessor({
+      repository,
+      client,
+      verifier: { configured: true, playerId: "282021376", locationNumber: "689" },
+      config,
+      botInstanceName: "rachie-wos",
+      logger: silentLogger,
+      now: () => new Date("2026-08-12T12:00:00Z"),
+      workerId: "after-restart"
+    })
+    assert.equal(await restarted.tick(), 0)
+    assert.equal(requests, 1)
+
+    for (const [code, expected] of [
+      ["ExpiredFresh", "expired"],
+      ["InvalidFresh", "invalid"]
+    ]) {
+      await repository.recordSubmission({ code })
+      const result = await processor.verifyCode(code)
+      assert.equal(result.processed, true)
+      assert.equal(result.result.giftCode.status, expected)
+      assert.deepEqual(result.result.queued, [])
+    }
+
+    const semanticUnknown = await repository.recordSubmission({ code: "SemanticUnknown" })
+    const semanticClaim = await repository.claimVerification({
+      workerId: "semantic-old",
+      now: new Date("2026-08-12T13:00:00Z"),
+      leaseSeconds: 60,
+      code: semanticUnknown.giftCode.code,
+      manual: true
+    })
+    await repository.finishVerification({
+      claim: semanticClaim,
+      workerId: "semantic-old",
+      result: apiResult("unknown_response", { errCode: 49999, message: "UNKNOWN JSON RESULT" }),
+      now: new Date("2026-08-12T13:00:01Z"),
+      codeStatus: "unknown",
+      verificationState: "review"
+    })
+    assert.equal(await restarted.tick(), 0)
+    assert.equal(requests, 3, "semantic unknown response must not be auto-retried")
+    assert.deepEqual(
+      await pool.query(
+        `SELECT status, verification_state FROM gift_codes
+          WHERE id = $1 AND game_profile = 'wos'`,
+        [semanticUnknown.giftCode.id]
+      ).then(result => result.rows[0]),
+      { status: "unknown", verification_state: "review" }
+    )
+  } finally {
+    await pool?.end().catch(() => {})
+    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
+    await admin.end()
+  }
+})

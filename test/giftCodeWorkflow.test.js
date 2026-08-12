@@ -688,7 +688,26 @@ test("stored edge metadata and Inspect Code remain useful without exposing raw r
   assert.match(output, /Century err_code: None/)
   assert.match(output, /Response type: HTML/)
   assert.match(output, /Classification: Upstream Rejection/)
+  assert.match(output, /Historical verification failed before Century returned an error code/)
+  assert.match(output, /Re-verification with the current client is required/)
   assert.doesNotMatch(output, /Access denied/)
+})
+
+test("Inspect Code does not recommend transport recovery for semantic unknown responses", () => {
+  const output = formatCodeDiagnostics({
+    code: "SEMANTICUNKNOWN",
+    status: "unknown",
+    verification_state: "review",
+    latest_verification_attempt_id: "semantic-attempt",
+    latest_verification_http_status: 200,
+    latest_verification_err_code: 49999,
+    latest_verification_classification: "unknown_response",
+    pending_count: 0,
+    success_count: 0,
+    already_redeemed_count: 0,
+    failed_count: 0
+  })
+  assert.doesNotMatch(output, /Re-verification with the current client is required/)
 })
 
 test("Inspect Code shows sanitized verification and latest redemption messages", () => {

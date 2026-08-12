@@ -38,6 +38,14 @@ function classificationMeaning(value) {
   }[value] || null
 }
 
+function historicalProtocolReview({ status, verificationState, httpStatus, errCode, classification }) {
+  return status === "unknown"
+    && verificationState === "review"
+    && [401, 403].includes(Number(httpStatus))
+    && (errCode === null || errCode === undefined || errCode === "")
+    && ["unknown_response", "upstream_rejection"].includes(classification)
+}
+
 function formatCodeDiagnostics(code) {
   if (!code) return "No matching gift code was found."
   const metadata = code.verification_metadata || {}
@@ -83,6 +91,18 @@ function formatCodeDiagnostics(code) {
   )
   const verificationMeaning = classificationMeaning(verificationClassification)
   if (verificationMeaning) lines.push(`Meaning: ${verificationMeaning}`)
+  if (historicalProtocolReview({
+    status: code.status,
+    verificationState: code.verification_state,
+    httpStatus: verificationHttpStatus,
+    errCode: verificationErrCode,
+    classification: verificationClassification
+  })) {
+    lines.push(
+      "Historical verification failed before Century returned an error code. " +
+      "Re-verification with the current client is required."
+    )
+  }
   if (code.latest_redemption_attempt_id) {
     lines.push(
       "",
@@ -108,6 +128,7 @@ module.exports = {
   displayValue,
   titleCase,
   classificationMeaning,
+  historicalProtocolReview,
   centuryMessage,
   formatCodeDiagnostics
 }
