@@ -2,6 +2,7 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 const fs = require("node:fs")
 const path = require("node:path")
+const { Collection, MessageReferenceType } = require("discord.js")
 
 const {
   parseSourceExpiry,
@@ -23,7 +24,36 @@ const {
   createCatalogueAdapter,
   createCataloguePoller
 } = require("../src/giftCodes/catalogueSources")
-const { createGiftCodeSourceIngestionService } = require("../src/giftCodes/sourceIngestion")
+const {
+  parseDiscordSourceMessage,
+  createGiftCodeSourceIngestionService
+} = require("../src/giftCodes/sourceIngestion")
+
+function forwardedMessage({
+  id = "forward-1",
+  content = "",
+  embeds = [],
+  createdTimestamp = Date.parse("2026-08-12T12:00:00Z")
+} = {}) {
+  return {
+    guildId: "11",
+    channelId: "22",
+    id,
+    webhookId: "44",
+    content: "Outer forwarding commentary is not source content",
+    createdTimestamp,
+    author: { username: "Mirror relay" },
+    reference: {
+      type: MessageReferenceType.Forward,
+      guildId: "source-guild",
+      channelId: "source-channel",
+      messageId: "source-message"
+    },
+    messageSnapshots: new Collection([
+      ["source-message", { content, embeds }]
+    ])
+  }
+}
 
 test("Discord mirror parser recognises explicit labels, preserves case and handles expiry", () => {
   const observedAt = new Date("2026-07-29T12:00:00Z")
@@ -47,6 +77,52 @@ test("Discord mirror parser recognises explicit labels, preserves case and handl
   })
   assert.equal(parseDiscordMirrorMessage("Please remember tonight's event", observedAt), null)
   assert.equal(parseDiscordMirrorMessage("Some arbitrary value: ABC123", observedAt), null)
+})
+
+test("forwarded Discord snapshots reuse labelled parsing for content and useful embed text", () => {
+  const observedAt = new Date("2026-07-29T12:00:00Z")
+  assert.deepEqual(parseDiscordSourceMessage(forwardedMessage({
+    content: "📌 Code: 47ar5vzKz\n⏰ Valid Until: August 3, 23:59 (UTC+0)"
+  }), observedAt), {
+    code: "47ar5vzKz",
+    sourceReportedExpiryAt: new Date("2026-08-03T23:59:00Z"),
+    sourceMessageKind: "forwarded_snapshot"
+  })
+  assert.deepEqual(parseDiscordSourceMessage(forwardedMessage({
+    content: "Gift Code: ExactCase7"
+  }), observedAt), {
+    code: "ExactCase7",
+    sourceReportedExpiryAt: null,
+    sourceMessageKind: "forwarded_snapshot"
+  })
+  assert.deepEqual(parseDiscordSourceMessage(forwardedMessage({
+    embeds: [{
+      title: "Official announcement",
+      description: "A new reward is available.",
+      fields: [
+        { name: "Redeem Code", value: "EmbedCase9" },
+        { name: "Valid Until", value: "August 4, 23:59 (UTC+0)" }
+      ],
+      url: "https://example.invalid/RandomUrlCode999",
+      footer: { text: "FooterCode888" }
+    }]
+  }), observedAt), {
+    code: "EmbedCase9",
+    sourceReportedExpiryAt: new Date("2026-08-04T23:59:00Z"),
+    sourceMessageKind: "forwarded_snapshot"
+  })
+})
+
+test("empty, malformed and arbitrary forwarded snapshots are ignored", () => {
+  const observedAt = new Date("2026-08-12T12:00:00Z")
+  assert.equal(parseDiscordSourceMessage(forwardedMessage(), observedAt), null)
+  assert.equal(parseDiscordSourceMessage(forwardedMessage({
+    content: "Tonight's event starts at 20:00. RandomCode999"
+  }), observedAt), null)
+  assert.equal(parseDiscordSourceMessage({
+    ...forwardedMessage({ content: "Code: ShouldNotParse" }),
+    messageSnapshots: []
+  }, observedAt), null)
 })
 
 test("source expiry chooses a sensible upcoming year without changing canonical state", () => {
@@ -397,6 +473,108 @@ test("Discord source ingestion accepts webhooks, stores scoped provenance and ig
     webhookId: "44",
     sourceDisplayName: "Official WOS"
   })
+})
+
+test("forwarded source observations retain outer provenance and deduplicate canonical work", async () => {
+  const canonical = new Map()
+  const observations = new Map()
+  const recordedObservations = []
+  const health = { lastObservation: null, lastCandidate: null }
+  let submissions = 0
+  let contributorRewards = 0
+  const sourceRepository = {
+    async discordChannel(channelId, guildId) {
+      return channelId === "22" && guildId === "11"
+        ? { source_name: "Official mirror", require_webhook: false }
+        : null
+    },
+    async ensureSource(source) { return { id: "source-1", ...source } },
+    async observation(_sourceId, observationKey) { return observations.get(observationKey) || null },
+    async recordObservation(input) {
+      recordedObservations.push(input)
+      observations.set(input.observationKey, canonical.get(input.code))
+      health.lastObservation = input.observedAt
+      if (input.candidateCreated) health.lastCandidate = input.observedAt
+    }
+  }
+  const ingestion = createGiftCodeSourceIngestionService({
+    giftRepository: {
+      async recordSubmission(input) {
+        submissions += 1
+        const existing = canonical.get(input.code)
+        if (existing) return { giftCode: existing, submission: {}, duplicate: true }
+        const giftCode = { id: `code-${canonical.size + 1}`, code: input.code }
+        canonical.set(input.code, giftCode)
+        if (input.submittedByDiscordUserId) contributorRewards += 1
+        return { giftCode, submission: {}, duplicate: false }
+      }
+    },
+    sourceRepository,
+    gameProfile: "wos"
+  })
+
+  const first = await ingestion.ingestDiscordMessage(forwardedMessage({
+    id: "forward-1",
+    content: "Code: ForwardCase7",
+    createdTimestamp: Date.parse("2026-08-12T12:00:00Z")
+  }))
+  const duplicate = await ingestion.ingestDiscordMessage(forwardedMessage({
+    id: "forward-2",
+    content: "Gift Code: ForwardCase7",
+    createdTimestamp: Date.parse("2026-08-12T12:05:00Z")
+  }))
+
+  assert.equal(first.duplicate, false)
+  assert.equal(duplicate.duplicate, true)
+  assert.equal(canonical.size, 1)
+  assert.equal(submissions, 2)
+  assert.equal(contributorRewards, 0)
+  assert.equal(recordedObservations[0].candidateCreated, true)
+  assert.equal(recordedObservations[1].candidateCreated, false)
+  assert.equal(health.lastObservation.toISOString(), "2026-08-12T12:05:00.000Z")
+  assert.equal(health.lastCandidate.toISOString(), "2026-08-12T12:00:00.000Z")
+  assert.deepEqual(recordedObservations[0].provenance, {
+    transport: "discord",
+    guildId: "11",
+    channelId: "22",
+    messageId: "forward-1",
+    webhookId: "44",
+    sourceDisplayName: "Mirror relay",
+    sourceMessageKind: "forwarded_snapshot",
+    forwardedSourceGuildId: "source-guild",
+    forwardedSourceChannelId: "source-channel",
+    forwardedSourceMessageId: "source-message"
+  })
+})
+
+test("forwarded source ingestion remains profile isolated", async () => {
+  function profileHarness(profile) {
+    const codes = new Map()
+    const ingestion = createGiftCodeSourceIngestionService({
+      gameProfile: profile,
+      sourceRepository: {
+        async discordChannel() { return { source_name: `${profile} mirror`, require_webhook: false } },
+        async ensureSource(source) { return { id: `${profile}-source`, ...source } },
+        async observation() { return null },
+        async recordObservation() {}
+      },
+      giftRepository: {
+        async recordSubmission(input) {
+          const giftCode = { id: `${profile}-code`, code: input.code, game_profile: profile }
+          codes.set(input.code, giftCode)
+          return { giftCode, submission: {}, duplicate: false }
+        }
+      }
+    })
+    return { ingestion, codes }
+  }
+  const wos = profileHarness("wos")
+  const kingshot = profileHarness("kingshot")
+  await wos.ingestion.ingestDiscordMessage(forwardedMessage({ content: "Code: SharedCase7" }))
+  await kingshot.ingestion.ingestDiscordMessage(forwardedMessage({ content: "Code: SharedCase7" }))
+  assert.equal(wos.codes.get("SharedCase7").game_profile, "wos")
+  assert.equal(kingshot.codes.get("SharedCase7").game_profile, "kingshot")
+  assert.notEqual(wos.codes.get("SharedCase7").id, kingshot.codes.get("SharedCase7").id)
 })
 
 test("missing, inaccessible and failing Discord source configuration is contained", async () => {

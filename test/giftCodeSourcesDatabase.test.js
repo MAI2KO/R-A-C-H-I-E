@@ -1,6 +1,7 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
 const { Pool } = require("pg")
+const { Collection, MessageReferenceType } = require("discord.js")
 
 const { runMigrations } = require("../src/migrate")
 const { createGiftCodeRepository } = require("../src/giftCodes/repository")
@@ -103,6 +104,68 @@ test("gift-code source migration, provenance, attribution and profile isolation 
     assert.equal(provenance.provenance.webhookId, "444")
     assert.equal((await wosGifts.getCode("WosExactCase")).expires_at_utc, null)
 
+    const forwardedMessage = {
+      guildId: "111",
+      channelId: "222",
+      id: "forwarded-333",
+      webhookId: "444",
+      content: "Outer forward text",
+      createdTimestamp: Date.parse("2026-08-12T11:00:00Z"),
+      author: { username: "WOS mirror" },
+      reference: {
+        type: MessageReferenceType.Forward,
+        guildId: "original-guild",
+        channelId: "original-channel",
+        messageId: "original-message"
+      },
+      messageSnapshots: new Collection([["original-message", {
+        content: "Gift Code: ForwardedCase7",
+        embeds: []
+      }]])
+    }
+    const forwarded = await wosIngestion.ingestDiscordMessage(forwardedMessage)
+    const forwardedDuplicate = await wosIngestion.ingestDiscordMessage({
+      ...forwardedMessage,
+      id: "forwarded-334",
+      createdTimestamp: Date.parse("2026-08-12T11:05:00Z")
+    })
+    assert.equal(forwarded.duplicate, false)
+    assert.equal(forwardedDuplicate.duplicate, true)
+    assert.equal((await pool.query(
+      "SELECT COUNT(*)::integer AS count FROM gift_codes WHERE game_profile = 'wos' AND code = 'ForwardedCase7'"
+    )).rows[0].count, 1)
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count
+         FROM gift_code_attempts a
+         JOIN gift_codes c ON c.id = a.gift_code_id
+        WHERE c.game_profile = 'wos' AND c.code = 'ForwardedCase7'`
+    )).rows[0].count, 0)
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count
+         FROM gift_code_redemptions r
+         JOIN gift_codes c ON c.id = r.gift_code_id
+        WHERE c.game_profile = 'wos' AND c.code = 'ForwardedCase7'`
+    )).rows[0].count, 0)
+    const forwardedRows = (await pool.query(
+      `SELECT observed_at_utc, provenance
+         FROM gift_code_source_observations
+        WHERE game_profile = 'wos' AND observed_code = 'ForwardedCase7'
+        ORDER BY observed_at_utc`
+    )).rows
+    assert.equal(forwardedRows.length, 2)
+    assert.equal(forwardedRows[0].provenance.messageId, "forwarded-333")
+    assert.equal(forwardedRows[0].provenance.sourceMessageKind, "forwarded_snapshot")
+    assert.equal(forwardedRows[0].provenance.forwardedSourceGuildId, "original-guild")
+    assert.equal(forwardedRows[0].provenance.forwardedSourceChannelId, "original-channel")
+    assert.equal(forwardedRows[0].provenance.forwardedSourceMessageId, "original-message")
+    const mirrorHealth = (await pool.query(
+      `SELECT last_observation_at_utc, last_candidate_at_utc
+         FROM gift_code_sources WHERE id = $1`,
+      [forwarded.source.id]
+    )).rows[0]
+    assert.equal(mirrorHealth.last_observation_at_utc.toISOString(), "2026-08-12T11:05:00.000Z")
+    assert.equal(mirrorHealth.last_candidate_at_utc.toISOString(), "2026-08-12T11:00:00.000Z")
+
     const kingshotCandidate = await kingshotIngestion.ingest({
       source: { sourceType: "public_catalogue", sourceName: "KingshotRewards" },
       code: "WosExactCase",
@@ -177,6 +240,9 @@ test("gift-code source migration, provenance, attribution and profile isolation 
     })
     await pool.query("UPDATE gift_codes SET status = 'active' WHERE id = $1", [automatic.giftCode.id])
     assert.deepEqual(await community.prepareCodeEngagement(automatic.giftCode.id, 0), [])
+
+    await pool.query("UPDATE gift_codes SET status = 'active' WHERE id = $1", [forwarded.giftCode.id])
+    assert.deepEqual(await community.prepareCodeEngagement(forwarded.giftCode.id, 0), [])
 
     const automaticFirst = await wosIngestion.ingest({
       source: catalogueSource,

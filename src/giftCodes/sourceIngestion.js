@@ -1,8 +1,41 @@
+const { MessageReferenceType } = require("discord.js")
 const { normalizeGiftCode } = require("./validation")
 const { parseDiscordMirrorMessage } = require("./sourceParsers")
 
 function safeSourceError(error) {
   return String(error?.code || error?.name || "source_error").slice(0, 100)
+}
+
+function snapshotText(snapshot) {
+  const parts = []
+  if (snapshot?.content) parts.push(String(snapshot.content))
+  for (const embed of Array.isArray(snapshot?.embeds) ? snapshot.embeds : []) {
+    if (embed?.title) parts.push(String(embed.title))
+    if (embed?.description) parts.push(String(embed.description))
+    for (const field of Array.isArray(embed?.fields) ? embed.fields : []) {
+      if (field?.name && field?.value) parts.push(`${field.name}: ${field.value}`)
+    }
+  }
+  return parts.join("\n")
+}
+
+function forwardedSnapshotTexts(message) {
+  if (message?.reference?.type !== MessageReferenceType.Forward) return []
+  const snapshots = message.messageSnapshots
+  if (!snapshots || typeof snapshots.values !== "function") return []
+  return [...snapshots.values()].map(snapshotText).filter(text => text.trim())
+}
+
+function parseDiscordSourceMessage(message, observedAt) {
+  if (message?.reference?.type !== MessageReferenceType.Forward) {
+    const parsed = parseDiscordMirrorMessage(message?.content, observedAt)
+    return parsed ? { ...parsed, sourceMessageKind: "message" } : null
+  }
+  for (const text of forwardedSnapshotTexts(message)) {
+    const parsed = parseDiscordMirrorMessage(text, observedAt)
+    if (parsed) return { ...parsed, sourceMessageKind: "forwarded_snapshot" }
+  }
+  return null
 }
 
 function createGiftCodeSourceIngestionService({ giftRepository, sourceRepository, gameProfile, logger = console }) {
@@ -71,7 +104,7 @@ function createGiftCodeSourceIngestionService({ giftRepository, sourceRepository
         const configured = await sourceRepository.discordChannel(message.channelId, message.guildId)
         if (!configured || (configured.require_webhook && !message.webhookId)) return null
         const observedAt = new Date(message.createdTimestamp || Date.now())
-        const parsed = parseDiscordMirrorMessage(message.content, observedAt)
+        const parsed = parseDiscordSourceMessage(message, observedAt)
         if (!parsed) return null
         return ingest({
           source: {
@@ -90,7 +123,13 @@ function createGiftCodeSourceIngestionService({ giftRepository, sourceRepository
             channelId: message.channelId,
             messageId: message.id,
             webhookId: message.webhookId || null,
-            sourceDisplayName: String(message.author?.username || message.member?.displayName || "").slice(0, 100) || null
+            sourceDisplayName: String(message.author?.username || message.member?.displayName || "").slice(0, 100) || null,
+            ...(parsed.sourceMessageKind === "forwarded_snapshot" ? {
+              sourceMessageKind: "forwarded_snapshot",
+              forwardedSourceGuildId: message.reference?.guildId || null,
+              forwardedSourceChannelId: message.reference?.channelId || null,
+              forwardedSourceMessageId: message.reference?.messageId || null
+            } : {})
           }
         })
       } catch (error) {
@@ -107,4 +146,10 @@ function createGiftCodeSourceIngestionService({ giftRepository, sourceRepository
   })
 }
 
-module.exports = { safeSourceError, createGiftCodeSourceIngestionService }
+module.exports = {
+  safeSourceError,
+  snapshotText,
+  forwardedSnapshotTexts,
+  parseDiscordSourceMessage,
+  createGiftCodeSourceIngestionService
+}
