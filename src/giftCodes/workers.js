@@ -1,5 +1,8 @@
 const { randomUUID } = require("node:crypto")
 const { retryAfterMilliseconds } = require("./rateLimiter")
+const { classifyCenturyResponse } = require("./responseClassifier")
+
+const RECOVERABLE_STORED_VERIFICATION_CODES = Object.freeze([40011])
 
 function retryAt(now, attemptNumber, config) {
   const seconds = Math.min(
@@ -94,6 +97,55 @@ function createVerificationProcessor({
   now = () => new Date(),
   workerId = `verify-${process.pid}-${randomUUID()}`
 }) {
+  async function recoverStoredReview(code = null) {
+    if (typeof repository.storedVerificationReview !== "function" || !client.adapter) return null
+    const claim = await repository.storedVerificationReview({
+      errCodes: RECOVERABLE_STORED_VERIFICATION_CODES,
+      code
+    })
+    if (!claim) return null
+    const classified = classifyCenturyResponse({
+      httpStatus: claim.stored_http_status,
+      data: {
+        code: claim.stored_api_code,
+        err_code: claim.stored_err_code,
+        msg: claim.stored_api_message
+      },
+      profileMappings: client.adapter.responseMappings || {}
+    })
+    if (classified.state !== "redemption_limit") return null
+    const completedAt = now()
+    const transition = verificationTransition(
+      classified.state,
+      claim.verification_attempt_count,
+      completedAt,
+      config
+    )
+    const completed = await repository.finishStoredVerificationRecovery({
+      claim,
+      classification: classified.state,
+      now: completedAt,
+      ...transition,
+      botInstanceName
+    })
+    if (!completed) return null
+    if (completed.giftCode.status === "active" && community) {
+      try {
+        await community.onCodeActivated(completed.giftCode.id, completed.queued.length)
+      } catch (error) {
+        logger.warn(`[Gift codes] Community activation failed: ${sanitizeWorkerError(error)}`)
+      }
+    }
+    logger.log(JSON.stringify({
+      event: "gift_code_verification_reclassified",
+      game_profile: repository.gameProfile,
+      gift_code_id: claim.id,
+      classification: classified.state,
+      err_code: classified.raw.errCode
+    }))
+    return completed
+  }
+
   async function processClaim(claim) {
     const result = await redeemWithProfileLock(repository, client, {
       playerId: verifier.playerId,
@@ -156,6 +208,8 @@ function createVerificationProcessor({
   async function tick() {
     if (!verifier?.configured) return 0
     try {
+      const recovered = await recoverStoredReview()
+      if (recovered) return 1
       const claim = await repository.claimVerification({
         workerId,
         now: now(),
@@ -172,6 +226,8 @@ function createVerificationProcessor({
 
   async function verifyCode(code) {
     if (!verifier?.configured) return { processed: false, reason: verifier?.reason || "verifier not configured" }
+    const recovered = await recoverStoredReview(code)
+    if (recovered) return { processed: true, result: recovered, recovered: true }
     const claim = await repository.claimVerification({
       workerId,
       now: now(),
@@ -183,7 +239,7 @@ function createVerificationProcessor({
     return { processed: true, result: await processClaim(claim) }
   }
 
-  return Object.freeze({ workerId, tick, verifyCode })
+  return Object.freeze({ workerId, tick, verifyCode, recoverStoredReview })
 }
 
 function createRedemptionProcessor({

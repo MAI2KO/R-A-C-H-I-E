@@ -2,7 +2,7 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 
 const { centuryAdapter } = require("../src/giftCodes/adapters")
-const { boundedResponseData } = require("../src/giftCodes/centuryGameClient")
+const { boundedResponseData, createCenturyGameClient } = require("../src/giftCodes/centuryGameClient")
 const { classifyCenturyResponse } = require("../src/giftCodes/responseClassifier")
 const { ConservativeRateLimiter } = require("../src/giftCodes/rateLimiter")
 const {
@@ -417,6 +417,100 @@ test("verifier redemption limit recognises and activates codes for both profiles
     assert.equal(activationCalls, 1)
     assert.equal(feedbackCalls, 0)
   }
+})
+
+test("fresh Kingshot 40011 follows the real client and worker path", async () => {
+  let requests = 0
+  let finished
+  const client = createCenturyGameClient({
+    gameProfile: "kingshot",
+    env: {},
+    transport: {
+      async post() {
+        requests += 1
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          data: { code: 1, data: [], msg: "SAME TYPE EXCHANGE.", err_code: 40011 }
+        }
+      }
+    },
+    limiter: new ConservativeRateLimiter({
+      gameProfile: "kingshot",
+      minimumDelayMs: 0,
+      maximumRetries: 0
+    }),
+    now: () => Date.parse("2026-08-12T12:00:00Z")
+  })
+  const processor = createVerificationProcessor({
+    repository: {
+      gameProfile: "kingshot",
+      async claimVerification() {
+        return { id: "fresh-40011", code: "Kingshot888", verification_attempt_count: 1 }
+      },
+      async finishVerification(input) {
+        finished = input
+        return { giftCode: { id: "fresh-40011", status: input.codeStatus }, queued: [{}] }
+      }
+    },
+    client,
+    verifier: { configured: true, playerId: "368775177", locationNumber: "521" },
+    config,
+    botInstanceName: "peggie-kingshot",
+    logger: { log() {}, warn() {}, error() {} },
+    workerId: "fresh-40011-worker"
+  })
+  assert.equal(await processor.tick(), 1)
+  assert.equal(requests, 1)
+  assert.equal(finished.result.classification.state, "redemption_limit")
+  assert.equal(finished.codeStatus, "active")
+  assert.equal(finished.verificationState, "complete")
+})
+
+test("stored 40011 recovery uses the current adapter without a Century request", async () => {
+  let claimed = true
+  let finished
+  let requests = 0
+  const processor = createVerificationProcessor({
+    repository: {
+      gameProfile: "kingshot",
+      async storedVerificationReview(input) {
+        assert.deepEqual(input.errCodes, [40011])
+        if (!claimed) return null
+        claimed = false
+        return {
+          id: "stored-code",
+          code: "Kingshot888",
+          verification_attempt_count: 1,
+          stored_attempt_id: "stored-attempt",
+          stored_http_status: 200,
+          stored_api_code: 1,
+          stored_err_code: 40011,
+          stored_api_message: "SAME TYPE EXCHANGE."
+        }
+      },
+      async finishStoredVerificationRecovery(input) {
+        finished = input
+        return { giftCode: { id: "stored-code", status: input.codeStatus }, queued: [{}] }
+      },
+      async claimVerification() { return null }
+    },
+    client: {
+      adapter: centuryAdapter("kingshot", {}),
+      async redeem() { requests += 1; throw new Error("must not request Century") }
+    },
+    verifier: { configured: true, playerId: "368775177", locationNumber: "521" },
+    config,
+    botInstanceName: "peggie-kingshot",
+    logger: { log() {}, warn() {}, error() {} },
+    workerId: "stored-40011-worker"
+  })
+  assert.equal(await processor.tick(), 1)
+  assert.equal(requests, 0)
+  assert.equal(finished.classification, "redemption_limit")
+  assert.equal(finished.codeStatus, "active")
+  assert.equal(finished.verificationState, "complete")
+  assert.equal(await processor.tick(), 0, "restart-style repeat must not recover twice")
 })
 
 test("account-specific verifier restrictions activate and fan out without global invalidation", async () => {

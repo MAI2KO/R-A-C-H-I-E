@@ -8,7 +8,11 @@ const { createPlayerService } = require("../src/giftCodes/playerService")
 const { createGiftCodeRepository } = require("../src/giftCodes/repository")
 const { centuryAdapter } = require("../src/giftCodes/adapters")
 const { classifyCenturyResponse } = require("../src/giftCodes/responseClassifier")
-const { verificationTransition, redemptionTransition } = require("../src/giftCodes/workers")
+const {
+  verificationTransition,
+  redemptionTransition,
+  createVerificationProcessor
+} = require("../src/giftCodes/workers")
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const silentLogger = { log() {}, error() {} }
@@ -477,6 +481,152 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     )).rows[0]
     assert.equal(disabled.status, "disabled")
     assert.equal((await wos.accountStatuses(owner, optedOut.player_id))[0].gift_redemption_enabled, false)
+  } finally {
+    await pool?.end().catch(() => {})
+    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
+    await admin.end()
+  }
+})
+
+test("stored 40011 review attempts recover once without another Century request", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 })
+  const schema = `gift_40011_recovery_${process.pid}_${Date.now()}`
+  let pool
+  try {
+    await admin.query(`CREATE SCHEMA "${schema}"`)
+    pool = new Pool({
+      connectionString: databaseUrl,
+      max: 10,
+      options: `-c search_path=${schema}`
+    })
+    await runMigrations({ pool, logger: silentLogger })
+    await pool.query(
+      `INSERT INTO player_accounts (
+         id, game_profile, discord_user_id, player_id,
+         state_or_kingdom_number, gift_redemption_enabled
+       ) VALUES
+         ('10000000-0000-4000-8000-000000000001', 'kingshot',
+          '100000000000000001', '368775177', '521', true),
+         ('10000000-0000-4000-8000-000000000002', 'wos',
+          '100000000000000002', '282021376', '689', true)`
+    )
+    const ks = createGiftCodeRepository(pool, "kingshot")
+    const wos = createGiftCodeRepository(pool, "wos")
+    const storedAt = new Date("2026-08-12T10:00:00Z")
+
+    async function storeOldReview(repository, code, errCode) {
+      const candidate = await repository.recordSubmission({
+        code,
+        submittedByDiscordUserId: "100000000000000001"
+      })
+      const claim = await repository.claimVerification({
+        workerId: `old-${code}`,
+        now: storedAt,
+        leaseSeconds: 60,
+        code,
+        manual: true
+      })
+      await repository.finishVerification({
+        claim,
+        workerId: `old-${code}`,
+        result: apiResult("unknown_response", {
+          errCode,
+          message: errCode === 40011 ? "SAME TYPE EXCHANGE." : "UNRESOLVED"
+        }),
+        now: new Date("2026-08-12T10:00:01Z"),
+        codeStatus: "unknown",
+        verificationState: "review"
+      })
+      return candidate.giftCode
+    }
+
+    const kingshot40011 = await storeOldReview(ks, "Kingshot888", 40011)
+    const kingshotUnknown = await storeOldReview(ks, "StillUnknown", 49999)
+    const wos40011 = await storeOldReview(wos, "WosStoredLimit", 40011)
+    let requests = 0
+    const processorConfig = {
+      leaseSeconds: 60,
+      maximumAttempts: 5,
+      retryBaseSeconds: 60,
+      retryCapSeconds: 3600
+    }
+    const kingshotProcessor = createVerificationProcessor({
+      repository: ks,
+      client: {
+        adapter: centuryAdapter("kingshot", {}),
+        async redeem() { requests += 1; throw new Error("must not request Century") }
+      },
+      verifier: { configured: true, playerId: "368775177", locationNumber: "521" },
+      config: processorConfig,
+      botInstanceName: "peggie-kingshot",
+      logger: silentLogger,
+      now: () => new Date("2026-08-12T11:00:00Z"),
+      workerId: "recover-kingshot"
+    })
+    assert.ok(await kingshotProcessor.recoverStoredReview())
+    assert.equal(requests, 0)
+    assert.deepEqual(
+      await pool.query(
+        `SELECT status, verification_state FROM gift_codes
+          WHERE id = $1 AND game_profile = 'kingshot'`,
+        [kingshot40011.id]
+      ).then(result => result.rows[0]),
+      { status: "active", verification_state: "complete" }
+    )
+    const recoveredAttempt = (await pool.query(
+      `SELECT classification, response_metadata->>'reclassifiedFrom' AS reclassified_from
+         FROM gift_code_attempts
+        WHERE gift_code_id = $1 AND game_profile = 'kingshot'`,
+      [kingshot40011.id]
+    )).rows[0]
+    assert.deepEqual(recoveredAttempt, {
+      classification: "redemption_limit",
+      reclassified_from: "unknown_response"
+    })
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count FROM gift_code_attempts
+        WHERE gift_code_id = $1 AND game_profile = 'kingshot'`,
+      [kingshot40011.id]
+    )).rows[0].count, 1)
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count FROM gift_code_redemptions
+        WHERE gift_code_id = $1 AND game_profile = 'kingshot'`,
+      [kingshot40011.id]
+    )).rows[0].count, 1)
+
+    const restarted = createVerificationProcessor({
+      repository: ks,
+      client: {
+        adapter: centuryAdapter("kingshot", {}),
+        async redeem() { requests += 1; throw new Error("must not request Century") }
+      },
+      verifier: { configured: true, playerId: "368775177", locationNumber: "521" },
+      config: processorConfig,
+      botInstanceName: "peggie-kingshot",
+      logger: silentLogger,
+      now: () => new Date("2026-08-12T11:05:00Z"),
+      workerId: "recover-kingshot-after-restart"
+    })
+    assert.equal(await restarted.tick(), 0)
+    assert.equal(requests, 0)
+    assert.deepEqual(
+      await pool.query(
+        `SELECT status, verification_state FROM gift_codes
+          WHERE id = $1 AND game_profile = 'kingshot'`,
+        [kingshotUnknown.id]
+      ).then(result => result.rows[0]),
+      { status: "unknown", verification_state: "review" }
+    )
+    assert.deepEqual(
+      await pool.query(
+        `SELECT status, verification_state FROM gift_codes
+          WHERE id = $1 AND game_profile = 'wos'`,
+        [wos40011.id]
+      ).then(result => result.rows[0]),
+      { status: "unknown", verification_state: "review" }
+    )
   } finally {
     await pool?.end().catch(() => {})
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})

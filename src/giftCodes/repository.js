@@ -397,6 +397,117 @@ function createGiftCodeRepository(pool, gameProfile) {
       return result.rows[0] || null
     },
 
+    async storedVerificationReview({ errCodes, code = null }) {
+      const exactCode = code === null ? null : normalizeGiftCode(code)
+      const safeErrCodes = [...new Set(errCodes || [])]
+        .map(Number)
+        .filter(Number.isInteger)
+      if (!safeErrCodes.length) return null
+      return (await pool.query(
+        `SELECT g.*, attempt.id AS stored_attempt_id,
+                  attempt.http_status AS stored_http_status,
+                  attempt.api_code AS stored_api_code,
+                  attempt.err_code AS stored_err_code,
+                  attempt.api_message AS stored_api_message,
+                  attempt.response_metadata AS stored_response_metadata
+          FROM gift_codes g
+          JOIN LATERAL (
+            SELECT a.* FROM gift_code_attempts a
+             WHERE a.game_profile = g.game_profile AND a.gift_code_id = g.id
+               AND a.attempt_type = 'verification'
+             ORDER BY a.attempt_number DESC, a.created_at_utc DESC, a.id DESC
+             LIMIT 1
+          ) attempt ON true
+         WHERE g.game_profile = $1 AND g.status = 'unknown'
+           AND g.verification_state = 'review'
+           AND attempt.classification = 'unknown_response'
+           AND attempt.http_status = 200
+           AND attempt.err_code = ANY($2::integer[])
+           AND ($3::varchar IS NULL OR g.code = $3)
+         ORDER BY g.last_verification_at_utc, g.id
+         LIMIT 1`,
+        [gameProfile, safeErrCodes, exactCode]
+      )).rows[0] || null
+    },
+
+    async finishStoredVerificationRecovery({
+      claim,
+      classification,
+      now,
+      codeStatus,
+      verificationState,
+      botInstanceName = null
+    }) {
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const updated = (await client.query(
+          `UPDATE gift_codes
+              SET status = $5::varchar, verification_state = $6::varchar,
+                  verification_next_retry_at_utc = NULL,
+                  verification_claimed_by_worker = NULL,
+                  verification_claimed_at_utc = NULL,
+                  verification_claimed_until_utc = NULL,
+                  verified_at_utc = CASE WHEN $5::varchar = 'active' THEN $4 ELSE verified_at_utc END,
+                  last_verification_at_utc = $4,
+                  verification_metadata = verification_metadata || jsonb_build_object(
+                    'classification', $7::varchar,
+                    'storedResponseReclassifiedAt', $4::timestamptz
+                  ),
+                  updated_at_utc = $4
+            WHERE id = $1 AND game_profile = $2
+              AND status = 'unknown' AND verification_state = 'review'
+              AND EXISTS (
+                SELECT 1 FROM gift_code_attempts a
+                 WHERE a.id = $3 AND a.game_profile = gift_codes.game_profile
+                   AND a.gift_code_id = gift_codes.id
+                   AND a.attempt_type = 'verification'
+                   AND a.classification = 'unknown_response'
+                   AND a.http_status = 200
+              )
+            RETURNING *`,
+          [
+            claim.id, gameProfile, claim.stored_attempt_id, now, codeStatus,
+            verificationState, classification
+          ]
+        )).rows[0]
+        if (!updated) {
+          await client.query("COMMIT")
+          return null
+        }
+        const attempt = (await client.query(
+          `UPDATE gift_code_attempts
+              SET classification = $4,
+                  response_metadata = response_metadata || jsonb_build_object(
+                    'classification', $4::varchar,
+                    'reclassifiedFrom', 'unknown_response',
+                    'reclassifiedAt', $5::timestamptz
+                  )
+            WHERE id = $1 AND game_profile = $2 AND gift_code_id = $3
+              AND attempt_type = 'verification'
+              AND classification = 'unknown_response'
+            RETURNING *`,
+          [claim.stored_attempt_id, gameProfile, claim.id, classification, now]
+        )).rows[0]
+        if (!attempt) throw new Error("Stored verification attempt was not recoverable")
+        let queued = []
+        if (updated.status === "active") {
+          queued = await repository.fanOutActiveCode({
+            giftCodeId: updated.id,
+            botInstanceName,
+            client
+          })
+        }
+        await client.query("COMMIT")
+        return { giftCode: updated, queued, attempt }
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
+    },
+
     async finishVerification({ claim, workerId, result, now, codeStatus, verificationState, nextRetryAt = null, botInstanceName = null }) {
       const fields = machineFields({ ...result, profile: gameProfile })
       const client = await pool.connect()
