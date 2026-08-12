@@ -8,6 +8,7 @@ const {
   parseSourceExpiry,
   parseDiscordMirrorMessage,
   parseActiveCatalogueHtml,
+  parseKingshotActiveCatalogueHtml,
   parseWosActiveCatalogueHtml
 } = require("../src/giftCodes/sourceParsers")
 const {
@@ -151,6 +152,45 @@ test("catalogue parser extracts only explicitly active catalogue entries", () =>
   assert.deepEqual(parseActiveCatalogueHtml(kingshotFixture), ["KsLive7"])
 })
 
+test("current Kingshot catalogue ItemList extracts active codes only and preserves exact case", () => {
+  const fixture = fs.readFileSync(
+    path.join(__dirname, "fixtures", "kingshotRewardsActiveCatalogue.html"),
+    "utf8"
+  )
+  assert.deepEqual(parseKingshotActiveCatalogueHtml(fixture), [
+    "KS0810",
+    "Kingshot888",
+    "VIP777"
+  ])
+  for (const excluded of ["ExpiredKS7", "RandomNavCode999", "FooterCode888"]) {
+    assert.equal(parseKingshotActiveCatalogueHtml(fixture).includes(excluded), false)
+  }
+})
+
+test("Kingshot catalogue retains explicit legacy entries and fails closed on structural drift", () => {
+  assert.deepEqual(parseKingshotActiveCatalogueHtml(`
+    <li data-code="LegacyKS7" data-state="active"></li>
+    <li data-code="ExpiredKS7" data-state="expired"></li>
+  `), ["LegacyKS7"])
+  assert.deepEqual(parseKingshotActiveCatalogueHtml(`
+    <h2>Active Kingshot Gift Codes</h2>
+    <p>RandomCode999</p><footer>FooterCode888</footer>
+  `), [])
+  assert.deepEqual(parseKingshotActiveCatalogueHtml(`
+    <script type="application/ld+json">
+      {"@type":"ItemList","name":"Active Kingshot Gift Codes","itemListElement":[
+        {"@type":"ListItem","name":"AlmostKS7","item":{
+          "@type":"Thing","name":"AlmostKS7","description":"Kingshot gift code"
+        }}
+      ]}
+    </script>
+  `), [])
+  assert.deepEqual(parseKingshotActiveCatalogueHtml(`
+    <script type="application/ld+json">{"changed": true</script>
+    <p>CodeOutsideStructure7</p>
+  `), [])
+})
+
 test("current WOS catalogue section extracts active cards only and preserves exact case", () => {
   const fixture = fs.readFileSync(
     path.join(__dirname, "fixtures", "wosRewardsActiveCatalogue.html"),
@@ -200,6 +240,48 @@ test("catalogue adapters use bounded, timed ordinary GET requests and fail close
     transport: { async get() { return { data: "<html>changed</html>" } } }
   })
   await assert.rejects(malformed.fetchActiveCodes(), { code: "SOURCE_MARKUP_UNRECOGNISED" })
+
+  const kingshotFixture = fs.readFileSync(
+    path.join(__dirname, "fixtures", "kingshotRewardsActiveCatalogue.html"),
+    "utf8"
+  )
+  const kingshot = createCatalogueAdapter({
+    gameProfile: "kingshot",
+    transport: {
+      async get() {
+        return {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+          data: kingshotFixture
+        }
+      }
+    }
+  })
+  assert.deepEqual(await kingshot.fetchActiveCodes(), ["KS0810", "Kingshot888", "VIP777"])
+
+  const changedKingshot = createCatalogueAdapter({
+    gameProfile: "kingshot",
+    transport: {
+      async get() {
+        return {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+          data: "<html><p>RandomCode999</p></html>"
+        }
+      }
+    }
+  })
+  await assert.rejects(changedKingshot.fetchActiveCodes(), error => {
+    assert.equal(error.code, "SOURCE_MARKUP_UNRECOGNISED")
+    assert.deepEqual(error.sourceDiagnostics, {
+      httpStatus: 200,
+      contentType: "text/html; charset=utf-8",
+      responseBytes: 33,
+      expectedStructure: "active_kingshot_gift_codes_item_list"
+    })
+    assert.equal(error.message.includes("RandomCode999"), false)
+    return true
+  })
 
   const malformedWos = createCatalogueAdapter({
     gameProfile: "wos",

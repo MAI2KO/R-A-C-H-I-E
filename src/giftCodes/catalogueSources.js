@@ -1,6 +1,6 @@
 const axios = require("axios")
 const {
-  parseActiveCatalogueHtml,
+  parseKingshotActiveCatalogueHtml,
   parseWosActiveCatalogueHtml
 } = require("./sourceParsers")
 const { safeSourceError } = require("./sourceIngestion")
@@ -45,7 +45,7 @@ function createCatalogueAdapter({
       }
       const codes = gameProfile === "wos"
         ? parseWosActiveCatalogueHtml(body)
-        : parseActiveCatalogueHtml(body)
+        : parseKingshotActiveCatalogueHtml(body)
       if (!codes.length) {
         const contentType = String(response.headers?.["content-type"] || "")
           .slice(0, 100) || null
@@ -59,7 +59,7 @@ function createCatalogueAdapter({
               responseBytes: Buffer.byteLength(body, "utf8"),
               expectedStructure: gameProfile === "wos"
                 ? "active_gift_codes_section"
-                : "explicit_active_code_entry"
+                : "active_kingshot_gift_codes_item_list"
             }
           }
         )

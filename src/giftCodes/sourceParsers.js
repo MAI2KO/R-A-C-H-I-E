@@ -70,6 +70,49 @@ function parseActiveCatalogueHtml(html) {
   return [...codes]
 }
 
+function parseKingshotActiveCatalogueHtml(html) {
+  const legacyCodes = parseActiveCatalogueHtml(html)
+  if (legacyCodes.length) return legacyCodes
+
+  const body = String(html || "")
+  const codes = new Set()
+  const scripts = body.matchAll(
+    /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+  )
+  for (const match of scripts) {
+    let document
+    try {
+      document = JSON.parse(match[1])
+    } catch {
+      continue
+    }
+    const roots = Array.isArray(document) ? document : [document]
+    const objects = roots.flatMap(root => [root, ...(Array.isArray(root?.["@graph"]) ? root["@graph"] : [])])
+    for (const itemList of objects) {
+      const types = Array.isArray(itemList?.["@type"])
+        ? itemList["@type"]
+        : [itemList?.["@type"]]
+      if (!types.includes("ItemList") || itemList?.name !== "Active Kingshot Gift Codes") continue
+      for (const entry of Array.isArray(itemList.itemListElement) ? itemList.itemListElement : []) {
+        const entryTypes = Array.isArray(entry?.["@type"])
+          ? entry["@type"]
+          : [entry?.["@type"]]
+        if (!entryTypes.includes("ListItem")) continue
+        const itemTypes = Array.isArray(entry?.item?.["@type"])
+          ? entry.item["@type"]
+          : [entry?.item?.["@type"]]
+        if (!itemTypes.includes("Thing")) continue
+        if (entry?.item?.description !== "Active Kingshot gift code") continue
+        const outerCode = cleanCode(entry.name)
+        const itemCode = cleanCode(entry.item?.name)
+        if (!outerCode || !itemCode || outerCode !== itemCode) continue
+        codes.add(itemCode)
+      }
+    }
+  }
+  return [...codes]
+}
+
 function parseWosActiveCatalogueHtml(html) {
   const legacyCodes = parseActiveCatalogueHtml(html)
   if (legacyCodes.length) return legacyCodes
@@ -113,5 +156,6 @@ module.exports = {
   parseSourceExpiry,
   parseDiscordMirrorMessage,
   parseActiveCatalogueHtml,
+  parseKingshotActiveCatalogueHtml,
   parseWosActiveCatalogueHtml
 }
