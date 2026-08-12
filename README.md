@@ -144,6 +144,11 @@ The immediate rollback is `EVENT_SCHEDULER_ENABLED=false`. This disables schedul
 - State link code is rejected: generate a fresh code in the state Discord and verify both sides use the same bot/game profile; codes expire after 15 minutes and work once.
 - Duplicate alliance rejected: names are unique case-insensitively within one guild/profile.
 
+## Legal
+
+- [Terms of Service](./TERMS_OF_SERVICE.md)
+- [Privacy Policy](./PRIVACY_POLICY.md)
+
 ## Security And Limitations
 
 - Credentials stay in environment variables; no secrets belong in Git.
