@@ -257,6 +257,29 @@ test("admin panel exposes bounded profile source health", () => {
   assert.doesNotMatch(panel.content, /<html|raw body/i)
 })
 
+test("admin panel uses effective runtime state instead of persisted source enablement", () => {
+  const panel = adminPanel({
+    sessionId: "s",
+    terms: wos,
+    runtime: { sourcePollingEnabled: false },
+    diagnostics: {
+      pending_candidates: 0,
+      active_codes: 0,
+      expired_codes: 0,
+      invalid_codes: 0,
+      restricted_review_codes: 0,
+      pending_redemptions: 0,
+      retry_count: 0
+    },
+    configuration: { settings: null },
+    sourceStatus: {
+      channels: [],
+      sources: [{ source_type: "public_catalogue", enabled: true }]
+    }
+  })
+  assert.match(panel.content, /Public catalogue: Disabled/)
+})
+
 test("community statistics use engagement wording without pricing or guarantees", () => {
   const output = formatCommunityStats({
     auto_redeem_players: 8,

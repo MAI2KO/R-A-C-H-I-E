@@ -21,12 +21,80 @@ const { giftAccountConfig } = require("./config")
 const { createGiftCodeSourceRepository } = require("./sourceRepository")
 const { createGiftCodeSourceIngestionService } = require("./sourceIngestion")
 const { createCatalogueAdapter, createCataloguePoller } = require("./catalogueSources")
-const { sourcePollingConfig } = require("./sourceConfig")
+const { effectiveSourcePollingConfig } = require("./sourceConfig")
 
 let currentRuntime = null
 
 function getGiftCodeRuntime() {
   return currentRuntime
+}
+
+function sourceStartupDiagnostic(config, subsystem) {
+  return `[Gift code sources] ${config.gameProfile}: ` +
+    `polling=${config.pollingEnabled}, profile_source=${config.profileSourceEnabled}, ` +
+    `public_catalogue=${config.publicCatalogueEnabled}, subsystem=${subsystem}, ` +
+    `interval=${config.intervalMs / 1000}s`
+}
+
+function startCatalogueSourceRuntime({
+  gameProfile,
+  env,
+  sourceRepository,
+  sourceIngestion,
+  logger = console,
+  adapterFactory = createCatalogueAdapter,
+  pollerFactory = createCataloguePoller,
+  workerFactory = createPollingWorker
+}) {
+  const config = effectiveSourcePollingConfig(gameProfile, env)
+  logger.log(sourceStartupDiagnostic(config, true))
+  let poller = null
+  let worker = null
+  try {
+    poller = pollerFactory({
+      gameProfile,
+      sourceRepository,
+      ingestion: sourceIngestion,
+      adapter: adapterFactory({
+        gameProfile,
+        timeoutMs: config.timeoutMs,
+        maximumBodyBytes: config.maximumBodyBytes
+      }),
+      enabled: config.publicCatalogueEnabled,
+      logger
+    })
+    worker = workerFactory({
+      tick: poller.poll,
+      intervalMs: config.intervalMs,
+      enabled: config.publicCatalogueEnabled
+    })
+    const start = worker.start()
+    const startError = config.publicCatalogueEnabled && !start.started
+      ? String(start.reason || "not_started").slice(0, 100)
+      : null
+    if (config.publicCatalogueEnabled && !start.started) {
+      logger.error(JSON.stringify({
+        event: "gift_code_source_poller_start_failed",
+        game_profile: gameProfile,
+        error_code: startError
+      }))
+    }
+    return { config, poller, worker, start, error: startError }
+  } catch (error) {
+    const errorCode = sanitizeWorkerError(error)
+    logger.error(JSON.stringify({
+      event: "gift_code_source_poller_start_failed",
+      game_profile: gameProfile,
+      error_code: errorCode
+    }))
+    return {
+      config,
+      poller,
+      worker,
+      start: { started: false, reason: errorCode },
+      error: errorCode
+    }
+  }
 }
 
 function createGiftCodeWorkflowRuntime({
@@ -62,6 +130,9 @@ function createGiftCodeWorkflowRuntime({
       if (!client?.isReady?.()) return { ...health, reason: "Discord client not ready" }
       const subsystem = await initializationPromise
       if (!subsystem?.available) {
+        const gameProfile = subsystem?.gameProfile || String(env.GAME_PROFILE || "wos").trim()
+        const sourceConfig = effectiveSourcePollingConfig(gameProfile, env)
+        logger.log(sourceStartupDiagnostic(sourceConfig, false))
         health = { ...health, reason: subsystem?.reason || "database unavailable" }
         return { ...health }
       }
@@ -129,31 +200,18 @@ function createGiftCodeWorkflowRuntime({
           intervalMs: config.pollIntervalMs,
           enabled: true
         })
-        const sourceConfig = sourcePollingConfig(env)
-        const profileSourceEnabled = gameProfile === "wos"
-          ? sourceConfig.wosEnabled
-          : sourceConfig.kingshotEnabled
-        cataloguePoller = createCataloguePoller({
-          gameProfile,
-          sourceRepository,
-          ingestion: sourceIngestion,
-          adapter: createCatalogueAdapter({
-            gameProfile,
-            timeoutMs: sourceConfig.timeoutMs,
-            maximumBodyBytes: sourceConfig.maximumBodyBytes
-          }),
-          enabled: sourceConfig.pollingEnabled && profileSourceEnabled,
-          logger
-        })
-        sourceWorker = createPollingWorker({
-          tick: cataloguePoller.poll,
-          intervalMs: sourceConfig.intervalMs,
-          enabled: cataloguePoller.enabled
-        })
         const verificationStart = verificationWorker.start()
         const redemptionStart = redemptionWorker.start()
         communityWorker.start()
-        const sourceStart = sourceWorker.start()
+        const sourceRuntime = startCatalogueSourceRuntime({
+          gameProfile,
+          env,
+          sourceRepository,
+          sourceIngestion,
+          logger
+        })
+        cataloguePoller = sourceRuntime.poller
+        sourceWorker = sourceRuntime.worker
         health = {
           started: true,
           reason: null,
@@ -164,8 +222,9 @@ function createGiftCodeWorkflowRuntime({
           verifierReason: verifier?.configured === false ? verifier.reason : null,
           verificationRunning: verificationStart.started,
           redemptionRunning: redemptionStart.started,
-          sourcePollingEnabled: cataloguePoller.enabled,
-          sourcePollingRunning: sourceStart.started
+          sourcePollingEnabled: sourceRuntime.config.publicCatalogueEnabled,
+          sourcePollingRunning: sourceRuntime.start.started,
+          sourcePollingError: sourceRuntime.error
         }
         logger.log(`[Gift codes] Runtime ready for ${gameProfile}; verification=${verificationStart.started}, redemption=${redemptionStart.started}`)
       } catch (error) {
@@ -214,4 +273,9 @@ function createGiftCodeWorkflowRuntime({
   return currentRuntime
 }
 
-module.exports = { getGiftCodeRuntime, createGiftCodeWorkflowRuntime }
+module.exports = {
+  getGiftCodeRuntime,
+  sourceStartupDiagnostic,
+  startCatalogueSourceRuntime,
+  createGiftCodeWorkflowRuntime
+}

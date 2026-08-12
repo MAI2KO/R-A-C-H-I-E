@@ -1,5 +1,5 @@
 function booleanFlag(value) {
-  return String(value || "").toLowerCase() === "true"
+  return ["true", "1"].includes(String(value ?? "").trim().toLowerCase())
 }
 
 function sourcePollingConfig(env = process.env) {
@@ -14,4 +14,17 @@ function sourcePollingConfig(env = process.env) {
   })
 }
 
-module.exports = { booleanFlag, sourcePollingConfig }
+function effectiveSourcePollingConfig(gameProfile, env = process.env) {
+  const config = sourcePollingConfig(env)
+  const profileSourceEnabled = gameProfile === "wos"
+    ? config.wosEnabled
+    : gameProfile === "kingshot" ? config.kingshotEnabled : false
+  return Object.freeze({
+    ...config,
+    gameProfile,
+    profileSourceEnabled,
+    publicCatalogueEnabled: config.pollingEnabled && profileSourceEnabled
+  })
+}
+
+module.exports = { booleanFlag, sourcePollingConfig, effectiveSourcePollingConfig }

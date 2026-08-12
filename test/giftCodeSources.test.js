@@ -6,7 +6,15 @@ const {
   parseDiscordMirrorMessage,
   parseActiveCatalogueHtml
 } = require("../src/giftCodes/sourceParsers")
-const { sourcePollingConfig } = require("../src/giftCodes/sourceConfig")
+const {
+  booleanFlag,
+  sourcePollingConfig,
+  effectiveSourcePollingConfig
+} = require("../src/giftCodes/sourceConfig")
+const {
+  sourceStartupDiagnostic,
+  startCatalogueSourceRuntime
+} = require("../src/giftCodes/workflowRuntime")
 const {
   CATALOGUES,
   createCatalogueAdapter,
@@ -110,6 +118,109 @@ test("polling flags default off and enable profiles independently", () => {
   })
   assert.equal(wosOnly.pollingEnabled && wosOnly.wosEnabled, true)
   assert.equal(wosOnly.pollingEnabled && wosOnly.kingshotEnabled, false)
+})
+
+test("effective source polling uses the global gate and only the matching profile gate", () => {
+  const cases = [
+    [{ GIFT_CODE_SOURCE_POLLING_ENABLED: "true", WOS_REWARDS_SOURCE_ENABLED: "true" }, "wos", true],
+    [{ GIFT_CODE_SOURCE_POLLING_ENABLED: "true", WOS_REWARDS_SOURCE_ENABLED: "false" }, "wos", false],
+    [{ GIFT_CODE_SOURCE_POLLING_ENABLED: "false", WOS_REWARDS_SOURCE_ENABLED: "true" }, "wos", false],
+    [{
+      GIFT_CODE_SOURCE_POLLING_ENABLED: "true",
+      WOS_REWARDS_SOURCE_ENABLED: "true",
+      KINGSHOT_REWARDS_SOURCE_ENABLED: "false"
+    }, "wos", true],
+    [{
+      GIFT_CODE_SOURCE_POLLING_ENABLED: "true",
+      WOS_REWARDS_SOURCE_ENABLED: "false",
+      KINGSHOT_REWARDS_SOURCE_ENABLED: "true"
+    }, "kingshot", true],
+    [{
+      GIFT_CODE_SOURCE_POLLING_ENABLED: "true",
+      WOS_REWARDS_SOURCE_ENABLED: "true",
+      KINGSHOT_REWARDS_SOURCE_ENABLED: "false"
+    }, "kingshot", false]
+  ]
+  for (const [env, profile, expected] of cases) {
+    assert.equal(effectiveSourcePollingConfig(profile, env).publicCatalogueEnabled, expected)
+  }
+  assert.equal(booleanFlag("true"), true)
+  assert.equal(booleanFlag(" TRUE "), true)
+  assert.equal(booleanFlag("1"), true)
+  assert.equal(booleanFlag("false"), false)
+  assert.equal(booleanFlag("0"), false)
+  assert.equal(booleanFlag("yes"), false)
+})
+
+test("source runtime logs effective startup state and starts one poller exactly once", () => {
+  const logs = []
+  let pollerConstructions = 0
+  let workerConstructions = 0
+  let starts = 0
+  const runtime = startCatalogueSourceRuntime({
+    gameProfile: "wos",
+    env: {
+      GIFT_CODE_SOURCE_POLLING_ENABLED: "true",
+      WOS_REWARDS_SOURCE_ENABLED: "true",
+      GIFT_CODE_SOURCE_POLL_INTERVAL_SECONDS: "900"
+    },
+    sourceRepository: {},
+    sourceIngestion: {},
+    logger: { log(value) { logs.push(value) }, error(value) { logs.push(value) } },
+    adapterFactory: input => ({ name: "fixture", ...input }),
+    pollerFactory: input => {
+      pollerConstructions += 1
+      assert.equal(input.enabled, true)
+      return { enabled: true, async poll() {} }
+    },
+    workerFactory: input => {
+      workerConstructions += 1
+      assert.equal(input.enabled, true)
+      return {
+        start() { starts += 1; return { started: true } },
+        isRunning() { return true },
+        async stop() {}
+      }
+    }
+  })
+  assert.equal(runtime.config.publicCatalogueEnabled, true)
+  assert.equal(runtime.start.started, true)
+  assert.equal(pollerConstructions, 1)
+  assert.equal(workerConstructions, 1)
+  assert.equal(starts, 1)
+  assert.deepEqual(logs, [
+    "[Gift code sources] wos: polling=true, profile_source=true, " +
+      "public_catalogue=true, subsystem=true, interval=900s"
+  ])
+  assert.equal(sourceStartupDiagnostic(runtime.config, false),
+    "[Gift code sources] wos: polling=true, profile_source=true, " +
+    "public_catalogue=true, subsystem=false, interval=900s")
+})
+
+test("source poller startup failure is contained and logged without environment data", () => {
+  const errors = []
+  const runtime = startCatalogueSourceRuntime({
+    gameProfile: "wos",
+    env: {
+      GIFT_CODE_SOURCE_POLLING_ENABLED: "true",
+      WOS_REWARDS_SOURCE_ENABLED: "true"
+    },
+    sourceRepository: {},
+    sourceIngestion: {},
+    logger: { log() {}, error(value) { errors.push(JSON.parse(value)) } },
+    adapterFactory: () => ({}),
+    pollerFactory: () => ({ async poll() {} }),
+    workerFactory: () => ({
+      start() { throw Object.assign(new Error("contains environment details"), { code: "START_FAILED" }) }
+    })
+  })
+  assert.equal(runtime.start.started, false)
+  assert.equal(runtime.error, "START_FAILED")
+  assert.deepEqual(errors, [{
+    event: "gift_code_source_poller_start_failed",
+    game_profile: "wos",
+    error_code: "START_FAILED"
+  }])
 })
 
 test("catalogue poller coalesces concurrent runs, records duplicates and contains failures", async () => {
