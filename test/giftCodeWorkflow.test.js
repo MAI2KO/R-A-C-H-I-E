@@ -64,9 +64,16 @@ function centuryResult(state, overrides = {}) {
   }
 }
 
-test("profile classifiers prioritize err_code and do not assume cross-game meanings", () => {
+test("profile classifiers prioritize verified err_code mappings", () => {
   const wos = centuryAdapter("wos", {})
   const kingshot = centuryAdapter("kingshot", {})
+  assert.deepEqual(wos.responseMappings.errCodes, {
+    20000: "success",
+    40008: "already_redeemed",
+    40007: "expired",
+    40014: "invalid_code",
+    40020: "invalid_player"
+  })
   assert.equal(classifyCenturyResponse({
     httpStatus: 200,
     data: { code: 20000, err_code: 40008, msg: "RECEIVED." },
@@ -76,12 +83,47 @@ test("profile classifiers prioritize err_code and do not assume cross-game meani
     httpStatus: 200,
     data: { code: 1, err_code: 40008, msg: "RECEIVED." },
     profileMappings: kingshot.responseMappings
-  }).state, "unknown_response")
+  }).state, "already_redeemed")
   assert.equal(classifyCenturyResponse({
     httpStatus: 200,
     data: { code: 0, err_code: 20000, msg: "SUCCESS" },
     profileMappings: kingshot.responseMappings
   }).state, "success")
+})
+
+test("Kingshot classifies exact verified expired and invalid-code payloads", () => {
+  const mappings = centuryAdapter("kingshot", {}).responseMappings
+  const expired = classifyCenturyResponse({
+    httpStatus: 200,
+    data: { code: 1, data: [], msg: "TIME ERROR.", err_code: 40007 },
+    profileMappings: mappings
+  })
+  const invalid = classifyCenturyResponse({
+    httpStatus: 200,
+    data: { code: 1, data: [], msg: "CDK NOT FOUND.", err_code: 40014 },
+    profileMappings: mappings
+  })
+  const errCodeWins = classifyCenturyResponse({
+    httpStatus: 200,
+    data: { code: 1, data: [], msg: "SUCCESS", err_code: 40014 },
+    profileMappings: mappings
+  })
+  const unknown = classifyCenturyResponse({
+    httpStatus: 200,
+    data: { code: 1, data: [], msg: "NEW KINGSHOT RESPONSE", err_code: 49999 },
+    profileMappings: mappings
+  })
+
+  assert.equal(expired.state, "expired")
+  assert.equal(expired.retryable, false)
+  assert.equal(expired.permanent, true)
+  assert.equal(invalid.state, "invalid_code")
+  assert.equal(invalid.retryable, false)
+  assert.equal(invalid.permanent, true)
+  assert.equal(errCodeWins.state, "invalid_code")
+  assert.equal(unknown.state, "unknown_response")
+  assert.equal(unknown.retryable, false)
+  assert.equal(unknown.permanent, false)
 })
 
 test("unknown response metadata is retained when bounded and safely truncated when large", () => {
@@ -326,7 +368,7 @@ test("stored edge metadata and Inspect Code remain useful without exposing raw r
   assert.doesNotMatch(output, /Access denied/)
 })
 
-test("controlled live harness is opt-in and makes exactly one injected request", async () => {
+test("controlled live WOS harness is opt-in and makes exactly one injected request", async () => {
   let requests = 0
   await assert.rejects(runControlledCenturyVerification({ env: {} }), /blocked/)
   const report = await runControlledCenturyVerification({
@@ -349,6 +391,61 @@ test("controlled live harness is opt-in and makes exactly one injected request",
   assert.equal(requests, 1)
   assert.equal(report.requestCount, 1)
   assert.equal(report.httpStatus, 403)
+})
+
+test("controlled live Kingshot harness uses its profile verifier and makes exactly one request", async () => {
+  let requests = 0
+  let clientOptions = null
+  const output = []
+  const report = await runControlledCenturyVerification({
+    env: {
+      ALLOW_ONE_LIVE_CENTURY_REQUEST: "true",
+      GAME_PROFILE: "kingshot",
+      LIVE_CENTURY_GIFT_CODE: "KS0810",
+      KINGSHOT_GIFT_VERIFY_FID: "368775177",
+      KINGSHOT_GIFT_VERIFY_KID: "521",
+      WOS_GIFT_VERIFY_FID: "ignored",
+      WOS_GIFT_VERIFY_KID: "999"
+    },
+    clientFactory(options) {
+      clientOptions = options
+      return {
+        adapter: centuryAdapter("kingshot", {}),
+        async redeem(input) {
+          requests += 1
+          assert.deepEqual(input, {
+            playerId: "368775177",
+            locationNumber: "521",
+            code: "KS0810"
+          })
+          return {
+            ...centuryResult("success", { errCode: 20000 }),
+            responseDiagnostics: {
+              responseType: "json",
+              bodySummary: "bounded",
+              bodyTruncated: false,
+              originalBodyCharacters: 7
+            }
+          }
+        }
+      }
+    },
+    write(value) { output.push(value) }
+  })
+
+  assert.equal(requests, 1)
+  assert.equal(clientOptions.gameProfile, "kingshot")
+  assert.equal(clientOptions.limiter.maximumRetries, 0)
+  assert.equal(report.requestCount, 1)
+  assert.equal(report.method, "POST")
+  assert.match(report.endpoint, /kingshot-giftcode\.centurygame\.com\/api\/gift_code$/)
+  assert.equal(report.httpStatus, 200)
+  assert.equal(report.classification, "success")
+  assert.equal(report.centuryErrCode, 20000)
+  assert.deepEqual(report.rateLimit, { limit: "30", remaining: "29", reset: null, retryAfter: null })
+  assert.equal(report.response.bodySummary, "bounded")
+  assert.equal(output.length, 1)
+  assert.doesNotMatch(output[0], /mN4!pQs6JrYwV9|fid=|kid=|sign=/)
 })
 
 test("redemption state machine has bounded durable retries and manual-review terminals", () => {

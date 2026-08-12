@@ -6,6 +6,9 @@ const { runMigrations } = require("../src/migrate")
 const { createPlayerRepository } = require("../src/giftCodes/playerRepository")
 const { createPlayerService } = require("../src/giftCodes/playerService")
 const { createGiftCodeRepository } = require("../src/giftCodes/repository")
+const { centuryAdapter } = require("../src/giftCodes/adapters")
+const { classifyCenturyResponse } = require("../src/giftCodes/responseClassifier")
+const { verificationTransition } = require("../src/giftCodes/workers")
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const silentLogger = { log() {}, error() {} }
@@ -151,6 +154,77 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     assert.equal(verified.queued.length, 1)
     assert.equal(verified.queued[0].player_account_id, opted.id)
     assert.equal(await wos.fanOutActiveCode({ giftCodeId: submission.giftCode.id }).then(rows => rows.length), 0)
+    assert.equal((await pool.query(
+      "SELECT COUNT(*)::integer AS count FROM gift_code_redemptions WHERE game_profile = 'kingshot'"
+    )).rows[0].count, 0)
+
+    const kingshotMappings = centuryAdapter("kingshot", {}).responseMappings
+    const kingshotTerminalCases = [
+      {
+        code: "ExpiredKS",
+        payload: { code: 1, data: [], msg: "TIME ERROR.", err_code: 40007 },
+        expectedClassification: "expired",
+        expectedStatus: "expired"
+      },
+      {
+        code: "InvalidKS",
+        payload: { code: 1, data: [], msg: "CDK NOT FOUND.", err_code: 40014 },
+        expectedClassification: "invalid_code",
+        expectedStatus: "invalid"
+      }
+    ]
+    for (const terminalCase of kingshotTerminalCases) {
+      const candidate = await ks.recordSubmission({
+        code: terminalCase.code,
+        submittedByDiscordUserId: owner
+      })
+      const claim = await ks.claimVerification({
+        workerId: `verify-${terminalCase.code}`,
+        now: claimTime,
+        leaseSeconds: 60,
+        code: terminalCase.code,
+        manual: true
+      })
+      const classification = classifyCenturyResponse({
+        httpStatus: 200,
+        data: terminalCase.payload,
+        profileMappings: kingshotMappings
+      })
+      const transition = verificationTransition(classification.state, 1, claimTime, {
+        maximumAttempts: 5,
+        retryBaseSeconds: 60,
+        retryCapSeconds: 3600
+      })
+      const terminal = await ks.finishVerification({
+        claim,
+        workerId: claim.verification_claimed_by_worker,
+        result: apiResult(classification.state, {
+          errCode: classification.raw.errCode,
+          message: classification.raw.message
+        }),
+        now: new Date("2026-08-11T10:00:01Z"),
+        ...transition,
+        botInstanceName: "peggie-kingshot"
+      })
+      assert.equal(classification.state, terminalCase.expectedClassification)
+      assert.equal(classification.retryable, false)
+      assert.equal(terminal.giftCode.status, terminalCase.expectedStatus)
+      assert.equal(terminal.giftCode.verification_state, "complete")
+      assert.equal(terminal.giftCode.verification_next_retry_at_utc, null)
+      assert.deepEqual(terminal.queued, [])
+      assert.equal(await ks.claimVerification({
+        workerId: `retry-${terminalCase.code}`,
+        now: new Date("2026-08-11T11:00:00Z"),
+        leaseSeconds: 60,
+        code: terminalCase.code,
+        manual: true
+      }), null)
+      assert.equal((await pool.query(
+        `SELECT COUNT(*)::integer AS count FROM gift_code_attempts
+          WHERE game_profile = 'kingshot' AND gift_code_id = $1`,
+        [candidate.giftCode.id]
+      )).rows[0].count, 1)
+    }
     assert.equal((await pool.query(
       "SELECT COUNT(*)::integer AS count FROM gift_code_redemptions WHERE game_profile = 'kingshot'"
     )).rows[0].count, 0)

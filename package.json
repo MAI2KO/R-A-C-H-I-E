@@ -8,7 +8,8 @@
     "migrate": "node src/migrate.js",
     "start": "node index.js",
     "test": "node --test",
-    "test:live-century:wos": "node scripts/controlledCenturyVerification.js"
+    "test:live-century:wos": "node scripts/controlledCenturyVerification.js",
+    "test:live-century:kingshot": "GAME_PROFILE=kingshot node scripts/controlledCenturyVerification.js"
   },
   "keywords": [],
   "author": "",

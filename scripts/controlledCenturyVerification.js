@@ -10,20 +10,21 @@ async function runControlledCenturyVerification({
   if (env.ALLOW_ONE_LIVE_CENTURY_REQUEST !== "true") {
     throw new Error("Live Century request blocked: set ALLOW_ONE_LIVE_CENTURY_REQUEST=true explicitly")
   }
-  if (env.GAME_PROFILE !== "wos") {
-    throw new Error("This controlled harness only supports GAME_PROFILE=wos")
+  const gameProfile = String(env.GAME_PROFILE || "").trim()
+  if (!["wos", "kingshot"].includes(gameProfile)) {
+    throw new Error("Controlled harness requires GAME_PROFILE=wos or GAME_PROFILE=kingshot")
   }
-  const verifier = getVerifierAccount("wos", env)
-  if (!verifier?.configured) throw new Error(verifier?.reason || "Whiteout verifier is not configured")
+  const verifier = getVerifierAccount(gameProfile, env)
+  if (!verifier?.configured) throw new Error(verifier?.reason || `${gameProfile} verifier is not configured`)
   const code = String(env.LIVE_CENTURY_GIFT_CODE || "").trim()
   if (!code) throw new Error("LIVE_CENTURY_GIFT_CODE is required")
 
   const limiter = new ConservativeRateLimiter({
-    gameProfile: "wos",
+    gameProfile,
     minimumDelayMs: 0,
     maximumRetries: 0
   })
-  const client = clientFactory({ gameProfile: "wos", env, limiter })
+  const client = clientFactory({ gameProfile, env, limiter })
   const result = await client.redeem({
     playerId: verifier.playerId,
     locationNumber: verifier.locationNumber,

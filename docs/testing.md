@@ -77,3 +77,14 @@ npm run test:live-century:wos
 ```
 
 The harness has no database or Discord dependency, fixes retries at zero, invokes the shared adapter once, and prints only bounded sanitized diagnostics. Do not put the opt-in variable in production configuration and do not repeat the request merely to gather more samples.
+
+The equivalent controlled Kingshot request uses the same harness and safety gate:
+
+```bash
+ALLOW_ONE_LIVE_CENTURY_REQUEST=true \
+GAME_PROFILE=kingshot \
+LIVE_CENTURY_GIFT_CODE=<controlled gift code> \
+KINGSHOT_GIFT_VERIFY_FID=<controlled verifier FID> \
+KINGSHOT_GIFT_VERIFY_KID=<controlled verifier Kingdom> \
+npm run test:live-century:kingshot
+```

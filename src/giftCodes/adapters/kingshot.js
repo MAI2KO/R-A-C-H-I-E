@@ -9,7 +9,12 @@ function kingshotAdapter(env = process.env) {
     redemptionPath: "/gift_code",
     signingSuffix: String(env.CENTURY_KINGSHOT_SIGNING_SUFFIX || DEFAULT_SIGNING_SUFFIX),
     responseMappings: Object.freeze({
-      errCodes: Object.freeze({ 20000: "success" })
+      errCodes: Object.freeze({
+        20000: "success",
+        40008: "already_redeemed",
+        40007: "expired",
+        40014: "invalid_code"
+      })
     })
   })
 }
