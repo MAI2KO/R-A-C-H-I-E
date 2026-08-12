@@ -10,6 +10,7 @@ const { profileTerminology } = require("../src/giftCodes/terminology")
 const {
   IDS,
   selectedAccount,
+  accountMenu,
   playerPanel,
   giftPanel,
   activeCodesPanel,
@@ -22,6 +23,7 @@ const {
 const {
   buildPlayerRegisterCommand,
   buildGiftCodesCommand,
+  buildGiftCodeAddCommand,
   buildGiftCodesAdminCommand,
   getGiftCommandData
 } = require("../src/giftCodes/discord/commands")
@@ -59,12 +61,15 @@ const accounts = [
 test("visible command surface is consolidated while legacy booking register remains", () => {
   assert.equal(buildPlayerRegisterCommand("wos").toJSON().name, "player-register")
   assert.equal(buildGiftCodesCommand("wos").toJSON().name, "gift-codes")
+  assert.equal(buildGiftCodeAddCommand("wos").toJSON().name, "gift-code-add")
   assert.equal(buildGiftCodesAdminCommand("wos").toJSON().name, "gift-codes-admin")
   const registered = [
     buildPlayerRegisterCommand("wos").toJSON(),
     ...getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "true", GAME_PROFILE: "wos" })
   ].map(command => command.name)
-  assert.deepEqual(registered, ["player-register", "gift-codes", "gift-codes-admin"])
+  assert.deepEqual(registered, [
+    "player-register", "gift-code-add", "gift-codes", "gift-codes-admin"
+  ])
   assert.ok(!registered.includes("player"))
   assert.ok(!registered.includes("gift"))
   assert.ok(!registered.includes("gift-admin"))
@@ -88,6 +93,26 @@ test("player panel supports empty registration and multiple-account selection", 
   assert.deepEqual(panel.components[1].components.map(button => button.data.label), [
     "Add Account", "Change State", "Gift Code Settings", "Remove Account"
   ])
+})
+
+test("inactive historical accounts are excluded from player selectors and empty states", () => {
+  const inactive = {
+    ...accounts[0],
+    player_id: "93986200",
+    is_active: false,
+    is_primary: false,
+    gift_redemption_enabled: false
+  }
+  assert.equal(selectedAccount([inactive], inactive.player_id), null)
+  const empty = playerPanel({
+    sessionId: "s", accounts: [inactive], selected: selectedAccount([inactive]), terms: wos
+  })
+  assert.match(empty.content, /Register your game account/)
+  assert.equal(empty.components[0].components[0].data.label, "Register Player")
+  assert.doesNotMatch(empty.content, /93986200|Active: No/)
+
+  const menu = accountMenu("s", [inactive, accounts[1]], accounts[1])
+  assert.equal(menu, null, "one active account should not render a historical selector")
 })
 
 test("registration modal and player panels use State or Kingdom correctly", () => {
@@ -174,8 +199,61 @@ test("admin panel reports worker and configuration health without private record
   assert.ok(!panel.content.includes("Player ID"))
   assert.deepEqual(panel.components.flatMap(row => row.components).map(button => button.data.label), [
     "Configure Channel", "Verify Code", "Inspect Code",
-    "Queue Status", "Community Stats", "Refresh"
+    "Configure Source Channel", "Queue Status", "Community Stats", "Refresh"
   ])
+})
+
+test("admin panel exposes bounded profile source health", () => {
+  const panel = adminPanel({
+    sessionId: "s",
+    terms: kingshot,
+    runtime: {
+      verificationEnabled: false,
+      redemptionEnabled: false,
+      verifierConfigured: false,
+      sourcePollingEnabled: true
+    },
+    diagnostics: {
+      pending_candidates: 0,
+      active_codes: 0,
+      expired_codes: 0,
+      invalid_codes: 0,
+      restricted_review_codes: 0,
+      pending_redemptions: 0,
+      retry_count: 0
+    },
+    configuration: { settings: null, channelAvailable: false, roleAvailable: false },
+    sourceStatus: {
+      channels: [{ enabled: true }, { enabled: true }],
+      sources: [
+        {
+          source_type: "discord_mirror",
+          last_observation_at_utc: "2026-08-10T00:00:00Z",
+          last_candidate_at_utc: "2026-08-09T00:00:00Z"
+        },
+        {
+          source_type: "discord_mirror",
+          last_observation_at_utc: "2026-08-11T00:00:00Z",
+          last_candidate_at_utc: "2026-08-10T00:00:00Z"
+        },
+        {
+          source_type: "public_catalogue",
+          last_poll_at_utc: "2026-08-12T00:00:00Z",
+          last_successful_poll_at_utc: "2026-08-11T23:45:00Z",
+          observations_count: 7,
+          candidates_count: 2,
+          last_error: "ETIMEDOUT"
+        }
+      ]
+    }
+  })
+  assert.match(panel.content, /Official Discord mirror: Enabled \(2\)/)
+  assert.match(panel.content, /Last mirror candidate: <t:/)
+  assert.match(panel.content, /KingshotRewards: Enabled/)
+  assert.match(panel.content, /Codes observed: 7/)
+  assert.match(panel.content, /New candidates: 2/)
+  assert.match(panel.content, /Last source error: ETIMEDOUT/)
+  assert.doesNotMatch(panel.content, /<html|raw body/i)
 })
 
 test("community statistics use engagement wording without pricing or guarantees", () => {
@@ -557,7 +635,8 @@ function panelInteraction({
   customId = null,
   modal = false,
   fields = {},
-  values = []
+  values = [],
+  options = {}
 } = {}) {
   return {
     commandName,
@@ -569,6 +648,7 @@ function panelInteraction({
     replied: false,
     isChatInputCommand: () => Boolean(commandName),
     isModalSubmit: () => modal,
+    options: { getString: name => options[name] },
     fields: { getTextInputValue: name => fields[name] },
     values,
     async deferReply(options) {
@@ -588,6 +668,8 @@ function panelDependencies({
   activePages = [],
   adminDiagnostics = null,
   community = null,
+  submissionResult = null,
+  sourceChannels = [],
   logger = { error() {} }
 } = {}) {
   const terms = profileTerminology("wos")
@@ -612,17 +694,37 @@ function panelDependencies({
       },
       async changeLocation({ playerId, locationNumber }) {
         accounts.find(account => account.player_id === playerId).state_or_kingdom_number = locationNumber
+      },
+      async remove({ playerId }) {
+        const account = accounts.find(value => value.player_id === playerId && value.is_active)
+        if (!account) throw new Error("PLAYER_NOT_FOUND")
+        account.is_active = false
+        account.is_primary = false
+        account.gift_redemption_enabled = false
+        const replacement = accounts.find(value => value.is_active) || null
+        if (replacement) replacement.is_primary = true
+        return { account, replacement }
       }
     }),
     giftRepositoryFactory: () => ({}),
+    sourceRepositoryFactory: () => ({
+      async sourceStatus() { return { sources: [], channels: [] } },
+      async configureDiscordChannel(input) { sourceChannels.push(input) }
+    }),
+    sourceIngestionFactory: () => ({ async ingest() {} }),
     giftServiceFactory: () => ({
       terms,
       async status({ playerId } = {}) {
-        return playerId ? accounts.filter(account => account.player_id === playerId) : accounts
+        const activeAccounts = accounts.filter(account => account.is_active)
+        return playerId
+          ? activeAccounts.filter(account => account.player_id === playerId)
+          : activeAccounts
       },
       async submit(input) {
         submissions.push(input)
-        return { giftCode: { code: input.code.trim() }, outcome: "new candidate" }
+        return submissionResult
+          ? submissionResult(input)
+          : { giftCode: { code: input.code.trim() }, outcome: "new candidate" }
       },
       async activeCodes({ page }) {
         return activePages[page] || {
@@ -707,6 +809,92 @@ test("ordinary users can submit candidates without invoking admin authorization"
   assert.match(submission.edited.content, /new candidate/)
 })
 
+test("removing the only active account immediately renders the empty state without panel failure", async () => {
+  const logs = []
+  const sole = { ...accounts[0], player_id: "93986200" }
+  const dependencies = panelDependencies({
+    accounts: [sole],
+    logger: { error(value) { logs.push(value) } }
+  })
+  const command = panelInteraction({ commandName: "player-register" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  const remove = panelInteraction({
+    customId: command.edited.components.at(-1).components[3].data.custom_id
+  })
+  await handleGiftCodePanelInteraction(remove, dependencies)
+  assert.equal(sole.is_active, false)
+  assert.match(remove.edited.content, /Register your game account/)
+  assert.equal(remove.edited.components[0].components[0].data.label, "Register Player")
+  assert.doesNotMatch(remove.edited.content, /93986200|Active: No/)
+  assert.deepEqual(logs, [])
+})
+
+test("removing one account selects the remaining active account in both profile wordings", async () => {
+  for (const [terms, locationLabel] of [[wos, "State"], [kingshot, "Kingdom"]]) {
+    const first = { ...accounts[0], player_id: "111", state_or_kingdom_number: "689" }
+    const second = { ...accounts[1], player_id: "222", state_or_kingdom_number: "700" }
+    const localAccounts = [first, second]
+    const dependencies = panelDependencies({ accounts: localAccounts })
+    dependencies.giftServiceFactory = () => ({
+      terms,
+      async status() { return localAccounts.filter(account => account.is_active) }
+    })
+    const command = panelInteraction({ commandName: "player-register" })
+    await handleGiftCodePanelInteraction(command, dependencies)
+    const remove = panelInteraction({
+      customId: command.edited.components.at(-1).components[3].data.custom_id
+    })
+    await handleGiftCodePanelInteraction(remove, dependencies)
+    assert.match(remove.edited.content, /Selected: Player ID 222/)
+    assert.match(remove.edited.content, new RegExp(`${locationLabel}: 700`))
+    assert.doesNotMatch(remove.edited.content, /Player ID 111/)
+  }
+})
+
+test("gift-code panel excludes inactive accounts from normal selection", async () => {
+  const inactive = { ...accounts[0], player_id: "93986200", is_active: false }
+  const active = { ...accounts[1], player_id: "222", is_active: true }
+  const dependencies = panelDependencies({ accounts: [inactive, active] })
+  const command = panelInteraction({ commandName: "gift-codes" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  assert.match(command.edited.content, /Selected player: 222/)
+  assert.doesNotMatch(command.edited.content, /93986200|Inactive/)
+})
+
+test("direct gift-code submission preserves case and uses concise status-aware replies", async () => {
+  const cases = [
+    [false, "candidate", "Got it. I'll check that one."],
+    [true, "active", "I've already got that one."],
+    [true, "candidate", "Already checking that one."],
+    [true, "verifying", "Already checking that one."],
+    [true, "expired", "That one's already marked expired."],
+    [true, "invalid", "I've already checked that one and it wasn't valid."],
+    [true, "restricted", "That one's already waiting for review."],
+    [true, "unknown", "That one's already waiting for review."]
+  ]
+  for (const [duplicate, status, expected] of cases) {
+    const submissions = []
+    const dependencies = panelDependencies({
+      accounts: [],
+      submissions,
+      authorization: async () => { throw new Error("ordinary command checked admin access") },
+      submissionResult: input => ({
+        giftCode: { code: input.code.trim(), status },
+        duplicate,
+        outcome: duplicate ? "already known" : "new candidate"
+      })
+    })
+    const command = panelInteraction({
+      commandName: "gift-code-add",
+      options: { code: "MiXeD123" }
+    })
+    await handleGiftCodePanelInteraction(command, dependencies)
+    assert.equal(command.edited.content, expected)
+    assert.equal(submissions[0].code, "MiXeD123")
+    assert.equal(submissions[0].discordUserId, "999999999999999999")
+  }
+})
+
 test("ordinary users can page through profile-scoped active codes", async () => {
   const dependencies = panelDependencies({
     accounts: [],
@@ -787,6 +975,42 @@ test("gift-code Configure Channel succeeds independently of banter Apps Script",
     channelId: "888888888888888888"
   }])
   assert.match(select.edited.content, /Gift Code Administration/)
+})
+
+test("gift-code source channel is configured separately from the announcement channel", async () => {
+  const sourceChannels = []
+  const announcementChannels = []
+  const dependencies = panelDependencies({
+    accounts: [],
+    sourceChannels,
+    adminDiagnostics: adminDiagnostics(),
+    community: {
+      async configuration() {
+        return { settings: null, channelAvailable: false, roleAvailable: false }
+      },
+      async configureChannel(guildId, channelId) {
+        announcementChannels.push({ guildId, channelId })
+      }
+    }
+  })
+  const command = panelInteraction({ commandName: "gift-codes-admin" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  const sourceButton = command.edited.components
+    .flatMap(row => row.components)
+    .find(button => button.data.label === "Configure Source Channel")
+  const configure = panelInteraction({ customId: sourceButton.data.custom_id })
+  await handleGiftCodePanelInteraction(configure, dependencies)
+  assert.match(configure.edited.content, /read for candidates/)
+  const select = panelInteraction({
+    customId: configure.edited.components[0].components[0].data.custom_id,
+    values: ["333333333333333333"]
+  })
+  await handleGiftCodePanelInteraction(select, dependencies)
+  assert.deepEqual(sourceChannels, [{
+    guildId: "777777777777777777",
+    channelId: "333333333333333333"
+  }])
+  assert.deepEqual(announcementChannels, [])
 })
 
 test("PostgreSQL channel-configuration failure stays unavailable and logs safe SQLSTATE context", async () => {

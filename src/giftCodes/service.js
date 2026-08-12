@@ -1,3 +1,4 @@
+const crypto = require("node:crypto")
 const {
   normalizeDiscordUserId,
   normalizeGuildId,
@@ -26,14 +27,14 @@ const SUBMISSION_LABELS = Object.freeze({
   disabled: "known but disabled"
 })
 
-function createGiftCodeService({ repository, gameProfile, env = process.env }) {
+function createGiftCodeService({ repository, gameProfile, env = process.env, ingestion = null }) {
   const terms = profileTerminology(gameProfile)
   const accountConfig = giftAccountConfig(env)
 
   async function selectOwnedAccount(discordUserId, playerId = null, guildId = null) {
     const owner = normalizeDiscordUserId(discordUserId)
     const selectedPlayer = playerId ? normalizePlayerId(playerId, terms.playerLabel) : null
-    const accounts = await repository.accountStatuses(owner, selectedPlayer, guildId)
+    const accounts = await repository.activeAccountStatuses(owner, selectedPlayer, guildId)
     if (!accounts.length) {
       throw new GiftCodeError("PLAYER_NOT_FOUND", `No matching ${terms.playerLabel} was found.`)
     }
@@ -49,15 +50,29 @@ function createGiftCodeService({ repository, gameProfile, env = process.env }) {
     async submit({ discordUserId, guildId = null, code, isAdmin = false }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const exactCode = normalizeGiftCode(code)
-      const recorded = await repository.recordSubmission({
-        code: exactCode,
-        submittedByDiscordUserId: owner,
-        metadata: {
+      const guild = guildId ? normalizeGuildId(guildId) : null
+      const recorded = ingestion
+        ? await ingestion.ingest({
+          source: {
+            sourceType: isAdmin ? "manual_admin" : "manual_user",
+            sourceName: isAdmin ? "Discord admin submissions" : "Discord user submissions",
+            trusted: false
+          },
+          code: exactCode,
+          observationKey: `discord-submit:${crypto.randomUUID()}`,
+          submittedByDiscordUserId: owner,
           submissionKind: isAdmin ? "admin" : "user",
-          transport: "discord",
-          guildId: guildId ? normalizeGuildId(guildId) : null
-        }
-      })
+          provenance: { transport: "discord", guildId: guild }
+        })
+        : await repository.recordSubmission({
+          code: exactCode,
+          submittedByDiscordUserId: owner,
+          metadata: {
+            submissionKind: isAdmin ? "admin" : "user",
+            transport: "discord",
+            guildId: guild
+          }
+        })
       return {
         ...recorded,
         outcome: recorded.duplicate
@@ -101,7 +116,7 @@ function createGiftCodeService({ repository, gameProfile, env = process.env }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const selectedPlayer = playerId ? normalizePlayerId(playerId, terms.playerLabel) : null
       const guild = guildId ? normalizeGuildId(guildId) : null
-      return repository.accountStatuses(owner, selectedPlayer, guild)
+      return repository.activeAccountStatuses(owner, selectedPlayer, guild)
     },
 
     async history({ discordUserId, playerId = null, limit = 10 }) {

@@ -18,6 +18,10 @@ const { createDiscordGiftNotifier } = require("./notifications")
 const { createGiftCodeCommunityRepository } = require("./communityRepository")
 const { createGiftCodeCommunityService } = require("./communityService")
 const { giftAccountConfig } = require("./config")
+const { createGiftCodeSourceRepository } = require("./sourceRepository")
+const { createGiftCodeSourceIngestionService } = require("./sourceIngestion")
+const { createCatalogueAdapter, createCataloguePoller } = require("./catalogueSources")
+const { sourcePollingConfig } = require("./sourceConfig")
 
 let currentRuntime = null
 
@@ -41,6 +45,9 @@ function createGiftCodeWorkflowRuntime({
   let limiter = null
   let community = null
   let communityWorker = null
+  let sourceIngestion = null
+  let sourceWorker = null
+  let cataloguePoller = null
   let health = {
     started: false,
     reason: "not started",
@@ -61,6 +68,16 @@ function createGiftCodeWorkflowRuntime({
       try {
         const gameProfile = subsystem.gameProfile
         const repository = repositoryFactory(getPoolFn({ env, logger }), gameProfile)
+        const sourceRepository = createGiftCodeSourceRepository(
+          getPoolFn({ env, logger }),
+          gameProfile
+        )
+        sourceIngestion = createGiftCodeSourceIngestionService({
+          giftRepository: repository,
+          sourceRepository,
+          gameProfile,
+          logger
+        })
         const communityRepository = createGiftCodeCommunityRepository(
           getPoolFn({ env, logger }),
           gameProfile
@@ -112,9 +129,31 @@ function createGiftCodeWorkflowRuntime({
           intervalMs: config.pollIntervalMs,
           enabled: true
         })
+        const sourceConfig = sourcePollingConfig(env)
+        const profileSourceEnabled = gameProfile === "wos"
+          ? sourceConfig.wosEnabled
+          : sourceConfig.kingshotEnabled
+        cataloguePoller = createCataloguePoller({
+          gameProfile,
+          sourceRepository,
+          ingestion: sourceIngestion,
+          adapter: createCatalogueAdapter({
+            gameProfile,
+            timeoutMs: sourceConfig.timeoutMs,
+            maximumBodyBytes: sourceConfig.maximumBodyBytes
+          }),
+          enabled: sourceConfig.pollingEnabled && profileSourceEnabled,
+          logger
+        })
+        sourceWorker = createPollingWorker({
+          tick: cataloguePoller.poll,
+          intervalMs: sourceConfig.intervalMs,
+          enabled: cataloguePoller.enabled
+        })
         const verificationStart = verificationWorker.start()
         const redemptionStart = redemptionWorker.start()
         communityWorker.start()
+        const sourceStart = sourceWorker.start()
         health = {
           started: true,
           reason: null,
@@ -124,7 +163,9 @@ function createGiftCodeWorkflowRuntime({
           verifierConfigured: verifier?.configured === true,
           verifierReason: verifier?.configured === false ? verifier.reason : null,
           verificationRunning: verificationStart.started,
-          redemptionRunning: redemptionStart.started
+          redemptionRunning: redemptionStart.started,
+          sourcePollingEnabled: cataloguePoller.enabled,
+          sourcePollingRunning: sourceStart.started
         }
         logger.log(`[Gift codes] Runtime ready for ${gameProfile}; verification=${verificationStart.started}, redemption=${redemptionStart.started}`)
       } catch (error) {
@@ -138,7 +179,8 @@ function createGiftCodeWorkflowRuntime({
       await Promise.all([
         verificationWorker?.stop(),
         redemptionWorker?.stop(),
-        communityWorker?.stop()
+        communityWorker?.stop(),
+        sourceWorker?.stop()
       ])
       return { stopped: true }
     },
@@ -149,12 +191,18 @@ function createGiftCodeWorkflowRuntime({
       return verificationProcessor.verifyCode(code)
     },
 
+    async ingestSourceMessage(message) {
+      if (!health.started || !sourceIngestion) return null
+      return sourceIngestion.ingestDiscordMessage(message)
+    },
+
     status() {
       return {
         ...health,
         verificationRunning: verificationWorker?.isRunning() || false,
         redemptionRunning: redemptionWorker?.isRunning() || false,
-        recentRateLimits: limiter?.getObservations().slice(-5) || []
+        recentRateLimits: limiter?.getObservations().slice(-5) || [],
+        sourcePollingRunning: sourceWorker?.isRunning() || false
       }
     },
 

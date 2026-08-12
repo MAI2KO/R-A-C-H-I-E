@@ -19,6 +19,8 @@ const { createGiftCodeRepository } = require("../repository")
 const { createGiftCodeService, GiftCodeError } = require("../service")
 const { createGiftCodeCommunityRepository } = require("../communityRepository")
 const { createGiftCodeCommunityService, GiftCodeCommunityError } = require("../communityService")
+const { createGiftCodeSourceRepository } = require("../sourceRepository")
+const { createGiftCodeSourceIngestionService } = require("../sourceIngestion")
 const { giftAccountConfig } = require("../config")
 const { PlayerValidationError } = require("../validation")
 const { getPlayerGiftCodesHealth } = require("../runtime")
@@ -50,10 +52,12 @@ const IDS = Object.freeze({
   adminStats: `${PREFIX}as:`,
   adminRefresh: `${PREFIX}af:`,
   adminChannelSelect: `${PREFIX}acs:`,
+  adminSourceChannel: `${PREFIX}asc:`,
+  adminSourceChannelSelect: `${PREFIX}ascs:`,
   verifyModal: `${PREFIX}vm:`,
   inspectModal: `${PREFIX}im:`
 })
-const COMMANDS = new Set(["player-register", "gift-codes", "gift-codes-admin"])
+const COMMANDS = new Set(["player-register", "gift-code-add", "gift-codes", "gift-codes-admin"])
 const sessionStore = new InteractionSessionStore({ maximumSessions: 250 })
 
 function suffix(customId, prefix) {
@@ -69,20 +73,21 @@ function interactionContext(interaction, health) {
 }
 
 function selectedAccount(accounts, playerId) {
-  return accounts.find(account => account.player_id === playerId)
-    || accounts.find(account => account.is_active && account.is_primary)
-    || accounts.find(account => account.is_active)
-    || accounts[0]
+  const activeAccounts = accounts.filter(account => account.is_active)
+  return activeAccounts.find(account => account.player_id === playerId)
+    || activeAccounts.find(account => account.is_primary)
+    || activeAccounts[0]
     || null
 }
 
 function accountMenu(sessionId, accounts, selected) {
-  if (accounts.length < 2) return null
+  const activeAccounts = accounts.filter(account => account.is_active)
+  if (activeAccounts.length < 2) return null
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`${IDS.playerSelect}${sessionId}`)
       .setPlaceholder("Choose a player account")
-      .addOptions(accounts.slice(0, 25).map(account => ({
+      .addOptions(activeAccounts.slice(0, 25).map(account => ({
         label: `Player ID ${account.player_id}`,
         description: `${account.is_active ? "Active" : "Inactive"}${account.is_primary ? " · Primary" : ""}`,
         value: account.player_id,
@@ -225,7 +230,18 @@ function oneFieldModal(customId, title, fieldId, label, maximumLength = 128) {
   )
 }
 
-function adminPanel({ sessionId, runtime, diagnostics, configuration, terms }) {
+function sourceTime(value) {
+  return value ? `<t:${Math.floor(new Date(value).getTime() / 1000)}:R>` : "Never"
+}
+
+function latestSourceValue(sources, field) {
+  return sources.reduce((latest, source) => {
+    if (!source[field]) return latest
+    return !latest || new Date(source[field]) > new Date(latest) ? source[field] : latest
+  }, null)
+}
+
+function adminPanel({ sessionId, runtime, diagnostics, configuration, sourceStatus, terms }) {
   const settings = configuration.settings
   const channel = settings?.gift_code_channel_id
     ? (configuration.channelAvailable ? `<#${settings.gift_code_channel_id}>` : "Configured but unavailable")
@@ -235,6 +251,9 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, terms }) {
     : configuration.roleStatus === "error"
       ? "Unable to create/assign"
       : "Created automatically when first earned"
+  const mirrorChannels = sourceStatus?.channels?.filter(channel => channel.enabled) || []
+  const catalogue = sourceStatus?.sources?.find(source => source.source_type === "public_catalogue")
+  const mirrors = sourceStatus?.sources?.filter(source => source.source_type === "discord_mirror") || []
   return {
     content: [
       "**Gift Code Administration**",
@@ -251,7 +270,18 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, terms }) {
       `Invalid codes: ${diagnostics.invalid_codes}`,
       `Restricted/review: ${diagnostics.restricted_review_codes}`,
       `Pending redemptions: ${diagnostics.pending_redemptions}`,
-      `Retry queue: ${diagnostics.retry_count}`
+      `Retry queue: ${diagnostics.retry_count}`,
+      "",
+      "**Sources**",
+      `Official Discord mirror: ${mirrorChannels.length ? `Enabled (${mirrorChannels.length})` : "Not configured"}`,
+      `Last mirror observation: ${sourceTime(latestSourceValue(mirrors, "last_observation_at_utc"))}`,
+      `Last mirror candidate: ${sourceTime(latestSourceValue(mirrors, "last_candidate_at_utc"))}`,
+      `${terms.gameName === "Whiteout Survival" ? "WOSRewards" : "KingshotRewards"}: ${runtime.sourcePollingEnabled ? "Enabled" : "Disabled"}`,
+      `Last poll: ${sourceTime(catalogue?.last_poll_at_utc)}`,
+      `Last successful poll: ${sourceTime(catalogue?.last_successful_poll_at_utc)}`,
+      `Codes observed: ${catalogue?.observations_count || 0}`,
+      `New candidates: ${catalogue?.candidates_count || 0}`,
+      `Last source error: ${catalogue?.last_error || "None"}`
     ].join("\n"),
     components: [
       new ActionRowBuilder().addComponents(
@@ -260,6 +290,7 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, terms }) {
         new ButtonBuilder().setCustomId(`${IDS.adminInspect}${sessionId}`).setLabel("Inspect Code").setStyle(ButtonStyle.Secondary)
       ),
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`${IDS.adminSourceChannel}${sessionId}`).setLabel("Configure Source Channel").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(`${IDS.adminQueue}${sessionId}`).setLabel("Queue Status").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(`${IDS.adminStats}${sessionId}`).setLabel("Community Stats").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(`${IDS.adminRefresh}${sessionId}`).setLabel("Refresh").setStyle(ButtonStyle.Secondary)
@@ -300,6 +331,8 @@ function giftCodePanelHandler(interaction) {
   const handlers = [
     [IDS.adminChannelSelect, "configure_channel_select"],
     [IDS.adminChannel, "configure_channel"],
+    [IDS.adminSourceChannelSelect, "configure_source_channel_select"],
+    [IDS.adminSourceChannel, "configure_source_channel"],
     [IDS.adminVerify, "verify_code"],
     [IDS.adminInspect, "inspect_code"],
     [IDS.adminQueue, "queue_status"],
@@ -341,6 +374,8 @@ async function handleGiftCodePanelInteraction(interaction, {
   playerServiceFactory = createPlayerService,
   giftRepositoryFactory = createGiftCodeRepository,
   giftServiceFactory = createGiftCodeService,
+  sourceRepositoryFactory = createGiftCodeSourceRepository,
+  sourceIngestionFactory = createGiftCodeSourceIngestionService,
   communityRepositoryFactory = createGiftCodeCommunityRepository,
   communityServiceFactory = createGiftCodeCommunityService,
   sessions = sessionStore,
@@ -403,7 +438,19 @@ async function handleGiftCodePanelInteraction(interaction, {
     const playerRepository = playerRepositoryFactory(pool, health.gameProfile)
     const players = playerServiceFactory({ repository: playerRepository, gameProfile: health.gameProfile, logger })
     const giftRepository = giftRepositoryFactory(pool, health.gameProfile)
-    const gifts = giftServiceFactory({ repository: giftRepository, gameProfile: health.gameProfile, env })
+    const sourceRepository = sourceRepositoryFactory(pool, health.gameProfile)
+    const ingestion = sourceIngestionFactory({
+      giftRepository,
+      sourceRepository,
+      gameProfile: health.gameProfile,
+      logger
+    })
+    const gifts = giftServiceFactory({
+      repository: giftRepository,
+      gameProfile: health.gameProfile,
+      env,
+      ingestion
+    })
     const communityRepository = communityRepositoryFactory(pool, health.gameProfile)
     const community = communityServiceFactory({
       repository: communityRepository,
@@ -453,9 +500,10 @@ async function handleGiftCodePanelInteraction(interaction, {
     }
 
     async function renderAdmin(sessionId) {
-      const [diagnostics, configuration] = await Promise.all([
+      const [diagnostics, configuration, sourceStatus] = await Promise.all([
         gifts.adminStatus(),
-        community.configuration(interaction.guildId)
+        community.configuration(interaction.guildId),
+        sourceRepository.sourceStatus(interaction.guildId)
       ])
       const runtime = runtimeProvider()?.status() || {
         verificationEnabled: false,
@@ -463,11 +511,32 @@ async function handleGiftCodePanelInteraction(interaction, {
         verifierConfigured: false
       }
       await interaction.editReply(adminPanel({
-        sessionId, runtime, diagnostics, configuration, terms: gifts.terms
+        sessionId, runtime, diagnostics, configuration, sourceStatus, terms: gifts.terms
       }))
     }
 
     if (interaction.isChatInputCommand?.()) {
+      if (interaction.commandName === "gift-code-add") {
+        const result = await gifts.submit({
+          discordUserId: interaction.user.id,
+          guildId: interaction.guildId,
+          code: interaction.options.getString("code")
+        })
+        const messages = {
+          active: "I've already got that one.",
+          verifying: "Already checking that one.",
+          candidate: "Already checking that one.",
+          expired: "That one's already marked expired.",
+          invalid: "I've already checked that one and it wasn't valid.",
+          restricted: "That one's already waiting for review.",
+          unknown: "That one's already waiting for review."
+        }
+        await interaction.editReply({
+          content: result.duplicate ? messages[result.giftCode.status] || "I've already got that one." : "Got it. I'll check that one.",
+          components: []
+        })
+        return true
+      }
       const panel = interaction.commandName === "player-register"
         ? "player"
         : interaction.commandName === "gift-codes" ? "gift" : "admin"
@@ -606,6 +675,26 @@ async function handleGiftCodePanelInteraction(interaction, {
         error.giftCodeHandler = "configure_channel_reload"
         throw error
       }
+      return true
+    }
+    if (customId.startsWith(IDS.adminSourceChannel)) {
+      await interaction.editReply({
+        content: "**Configure Gift-Code Source Channel**\nMessages in this channel are read for candidates. Verified announcements use the separate gift-code channel.",
+        components: [new ActionRowBuilder().addComponents(
+          new ChannelSelectMenuBuilder().setCustomId(`${IDS.adminSourceChannelSelect}${sessionId}`)
+            .setPlaceholder("Select a mirrored source channel")
+            .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+            .setMinValues(1).setMaxValues(1)
+        )]
+      })
+      return true
+    }
+    if (customId.startsWith(IDS.adminSourceChannelSelect)) {
+      await sourceRepository.configureDiscordChannel({
+        guildId: interaction.guildId,
+        channelId: interaction.values[0]
+      })
+      await renderAdmin(sessionId)
       return true
     }
     if (customId.startsWith(IDS.verifyModal)) {

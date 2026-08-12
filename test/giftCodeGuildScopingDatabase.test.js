@@ -41,7 +41,7 @@ test("gift-code community activity is explicitly guild scoped while redemption s
       options: `-c search_path=${schema}`
     })
     const migrations = await runMigrations({ pool, logger })
-    assert.equal(migrations.applied.at(-1), "015_gift_code_guild_enrolment.sql")
+    assert.equal(migrations.applied.at(-1), "016_gift_code_sources.sql")
 
     const guildA = "700000000000000001"
     const guildB = "700000000000000002"

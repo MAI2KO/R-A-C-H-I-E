@@ -3841,6 +3841,7 @@ if (interaction.commandName === "admin-remove-reserved") {
 
 client.on("messageCreate", async message => {
   try {
+    await giftCodeWorkflowRuntime?.ingestSourceMessage(message)
     if (message.author.bot) return
     if (!message.guild) return
     if (!message.content || message.content.trim().length < 4) return

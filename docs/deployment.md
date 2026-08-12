@@ -28,6 +28,10 @@ Optional on either profile:
 PLAYER_GIFT_CODES_ENABLED=true
 GIFT_CODE_VERIFICATION_ENABLED=false
 GIFT_CODE_REDEMPTION_WORKER_ENABLED=false
+GIFT_CODE_SOURCE_POLLING_ENABLED=false
+WOS_REWARDS_SOURCE_ENABLED=false
+KINGSHOT_REWARDS_SOURCE_ENABLED=false
+GIFT_CODE_SOURCE_POLL_INTERVAL_SECONDS=900
 CENTURY_MINIMUM_DELAY_MS=1000
 CENTURY_MAXIMUM_RETRIES=2
 CENTURY_BACKOFF_BASE_MS=2000
@@ -98,10 +102,11 @@ Do not introduce Railway service IDs, private hostnames, deployment APIs, or per
 
 ## Gift-Code Rollout
 
-1. Stage A: deploy migrations 012 through 014 and code with both workers off. Migration 014 reconciles earlier applied 013 schemas. Verify both bots and existing commands before enabling any Century traffic.
+1. Stage A: deploy migrations 012 through 016 and code with verification, redemption, and catalogue polling off. Migration 014 reconciles earlier applied 013 schemas; migration 016 adds source observations and channel configuration. Verify both bots and existing commands before enabling any external traffic.
 2. Stage B: configure only the matching profile verifier, enable verification only, submit one known valid or already-redeemed code with `/gift-codes-admin` controlled verification, and inspect its classification and observed headers.
 3. Stage C: register and opt in one controlled player, enable the redemption worker, and verify one code/account path including its DM result.
 4. Stage D: expand to a small opted-in group while reviewing retries, unknown responses, and rate-limit observations.
 5. Stage E: permit broader voluntary opt-in only after production evidence supports it.
+6. Stage F: configure a mirrored source channel independently in each intended guild/profile. Enable one matching catalogue adapter only after fixture parsing has been reviewed against the current public page; monitor source health without treating catalogue observations as valid codes.
 
 Command registration occurs during normal bot startup through the existing global Discord command registration call. Deploying commands live is a separate operational act and is not performed by tests. Keep `GIFT_CODE_VERIFICATION_ENABLED=false` and `GIFT_CODE_REDEMPTION_WORKER_ENABLED=false` until their respective rollout stages.

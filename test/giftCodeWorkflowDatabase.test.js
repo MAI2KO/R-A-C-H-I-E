@@ -35,8 +35,8 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     })
     const first = await runMigrations({ pool, logger: silentLogger })
     const second = await runMigrations({ pool, logger: silentLogger })
-    assert.equal(first.applied.length, 15)
-    assert.equal(first.applied.at(-1), "015_gift_code_guild_enrolment.sql")
+    assert.equal(first.applied.length, 16)
+    assert.equal(first.applied.at(-1), "016_gift_code_sources.sql")
     assert.deepEqual(second.applied, [])
 
     const attemptColumns = (await pool.query(

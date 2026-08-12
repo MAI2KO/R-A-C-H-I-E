@@ -23,34 +23,60 @@ function createPlayerRepository(pool, gameProfile) {
           "SELECT pg_advisory_xact_lock(hashtext($1))",
           [`player-primary:${gameProfile}:${discordUserId}`]
         )
+        const existing = (await client.query(
+          `SELECT * FROM player_accounts
+            WHERE game_profile = $1 AND player_id = $2
+            FOR UPDATE`,
+          [gameProfile, playerId]
+        )).rows[0] || null
         const hasActive = (await client.query(
           `SELECT 1 FROM player_accounts
             WHERE game_profile = $1 AND discord_user_id = $2 AND is_active = true
             LIMIT 1`,
           [gameProfile, discordUserId]
         )).rowCount > 0
-        const id = crypto.randomUUID()
-        const account = (await client.query(
-          `INSERT INTO player_accounts (
-             id, game_profile, discord_user_id, player_id,
-             state_or_kingdom_number, is_primary
-           ) VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING *`,
-          [id, gameProfile, discordUserId, playerId, locationNumber, !hasActive]
-        )).rows[0]
-        await client.query(
-          `INSERT INTO player_location_history (
-             id, player_account_id, game_profile, previous_number, new_number,
-             changed_by_discord_user_id, change_source
-           ) VALUES ($1, $2, $3, NULL, $4, $5, 'user_command')`,
-          [crypto.randomUUID(), id, gameProfile, locationNumber, discordUserId]
-        )
+        const canReactivate = existing && !existing.is_active &&
+          existing.discord_user_id === discordUserId
+        const id = canReactivate ? existing.id : crypto.randomUUID()
+        const account = canReactivate
+          ? (await client.query(
+            `UPDATE player_accounts
+                SET state_or_kingdom_number = $4, is_active = true,
+                    is_primary = $5, gift_redemption_enabled = false,
+                    updated_at_utc = now()
+              WHERE id = $1 AND game_profile = $2 AND discord_user_id = $3
+              RETURNING *`,
+            [id, gameProfile, discordUserId, locationNumber, !hasActive]
+          )).rows[0]
+          : (await client.query(
+            `INSERT INTO player_accounts (
+               id, game_profile, discord_user_id, player_id,
+               state_or_kingdom_number, is_primary
+             ) VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING *`,
+            [id, gameProfile, discordUserId, playerId, locationNumber, !hasActive]
+          )).rows[0]
+        if (!canReactivate || existing.state_or_kingdom_number !== locationNumber) {
+          await client.query(
+            `INSERT INTO player_location_history (
+               id, player_account_id, game_profile, previous_number, new_number,
+               changed_by_discord_user_id, change_source
+             ) VALUES ($1, $2, $3, $4, $5, $6, 'user_command')`,
+            [
+              crypto.randomUUID(), id, gameProfile,
+              canReactivate ? existing.state_or_kingdom_number : null,
+              locationNumber, discordUserId
+            ]
+          )
+        }
         if (guildId) {
           await client.query(
             `INSERT INTO player_account_guilds (
                game_profile, guild_id, player_account_id
              ) VALUES ($1, $2, $3)
-             ON CONFLICT DO NOTHING`,
+             ON CONFLICT (game_profile, guild_id, player_account_id) DO UPDATE
+               SET gift_code_enrolled = false,
+                   gift_code_updated_at_utc = now()`,
             [gameProfile, guildId, id]
           )
         }
@@ -169,6 +195,13 @@ function createPlayerRepository(pool, gameProfile) {
                   updated_at_utc = now()
             WHERE game_profile = $1 AND player_account_id = $2
               AND status IN ('queued', 'claimed', 'rate_limited', 'temporary_error')`,
+          [gameProfile, account.id]
+        )
+        await client.query(
+          `UPDATE player_account_guilds
+              SET gift_code_enrolled = false, gift_code_updated_at_utc = now()
+            WHERE game_profile = $1 AND player_account_id = $2
+              AND gift_code_enrolled = true`,
           [gameProfile, account.id]
         )
         let replacement = null

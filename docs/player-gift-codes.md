@@ -4,7 +4,7 @@
 
 PostgreSQL is canonical for both profiles. Whiteout Survival uses **State** and Kingshot uses **Kingdom** in player-facing responses. Discord owns commands, PostgreSQL owns durable workflow state, and Apps Script booking identities remain unchanged.
 
-The subsystem supports canonical player accounts, public candidate submission, verification through an optional profile verifier, explicit per-account redemption opt-in, durable workers, private results, authorized diagnostics, and optional guild-scoped community updates. It does not scrape, import unknown feeds, bypass Century controls, publish per-player redemption traffic, or build the future website.
+The subsystem supports canonical player accounts, manual and configured-source candidate discovery, verification through an optional profile verifier, explicit per-account redemption opt-in, durable workers, private results, authorized diagnostics, and optional guild-scoped community updates. It does not import arbitrary page text, bypass Century controls, publish per-player redemption traffic, or build the future website.
 
 ## Data And Service Boundaries
 
@@ -17,6 +17,8 @@ Discord user
 
 gift_code_sources
   -> gift_code_submissions
+  -> gift_code_source_channels
+  -> gift_code_source_observations
   -> gift_codes (exact case and verification state)
 
 player_account_guilds
@@ -30,13 +32,29 @@ Business logic follows `Discord -> service -> repository/client`. Repositories, 
 
 ## Discord Panels
 
-`/player-register` opens a private account-management panel for registration, account selection, State/Kingdom changes, gift-code settings, and soft removal. `/gift-codes` opens a private player-aware panel for public candidate submission, per-account auto-redemption, and redemption history. `/gift-codes-admin` retains the existing server-management authorization and provides diagnostics, controlled verification, native channel configuration, contributor-role health, queue status, and community statistics. The former `/player`, `/gift`, and `/gift-admin` command trees are not registered.
+`/player-register` opens a private account-management panel for registration, account selection, State/Kingdom changes, gift-code settings, and soft removal. `/gift-code-add code:<code>` is the quick ordinary-user submission path. `/gift-codes` keeps the private player-aware panel submission flow, per-account auto-redemption, and redemption history. `/gift-codes-admin` retains the existing server-management authorization and provides diagnostics, controlled verification, separate native announcement/source channel configuration, contributor-role health, queue status, source health, and community statistics. The former `/player`, `/gift`, and `/gift-admin` command trees are not registered.
 
 The pre-existing `/register` command is separate: it collects alliance tag, in-game name, and Player ID, then calls the Apps Script `register_player_for_server` action used by booking/minister identity workflows. `/my-info`, `/unregister`, and booking continue to use that Apps Script record. `/player-register` overlaps in player identity only and is the intended future canonical surface, but merging the two stores is deferred to avoid changing working booking behavior.
 
 ## Submission And Opt-In
 
-Any ordinary guild user can submit through `/gift-codes`; no administrator permission is required. Submission trims surrounding whitespace but preserves exact code case. Every user/admin submission gets immutable provenance. Duplicate submissions reuse the existing candidate and do not create duplicate verification work; source trust never implies validity. New source adapters must enter through this same pipeline.
+Any ordinary guild user can submit through `/gift-code-add` or `/gift-codes`; no administrator permission is required. Both call the same service. Submission trims surrounding whitespace but preserves exact code case. Every user/admin submission gets immutable provenance. Duplicate submissions reuse the existing candidate and do not create duplicate verification work; source trust never implies validity. New source adapters must enter through this same pipeline.
+
+## Discovery Sources
+
+All sources are discovery only: `source -> candidate ingestion -> case-sensitive deduplication -> existing Century verifier -> existing redemption pipeline`. No source can mark a code active, expired, or valid, and source priority is attribution/analytics metadata only. Automatic sources never receive the human contributor role. A later human duplicate of an automatically discovered code is not misreported as first discovery.
+
+The generic Discord mirror adapter reads configured guild/profile source channels and conservatively recognises explicit `Code:`, `Gift Code:`, and `Redeem Code:` labels. It accepts ordinary or webhook-authored mirrored messages without needing the incoming webhook URL or token. Provenance records guild, channel, message, optional webhook ID, display name, source type, and original message time. Configure this with **Configure Source Channel** in `/gift-codes-admin`. This is separate from **Configure Channel**, which controls verified announcements. WOS and Kingshot source settings remain independent.
+
+Explicit UTC expiry text is stored as source-reported expiry on the observation. It never overwrites the canonical Century status or canonical expiry. Earliest observation time is preserved, repeated message/catalogue observations are idempotent, and a catalogue disappearance is recorded without marking the code expired.
+
+WOSRewards (`https://www.wosrewards.com/`) and KingshotRewards (`https://kingshotrewards.com/`) are secondary public catalogue adapters. Each running game-profile process has at most one logical poller, independent of guild count. Polling uses a normal bounded HTTP GET, ten-second timeout, descriptive User-Agent, and explicit active-entry parsing. Markup changes, oversized responses, timeouts, and repository failures are contained and reported as concise source health codes. Tests inject transport and make no website requests.
+
+Catalogue polling defaults off. `GIFT_CODE_SOURCE_POLLING_ENABLED=true` is the global gate; the matching `WOS_REWARDS_SOURCE_ENABLED=true` or `KINGSHOT_REWARDS_SOURCE_ENABLED=true` gate must also be enabled. `GIFT_CODE_SOURCE_POLL_INTERVAL_SECONDS` defaults to `900` and is clamped to at least five minutes. Discord source-channel ingestion operates whenever the player/gift-code subsystem is running and does not require catalogue polling.
+
+The admin panel shows mirror configuration, latest observations, catalogue enablement, last poll/success, observation/candidate counts, and a sanitized last error. It never shows raw HTML. Facebook ingestion is intentionally deferred because its access behavior is unstable. Whiteout Wiki is only a possible future low-priority fallback because it can lag. Future social, Telegram, RSS, webhook-receiver, or website adapters should emit observations through the same provider-neutral ingestion service.
+
+No Discord webhook credential is required or stored. If a webhook URL/token was exposed independently during development, rotate it in Discord; this feature cannot recover or use it.
 
 Auto-redemption controls operate on one selected owned account at a time; they never change every character. Default is disabled. Enabling queues existing active codes for that account. Disabling or deactivating it disables unfinished work while retaining completed history. A transaction-scoped advisory lock enforces `GIFT_CODE_MAX_AUTO_REDEEM_ACCOUNTS_PER_USER` (default `2`) independently per Discord user and game profile, including concurrent enable attempts. Inactive and opted-out accounts do not consume a slot, and accounts beyond the cap are retained.
 

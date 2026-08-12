@@ -40,6 +40,48 @@ function createGiftCodeRepository(pool, gameProfile) {
   requirePool(pool)
   requireProfile(gameProfile)
 
+  async function accountStatuses(discordUserId, playerId, guildId, includeInactive) {
+    const result = await pool.query(
+      `SELECT a.*,
+              EXISTS (
+                SELECT 1 FROM player_account_guilds ag
+                 WHERE ag.game_profile = a.game_profile
+                   AND ag.player_account_id = a.id
+                   AND ag.guild_id = $4
+                   AND ag.gift_code_enrolled = true
+              ) AS guild_gift_code_enrolled,
+              COALESCE(stats.success_count, 0)::integer AS successful_redemptions,
+              COALESCE(stats.already_redeemed_count, 0)::integer AS already_redeemed,
+              (
+                COALESCE(stats.success_count, 0) +
+                COALESCE(stats.already_redeemed_count, 0)
+              )::integer AS completed_redemption_checks,
+              latest.status AS last_redemption_status,
+              latest.api_message AS last_redemption_message
+         FROM player_accounts a
+         LEFT JOIN LATERAL (
+           SELECT
+             COUNT(*) FILTER (WHERE status = 'success') AS success_count,
+             COUNT(*) FILTER (WHERE status = 'already_redeemed') AS already_redeemed_count
+             FROM gift_code_redemptions r
+            WHERE r.game_profile = a.game_profile AND r.player_account_id = a.id
+         ) stats ON true
+         LEFT JOIN LATERAL (
+           SELECT status, api_message
+             FROM gift_code_redemptions r
+            WHERE r.game_profile = a.game_profile AND r.player_account_id = a.id
+            ORDER BY COALESCE(r.completed_at_utc, r.attempted_at_utc, r.created_at_utc) DESC, r.id
+            LIMIT 1
+         ) latest ON true
+        WHERE a.game_profile = $1 AND a.discord_user_id = $2
+          AND ($3::varchar IS NULL OR a.player_id = $3)
+          AND ($5::boolean = true OR a.is_active = true)
+        ORDER BY a.is_primary DESC, a.created_at_utc, a.id`,
+      [gameProfile, discordUserId, playerId, guildId, includeInactive]
+    )
+    return result.rows
+  }
+
   const repository = {
     gameProfile,
 
@@ -243,45 +285,16 @@ function createGiftCodeRepository(pool, gameProfile) {
       }
     },
 
+    async activeAccountStatuses(discordUserId, playerId = null, guildId = null) {
+      return accountStatuses(discordUserId, playerId, guildId, false)
+    },
+
+    async historicalAccountStatuses(discordUserId, playerId = null, guildId = null) {
+      return accountStatuses(discordUserId, playerId, guildId, true)
+    },
+
     async accountStatuses(discordUserId, playerId = null, guildId = null) {
-      const result = await pool.query(
-        `SELECT a.*,
-                EXISTS (
-                  SELECT 1 FROM player_account_guilds ag
-                   WHERE ag.game_profile = a.game_profile
-                     AND ag.player_account_id = a.id
-                     AND ag.guild_id = $4
-                     AND ag.gift_code_enrolled = true
-                ) AS guild_gift_code_enrolled,
-                COALESCE(stats.success_count, 0)::integer AS successful_redemptions,
-                COALESCE(stats.already_redeemed_count, 0)::integer AS already_redeemed,
-                (
-                  COALESCE(stats.success_count, 0) +
-                  COALESCE(stats.already_redeemed_count, 0)
-                )::integer AS completed_redemption_checks,
-                latest.status AS last_redemption_status,
-                latest.api_message AS last_redemption_message
-           FROM player_accounts a
-           LEFT JOIN LATERAL (
-             SELECT
-               COUNT(*) FILTER (WHERE status = 'success') AS success_count,
-               COUNT(*) FILTER (WHERE status = 'already_redeemed') AS already_redeemed_count
-               FROM gift_code_redemptions r
-              WHERE r.game_profile = a.game_profile AND r.player_account_id = a.id
-           ) stats ON true
-           LEFT JOIN LATERAL (
-             SELECT status, api_message
-               FROM gift_code_redemptions r
-              WHERE r.game_profile = a.game_profile AND r.player_account_id = a.id
-              ORDER BY COALESCE(r.completed_at_utc, r.attempted_at_utc, r.created_at_utc) DESC, r.id
-              LIMIT 1
-           ) latest ON true
-          WHERE a.game_profile = $1 AND a.discord_user_id = $2
-            AND ($3::varchar IS NULL OR a.player_id = $3)
-          ORDER BY a.is_active DESC, a.is_primary DESC, a.created_at_utc, a.id`,
-        [gameProfile, discordUserId, playerId, guildId]
-      )
-      return result.rows
+      return accountStatuses(discordUserId, playerId, guildId, false)
     },
 
     async redemptionHistory(playerAccountId, limit = 10) {

@@ -29,8 +29,8 @@ test("community configuration, auto-redemption cap and engagement state are dura
       options: `-c search_path=${schema}`
     })
     const first = await runMigrations({ pool, logger })
-    assert.equal(first.applied.length, 15)
-    assert.equal(first.applied.at(-1), "015_gift_code_guild_enrolment.sql")
+    assert.equal(first.applied.length, 16)
+    assert.equal(first.applied.at(-1), "016_gift_code_sources.sql")
     assert.deepEqual((await runMigrations({ pool, logger })).applied, [])
 
     const wosCommunity = createGiftCodeCommunityRepository(pool, "wos")
@@ -230,7 +230,7 @@ test("community configuration, auto-redemption cap and engagement state are dura
     const stats = await wosCommunity.communityStats(guild)
     assert.equal(stats.registered_users, 1)
     assert.equal(stats.auto_redeem_players, 1)
-    assert.equal(stats.registered_accounts, 4)
+    assert.equal(stats.registered_accounts, 3)
     assert.equal(stats.enabled_accounts, 2)
     assert.equal(stats.verified_codes, 1)
     assert.equal(stats.latest_verified_code, "NewCode")

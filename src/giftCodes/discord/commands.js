@@ -23,6 +23,14 @@ function buildGiftCodesAdminCommand(gameProfile) {
     .setDescription(`Manage ${terms.gameName} gift-code automation and community settings`)
 }
 
+function buildGiftCodeAddCommand(gameProfile) {
+  const terms = profileTerminology(gameProfile)
+  return new SlashCommandBuilder()
+    .setName("gift-code-add")
+    .setDescription(`Submit a ${terms.gameName} gift code for verification`)
+    .addStringOption(option => option.setName("code").setDescription("Gift code").setRequired(true))
+}
+
 function profileFromEnvironment(env) {
   const gameProfile = String(env.GAME_PROFILE || "wos")
   return ["wos", "kingshot"].includes(gameProfile) ? gameProfile : null
@@ -38,6 +46,7 @@ function getGiftCommandData(env = process.env) {
   if (!playerGiftCodesIsEnabled(env)) return []
   const gameProfile = profileFromEnvironment(env)
   return gameProfile ? [
+    buildGiftCodeAddCommand(gameProfile).toJSON(),
     buildGiftCodesCommand(gameProfile).toJSON(),
     buildGiftCodesAdminCommand(gameProfile).toJSON()
   ] : []
@@ -47,6 +56,7 @@ module.exports = {
   buildPlayerRegisterCommand,
   buildGiftCodesCommand,
   buildGiftCodesAdminCommand,
+  buildGiftCodeAddCommand,
   getPlayerCommandData,
   getGiftCommandData
 }

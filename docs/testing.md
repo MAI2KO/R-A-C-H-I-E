@@ -47,6 +47,7 @@ The database suite starts two `runMigrations` calls concurrently against one iso
 - Migrations 006/007/008 backfill, old-writer, stored-channel/state-link compatibility, and roundup-setting preservation.
 - Ephemeral scheduler help content, controls, limits, degraded-mode availability, and accurate state policy.
 - Concurrent migration-runner serialization and exactly-once migration application.
+- Case-sensitive manual/source ingestion, Discord mirror labels and provenance, webhook replay safety, source expiry isolation, catalogue active-entry fixtures, bounded HTTP behavior, disappearance tracking, source health, and WOS/Kingshot isolation.
 
 ## Test Safety
 
