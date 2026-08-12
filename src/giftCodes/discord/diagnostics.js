@@ -26,10 +26,16 @@ function titleCase(value) {
 }
 
 function classificationMeaning(value) {
-  if (value === "redemption_limit") {
-    return "Another gift code of this type was already redeemed on this character"
-  }
-  return null
+  return {
+    redemption_limit: "Another gift code of this type was already redeemed on this character",
+    claim_limit: "This character has reached the claim limit",
+    level_restriction: "This character's City or Town Center level is too low",
+    account_restriction: "This account does not meet the redemption requirements",
+    account_age_restriction: "This account does not meet the required account age",
+    verification_throttle: "Verification requests were made too frequently",
+    verification_error: "The frontend verification code was incorrect or expired",
+    simultaneous_action_throttle: "Too many simultaneous actions were in progress"
+  }[value] || null
 }
 
 function formatCodeDiagnostics(code) {

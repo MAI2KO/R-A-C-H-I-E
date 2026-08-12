@@ -15,7 +15,10 @@ function retryDate(now, attemptNumber, config, retryAfterMs = 0) {
 }
 
 function verificationTransition(classification, attemptNumber, now, config, retryAfterMs = 0) {
-  if (["success", "already_redeemed", "redemption_limit"].includes(classification)) {
+  if ([
+    "success", "already_redeemed", "redemption_limit", "claim_limit",
+    "level_restriction", "account_restriction", "account_age_restriction"
+  ].includes(classification)) {
     return { codeStatus: "active", verificationState: "complete" }
   }
   if (classification === "expired") return { codeStatus: "expired", verificationState: "complete" }
@@ -24,7 +27,10 @@ function verificationTransition(classification, attemptNumber, now, config, retr
   if (classification === "eligibility_restriction") {
     return { codeStatus: "restricted", verificationState: "review" }
   }
-  if (["rate_limited", "temporary_error"].includes(classification)) {
+  if ([
+    "rate_limited", "temporary_error", "verification_throttle",
+    "simultaneous_action_throttle"
+  ].includes(classification)) {
     if (attemptNumber >= config.maximumAttempts) {
       return { codeStatus: "candidate", verificationState: "blocked" }
     }
@@ -42,15 +48,22 @@ function redemptionTransition(classification, attemptNumber, now, config, retryA
     "success", "already_redeemed", "expired", "invalid_code", "invalid_player"
   ])
   if (terminal.has(classification)) return { status: classification, retryable: false }
-  if (["eligibility_restriction", "redemption_limit"].includes(classification)) {
+  if ([
+    "eligibility_restriction", "redemption_limit", "claim_limit", "level_restriction",
+    "account_restriction", "account_age_restriction"
+  ].includes(classification)) {
     return { status: "restricted", retryable: false }
   }
-  if (["rate_limited", "temporary_error"].includes(classification)) {
+  if ([
+    "rate_limited", "temporary_error", "verification_throttle",
+    "simultaneous_action_throttle"
+  ].includes(classification)) {
     if (attemptNumber >= config.maximumAttempts) {
       return { status: "retry_exhausted", retryable: false }
     }
     return {
-      status: classification,
+      status: classification === "verification_throttle" ? "rate_limited" :
+        classification === "simultaneous_action_throttle" ? "temporary_error" : classification,
       retryable: true,
       nextRetryAt: retryDate(now, attemptNumber, config, retryAfterMs)
     }
@@ -225,7 +238,12 @@ function createRedemptionProcessor({
       })
       await notify(
         claim,
-        result.classification.state === "redemption_limit" ? "redemption_limit" : transition.status
+        transition.status === "restricted" && [
+          "redemption_limit", "claim_limit", "level_restriction",
+          "account_restriction", "account_age_restriction"
+        ].includes(result.classification.state)
+          ? result.classification.state
+          : transition.status
       )
       if (community && !transition.retryable) {
         try {

@@ -13,9 +13,16 @@ const VERIFICATION_RESULT_MESSAGES = Object.freeze({
   expired: "That code has expired.",
   eligibility_restriction: "I couldn't confirm that code, so I haven't added it.",
   redemption_limit: "I couldn't confirm that code, so I haven't added it.",
+  claim_limit: "I couldn't confirm that code, so I haven't added it.",
+  level_restriction: "I couldn't confirm that code, so I haven't added it.",
+  account_restriction: "I couldn't confirm that code, so I haven't added it.",
+  account_age_restriction: "I couldn't confirm that code, so I haven't added it.",
+  verification_error: "I couldn't verify that code, so I've left it for review.",
   upstream_rejection: "I couldn't verify that code right now. I'll leave it for review.",
   temporary_error: "I couldn't verify that code right now. I'll leave it for review.",
   rate_limited: "I couldn't verify that code right now. I'll leave it for review.",
+  verification_throttle: "I couldn't verify that code right now. I'll leave it for review.",
+  simultaneous_action_throttle: "I couldn't verify that code right now. I'll leave it for review.",
   invalid_player: "I couldn't verify that code right now. I'll leave it for review.",
   unknown_response: "I couldn't verify that code, so I've left it for review."
 })

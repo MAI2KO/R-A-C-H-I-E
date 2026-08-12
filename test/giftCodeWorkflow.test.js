@@ -72,15 +72,32 @@ test("profile classifiers prioritize verified err_code mappings", () => {
     40008: "already_redeemed",
     40011: "redemption_limit",
     40007: "expired",
+    40005: "claim_limit",
+    40006: "level_restriction",
+    40012: "account_age_restriction",
     40014: "invalid_code",
-    40020: "invalid_player"
+    40017: "account_restriction",
+    40019: "simultaneous_action_throttle",
+    40020: "invalid_player",
+    40100: "verification_throttle",
+    40102: "verification_error",
+    40103: "verification_error"
   })
   assert.deepEqual(kingshot.responseMappings.errCodes, {
     20000: "success",
     40008: "already_redeemed",
     40011: "redemption_limit",
     40007: "expired",
-    40014: "invalid_code"
+    40005: "claim_limit",
+    40006: "level_restriction",
+    40012: "account_age_restriction",
+    40014: "invalid_code",
+    40017: "account_restriction",
+    40019: "simultaneous_action_throttle",
+    40020: "invalid_player",
+    40100: "verification_throttle",
+    40102: "verification_error",
+    40103: "verification_error"
   })
   assert.equal(classifyCenturyResponse({
     httpStatus: 200,
@@ -111,6 +128,92 @@ test("profile classifiers prioritize verified err_code mappings", () => {
     assert.equal(limited.state, "redemption_limit")
     assert.equal(limited.retryable, false)
     assert.equal(limited.permanent, true)
+  }
+})
+
+test("verified profile mappings have explicit retry and canonical-code behavior", () => {
+  const shared = [
+    [20000, "success", { codeStatus: "active", verificationState: "complete" }],
+    [40007, "expired", { codeStatus: "expired", verificationState: "complete" }],
+    [40008, "already_redeemed", { codeStatus: "active", verificationState: "complete" }],
+    [40011, "redemption_limit", { codeStatus: "active", verificationState: "complete" }],
+    [40014, "invalid_code", { codeStatus: "invalid", verificationState: "complete" }]
+  ]
+  const now = new Date("2026-08-12T12:00:00Z")
+  for (const profile of ["wos", "kingshot"]) {
+    for (const [errCode, expected, transition] of shared) {
+      const classified = classifyCenturyResponse({
+        httpStatus: 200,
+        data: { code: 1, err_code: errCode, msg: "message does not drive classification" },
+        profileMappings: centuryAdapter(profile, {}).responseMappings
+      })
+      assert.equal(classified.state, expected, `${profile} ${errCode}`)
+      assert.equal(classified.retryable, false, `${profile} ${errCode}`)
+      assert.equal(classified.permanent, true, `${profile} ${errCode}`)
+      assert.deepEqual(verificationTransition(classified.state, 1, now, config), transition)
+    }
+  }
+
+  const wosPlayerError = classifyCenturyResponse({
+    httpStatus: 200,
+    data: { code: 1, err_code: 40020, msg: "USER INFO ERROR." },
+    profileMappings: centuryAdapter("wos", {}).responseMappings
+  })
+  assert.equal(wosPlayerError.state, "invalid_player")
+  assert.equal(wosPlayerError.retryable, false)
+  assert.deepEqual(verificationTransition(wosPlayerError.state, 1, now, config), {
+    codeStatus: "candidate",
+    verificationState: "blocked"
+  })
+})
+
+test("official frontend mappings classify proven account and transient outcomes", () => {
+  const mapped = [
+    [40005, "claim_limit", false, true],
+    [40006, "level_restriction", false, true],
+    [40012, "account_age_restriction", false, true],
+    [40017, "account_restriction", false, true],
+    [40019, "simultaneous_action_throttle", true, false],
+    [40020, "invalid_player", false, true],
+    [40100, "verification_throttle", true, false],
+    [40102, "verification_error", false, true],
+    [40103, "verification_error", false, true]
+  ]
+  for (const profile of ["wos", "kingshot"]) {
+    for (const [errCode, state, retryable, permanent] of mapped) {
+      const classified = classifyCenturyResponse({
+        httpStatus: 200,
+        data: { code: 1, err_code: errCode, msg: "message does not drive classification" },
+        profileMappings: centuryAdapter(profile, {}).responseMappings
+      })
+      assert.equal(classified.state, state, `${profile} ${errCode}`)
+      assert.equal(classified.retryable, retryable, `${profile} ${errCode}`)
+      assert.equal(classified.permanent, permanent, `${profile} ${errCode}`)
+    }
+  }
+})
+
+test("unresolved frontend mappings remain profile-scoped and fail closed", () => {
+  const sharedUnresolved = [40001, 40002, 40003, 40004, 40009, 40015, 40016, 40101]
+  const now = new Date("2026-08-12T12:00:00Z")
+  for (const [profile, unresolved] of [
+    ["wos", [...sharedUnresolved, 40018]],
+    ["kingshot", sharedUnresolved]
+  ]) {
+    for (const errCode of unresolved) {
+      const classified = classifyCenturyResponse({
+        httpStatus: 200,
+        data: { code: 1, err_code: errCode, msg: `UNRESOLVED ${errCode}` },
+        profileMappings: centuryAdapter(profile, {}).responseMappings
+      })
+      assert.equal(classified.state, "unknown_response", `${profile} ${errCode}`)
+      assert.equal(classified.retryable, false, `${profile} ${errCode}`)
+      assert.equal(classified.permanent, false, `${profile} ${errCode}`)
+      assert.deepEqual(verificationTransition(classified.state, 1, now, config), {
+        codeStatus: "unknown",
+        verificationState: "review"
+      })
+    }
   }
 })
 
@@ -192,6 +295,13 @@ test("verification state machine distinguishes valid, invalid, blocked, restrict
   assert.deepEqual(verificationTransition("redemption_limit", 1, now, config), {
     codeStatus: "active", verificationState: "complete"
   })
+  for (const state of [
+    "claim_limit", "level_restriction", "account_restriction", "account_age_restriction"
+  ]) {
+    assert.deepEqual(verificationTransition(state, 1, now, config), {
+      codeStatus: "active", verificationState: "complete"
+    })
+  }
   assert.deepEqual(verificationTransition("expired", 1, now, config), {
     codeStatus: "expired", verificationState: "complete"
   })
@@ -205,6 +315,11 @@ test("verification state machine distinguishes valid, invalid, blocked, restrict
     codeStatus: "restricted", verificationState: "review"
   })
   assert.equal(verificationTransition("rate_limited", 1, now, config).verificationState, "retry")
+  assert.equal(verificationTransition("verification_throttle", 1, now, config).verificationState, "retry")
+  assert.equal(
+    verificationTransition("simultaneous_action_throttle", 1, now, config).verificationState,
+    "retry"
+  )
   assert.equal(
     verificationTransition("rate_limited", 1, now, config, 120000).nextRetryAt.toISOString(),
     "2026-08-11T10:02:00.000Z"
@@ -216,6 +331,9 @@ test("verification state machine distinguishes valid, invalid, blocked, restrict
     codeStatus: "unknown", verificationState: "review"
   })
   assert.deepEqual(verificationTransition("upstream_rejection", 1, now, config), {
+    codeStatus: "unknown", verificationState: "review"
+  })
+  assert.deepEqual(verificationTransition("verification_error", 1, now, config), {
     codeStatus: "unknown", verificationState: "review"
   })
 })
@@ -298,6 +416,41 @@ test("verifier redemption limit recognises and activates codes for both profiles
     assert.equal(finished.nextRetryAt, undefined)
     assert.equal(activationCalls, 1)
     assert.equal(feedbackCalls, 0)
+  }
+})
+
+test("account-specific verifier restrictions activate and fan out without global invalidation", async () => {
+  for (const classification of [
+    "claim_limit", "level_restriction", "account_restriction", "account_age_restriction"
+  ]) {
+    let finished
+    let activations = 0
+    const processor = createVerificationProcessor({
+      repository: {
+        gameProfile: "wos",
+        async claimVerification() {
+          return { id: classification, code: "ACCOUNTBOUND", verification_attempt_count: 1 }
+        },
+        async finishVerification(input) {
+          finished = input
+          return {
+            giftCode: { id: classification, status: input.codeStatus },
+            queued: [{ id: `${classification}-redemption` }]
+          }
+        }
+      },
+      client: { async redeem() { return centuryResult(classification) } },
+      verifier: { configured: true, playerId: "123", locationNumber: "689" },
+      community: { async onCodeActivated() { activations += 1 } },
+      config,
+      botInstanceName: "test",
+      logger: { log() {}, warn() {}, error() {} },
+      workerId: `${classification}-worker`
+    })
+    assert.equal(await processor.tick(), 1)
+    assert.equal(finished.codeStatus, "active")
+    assert.equal(finished.verificationState, "complete")
+    assert.equal(activations, 1)
   }
 })
 
@@ -502,6 +655,33 @@ test("Inspect Code reports historical messages that were not recorded", () => {
   assert.equal((output.match(/Century message: Not recorded/g) || []).length, 2)
 })
 
+test("Inspect Code preserves meanings for newly resolved frontend classifications", () => {
+  for (const [classification, meaning] of [
+    ["claim_limit", "This character has reached the claim limit"],
+    ["level_restriction", "This character's City or Town Center level is too low"],
+    ["account_restriction", "This account does not meet the redemption requirements"],
+    ["account_age_restriction", "This account does not meet the required account age"],
+    ["verification_throttle", "Verification requests were made too frequently"],
+    ["verification_error", "The frontend verification code was incorrect or expired"],
+    ["simultaneous_action_throttle", "Too many simultaneous actions were in progress"]
+  ]) {
+    const output = formatCodeDiagnostics({
+      code: "MAPPED",
+      status: "unknown",
+      verification_state: "review",
+      latest_verification_attempt_id: classification,
+      latest_verification_http_status: 200,
+      latest_verification_err_code: 49999,
+      latest_verification_classification: classification,
+      pending_count: 0,
+      success_count: 0,
+      already_redeemed_count: 0,
+      failed_count: 0
+    })
+    assert.ok(output.includes(`Meaning: ${meaning}`), classification)
+  }
+})
+
 test("unknown numeric responses remain unknown after resolving 40011", () => {
   for (const profile of ["wos", "kingshot"]) {
     const classified = classifyCenturyResponse({
@@ -606,7 +786,19 @@ test("redemption state machine has bounded durable retries and manual-review ter
   assert.deepEqual(redemptionTransition("redemption_limit", 1, now, config), {
     status: "restricted", retryable: false
   })
+  for (const state of [
+    "claim_limit", "level_restriction", "account_restriction", "account_age_restriction"
+  ]) {
+    assert.deepEqual(redemptionTransition(state, 1, now, config), {
+      status: "restricted", retryable: false
+    })
+  }
   assert.equal(redemptionTransition("rate_limited", 1, now, config).nextRetryAt.toISOString(), "2026-08-11T10:00:10.000Z")
+  assert.equal(redemptionTransition("verification_throttle", 1, now, config).status, "rate_limited")
+  assert.equal(
+    redemptionTransition("simultaneous_action_throttle", 1, now, config).status,
+    "temporary_error"
+  )
   assert.equal(
     redemptionTransition("rate_limited", 1, now, config, 90000).nextRetryAt.toISOString(),
     "2026-08-11T10:01:30.000Z"
@@ -843,6 +1035,18 @@ test("player redemption DMs are concise, profile aware, masked when needed and c
   assert.equal(
     notificationMessage(claim, "redemption_limit", "kingshot"),
     "ABC can't be claimed on this character - you've already used another code of this type."
+  )
+  assert.equal(
+    notificationMessage(claim, "claim_limit", "kingshot"),
+    "ABC can't be claimed on this character - the claim limit has been reached."
+  )
+  assert.equal(
+    notificationMessage(claim, "level_restriction", "wos"),
+    "ABC can't be claimed on this character - its Furnace level is too low."
+  )
+  assert.equal(
+    notificationMessage(claim, "level_restriction", "kingshot"),
+    "ABC can't be claimed on this character - its Town level is too low."
   )
   assert.equal(
     notificationMessage({ ...claim, location_number_snapshot: "689" }, "invalid_player", "wos"),

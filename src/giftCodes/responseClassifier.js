@@ -27,10 +27,14 @@ function classifyCenturyResponse({ httpStatus, data, profileMappings = {} }) {
 
   return Object.freeze({
     state,
-    retryable: ["rate_limited", "temporary_error"].includes(state),
+    retryable: [
+      "rate_limited", "temporary_error", "verification_throttle",
+      "simultaneous_action_throttle"
+    ].includes(state),
     permanent: [
       "success", "already_redeemed", "expired", "invalid_code", "invalid_player",
-      "eligibility_restriction", "redemption_limit"
+      "eligibility_restriction", "redemption_limit", "claim_limit", "level_restriction",
+      "account_restriction", "account_age_restriction", "verification_error"
     ].includes(state),
     raw
   })

@@ -86,13 +86,15 @@ The optional verifier is configured independently per profile and is never selec
 
 Production has verified a verifier-level `success` response and a player-level `already_redeemed` response. A player-level `success` has intentionally not been manufactured by repeatedly sourcing an account that has not claimed a known code. The next naturally occurring new code should provide that observation; no bypass or special test path exists for it.
 
-Expired and invalid codes stop before fan-out. Invalid verifier information blocks the candidate without calling it invalid. Eligibility/redeeming limits remain restricted review states. Rate limits and temporary failures get durable backoff. Unknown responses retain HTTP status, Century `code`, `err_code`, `msg`, profile, endpoint metadata, and timestamps; they never trigger fan-out or crash the loop.
+Expired and invalid codes stop before fan-out. Invalid verifier information blocks the candidate without calling it invalid. Account-specific claim, level, eligibility, age, and same-type limits prove that Century recognises the code, so verifier results activate and fan out while an individual player's result remains terminal and restricted. Rate limits and simultaneous-action failures use durable bounded backoff. Unknown responses retain HTTP status, Century `code`, `err_code`, `msg`, profile, endpoint metadata, and timestamps; they never trigger fan-out or crash the loop.
 
 ## Century Client And Classification
 
 Whiteout Survival and Kingshot adapters own their official URLs, independently verified current browser-client signing defaults, optional emergency overrides, and profile-specific response mappings. The signing values are public-client implementation details, not credentials. Logs never contain them or complete signing material.
 
-Classification prioritizes `err_code`, then top-level code, then explicitly mapped stable messages, then `unknown_response`. WOS observations currently include `20000` success, `40008` already received, `40007` expired, `40014` not found, and `40020` user information error. Kingshot currently maps only independently verified success semantics; other codes remain unknown until observed and reviewed.
+Classification prioritizes `err_code`, then top-level code, then explicitly mapped stable messages, then `unknown_response`. Both adapters use their independently extracted official frontend maps; profile differences and conservative unresolved outcomes are documented rather than inferred.
+
+The evidence-level protocol tables, retry decisions, and unresolved keys are maintained in [Century Gift-Code Response Protocol](century-response-protocol.md).
 
 Century requests use the official profile endpoint, form encoding, public-client Origin and Referer, a descriptive application User-Agent, and a Unix timestamp in seconds. An unrecognized HTTP 401/403 is retained as `upstream_rejection`; it remains in manual review and cannot activate or fan out a code. Stored edge diagnostics are limited to HTTP status, response type, bounded Content-Type/Server and allowlisted CDN/rate-limit headers, plus a sanitized response summary of at most 2 KB. Cookies, authorization values, signing material, verifier identifiers, and raw HTML are not exposed through Discord.
 

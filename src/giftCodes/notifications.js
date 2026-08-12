@@ -24,6 +24,18 @@ function notificationMessage(claim, status, gameProfile) {
   if (status === "redemption_limit") {
     return `${claim.code} can't be claimed on this character - you've already used another code of this type.`
   }
+  if (status === "claim_limit") {
+    return `${claim.code} can't be claimed on this character - the claim limit has been reached.`
+  }
+  if (status === "level_restriction") {
+    return `${claim.code} can't be claimed on this character - its ${terms.levelLabel} is too low.`
+  }
+  if (status === "account_restriction") {
+    return `${claim.code} can't be claimed on this character because the account doesn't meet the redemption requirements.`
+  }
+  if (status === "account_age_restriction") {
+    return `${claim.code} can't be claimed on this character because the account doesn't meet the required age.`
+  }
   if (status === "restricted") {
     return `${claim.code} could not be redeemed on this character.`
   }

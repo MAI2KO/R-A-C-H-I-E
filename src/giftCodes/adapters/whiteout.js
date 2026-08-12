@@ -14,8 +14,16 @@ function whiteoutAdapter(env = process.env) {
         40008: "already_redeemed",
         40011: "redemption_limit",
         40007: "expired",
+        40005: "claim_limit",
+        40006: "level_restriction",
+        40012: "account_age_restriction",
         40014: "invalid_code",
-        40020: "invalid_player"
+        40017: "account_restriction",
+        40019: "simultaneous_action_throttle",
+        40020: "invalid_player",
+        40100: "verification_throttle",
+        40102: "verification_error",
+        40103: "verification_error"
       })
     })
   })
