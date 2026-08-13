@@ -315,23 +315,95 @@ function createGiftCodeCommunityService({
     }, stats, accountStats, terms, maximumEnabledAccounts)
   }
 
+  async function persistStatusCard(event, channel, message, nowValue, metadata = {}) {
+    const completed = await repository.completeEvent(event.id, workerId, {
+      channelId: channel.id,
+      messageId: message.id,
+      finalized: true,
+      metadata,
+      now: nowValue
+    })
+    if (!completed) {
+      throw new GiftCodeCommunityError(
+        "STATUS_CARD_CLAIM_LOST",
+        "The status-card refresh claim could not be finalized."
+      )
+    }
+    return completed
+  }
+
+  async function sendStatusCard(event, channel, content, allowedMentions, generationOffset) {
+    const statusCardGeneration = Number(event.metadata?.statusCardGeneration || 0) + generationOffset
+    const message = await channel.send({
+      content,
+      allowedMentions,
+      nonce: statusCardNonce(event, generationOffset),
+      enforceNonce: true
+    })
+    const completed = await persistStatusCard(
+      event,
+      channel,
+      message,
+      now(),
+      generationOffset > 0 ? { statusCardGeneration } : {}
+    )
+    return { completed, message }
+  }
+
+  async function editStatusCard(event, guild, content, allowedMentions) {
+    const channel = await resolveChannel(guild, event.channel_id)
+    const message = await channel.messages.fetch(event.message_id)
+    await message.edit({ content, allowedMentions })
+    return persistStatusCard(event, channel, message, now())
+  }
+
+  async function deleteLegacyStatusCard(guild, event) {
+    try {
+      const channel = await resolveChannel(guild, event.channel_id)
+      const message = await channel.messages.fetch(event.message_id)
+      await message.delete()
+    } catch (error) {
+      if (!staleDiscordReference(error)) {
+        logger.warn(`[Gift codes] Legacy status card cleanup failed: ${safeDiscordError(error)}`)
+      }
+    }
+  }
+
   async function deliverStatusCard(event, payload, resolvedGuild = null) {
     const guild = resolvedGuild || await resolveGuild(payload.guild_id)
     const content = await statusCardContent(payload)
     const allowedMentions = PUBLIC_MENTIONS(payload.discord_user_id)
+    const hasPersistedCard = Boolean(event.message_id && event.channel_id)
+    const managedChannelId = payload.managed_gift_channel_id || null
     let staleError = null
 
-    if (event.message_id && event.channel_id) {
+    if (managedChannelId && (!hasPersistedCard || event.channel_id !== managedChannelId)) {
       try {
-        const channel = await resolveChannel(guild, event.channel_id)
-        const message = await channel.messages.fetch(event.message_id)
-        await message.edit({ content, allowedMentions })
-        return repository.completeEvent(event.id, workerId, {
-          channelId: channel.id,
-          messageId: message.id,
-          finalized: true,
-          now: now()
-        })
+        const managedChannel = await resolveChannel(guild, managedChannelId)
+        const { completed } = await sendStatusCard(
+          event,
+          managedChannel,
+          content,
+          allowedMentions,
+          hasPersistedCard ? 1 : 0
+        )
+        if (hasPersistedCard) await deleteLegacyStatusCard(guild, event)
+        return completed
+      } catch (managedError) {
+        if (hasPersistedCard) {
+          try {
+            return await editStatusCard(event, guild, content, allowedMentions)
+          } catch {
+            throw managedError
+          }
+        }
+        if (payload.gift_code_channel_id === managedChannelId) throw managedError
+      }
+    }
+
+    if (hasPersistedCard) {
+      try {
+        return await editStatusCard(event, guild, content, allowedMentions)
       } catch (error) {
         if (!staleDiscordReference(error)) throw error
         staleError = error
@@ -340,19 +412,9 @@ function createGiftCodeCommunityService({
 
     try {
       const channel = await resolveChannel(guild, payload.gift_code_channel_id)
-      const sendOptions = {
-        content,
-        allowedMentions,
-        nonce: statusCardNonce(event, staleError ? 1 : 0),
-        enforceNonce: true
-      }
-      const message = await channel.send(sendOptions)
-      return repository.completeEvent(event.id, workerId, {
-        channelId: channel.id,
-        messageId: message.id,
-        finalized: true,
-        now: now()
-      })
+      return (await sendStatusCard(
+        event, channel, content, allowedMentions, staleError ? 1 : 0
+      )).completed
     } catch (error) {
       const finalError = staleError || error
       if (staleDiscordReference(finalError) || staleDiscordReference(error)) {

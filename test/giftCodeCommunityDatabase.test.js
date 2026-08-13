@@ -173,6 +173,17 @@ test("community configuration, auto-redemption cap and engagement state are dura
       new Date("2026-08-11T09:30:00Z")
     )
     assert.ok(statusCardClaim)
+    await pool.query(
+      `INSERT INTO bot_managed_discord_setups (
+         game_profile, guild_id, gift_announcements_channel_id
+       ) VALUES
+         ('wos', $1, '777777777777777771'),
+         ('kingshot', $1, '777777777777777772'),
+         ('wos', '777777777777777778', '777777777777777773')`,
+      [guild]
+    )
+    const managedPayload = await wosCommunity.getEventPayload(statusCardClaim.id)
+    assert.equal(managedPayload.managed_gift_channel_id, "777777777777777771")
     await wosCommunity.completeEvent(statusCardClaim.id, "status-worker", {
       channelId: "888888888888888888",
       messageId: "444444444444444444",

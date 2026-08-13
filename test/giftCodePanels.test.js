@@ -436,7 +436,9 @@ function statusCardRepository({
   communityStats = {},
   status = "pending",
   channelId = null,
-  messageId = null
+  messageId = null,
+  managedChannelId = null,
+  configuredChannelId = "123"
 } = {}) {
   const event = {
     id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -483,7 +485,8 @@ function statusCardRepository({
     async getEventPayload() {
       return {
         ...event,
-        gift_code_channel_id: "123",
+        gift_code_channel_id: configuredChannelId,
+        managed_gift_channel_id: managedChannelId,
         state_or_kingdom_number: "688"
       }
     },
@@ -493,6 +496,7 @@ function statusCardRepository({
       event.status = "completed"
       event.channel_id = values.channelId || event.channel_id
       event.message_id = values.messageId || event.message_id
+      event.metadata = { ...(event.metadata || {}), ...(values.metadata || {}) }
       state.completions.push(values)
       return { ...event }
     },
@@ -512,6 +516,91 @@ function statusCardRepository({
       return [{ guild_id: event.guild_id, discord_user_id: event.discord_user_id }]
     },
     async claimProgressRefresh() { return null }
+  }
+}
+
+function statusCardMigrationDiscord({
+  managedSendError = null,
+  oldFetchError = null,
+  oldDeleteError = null,
+  oldChannelError = null,
+  allowLegacySend = false
+} = {}) {
+  const sent = []
+  const edits = []
+  const deletes = []
+  const nonces = new Map()
+  let managedMessage = null
+  const oldMessage = {
+    id: "legacy-message",
+    async edit(payload) { edits.push(payload); return this },
+    async delete() {
+      if (oldDeleteError) throw oldDeleteError
+      deletes.push(this.id)
+    }
+  }
+  const legacy = {
+    id: "legacy-channel",
+    type: ChannelType.GuildText,
+    isSendable: () => true,
+    permissionsFor: () => ({ has: () => true }),
+    messages: {
+      async fetch() {
+        if (oldFetchError) throw oldFetchError
+        return oldMessage
+      }
+    },
+    async send(payload) {
+      if (!allowLegacySend) throw new Error("legacy channel should not receive a migration post")
+      const message = {
+        id: "legacy-new-message",
+        async edit(value) { edits.push(value); return this },
+        async delete() { deletes.push(this.id) }
+      }
+      sent.push({ ...payload, destination: "legacy" })
+      return message
+    }
+  }
+  const managed = {
+    id: "managed-channel",
+    type: ChannelType.GuildText,
+    isSendable: () => true,
+    permissionsFor: () => ({ has: () => true }),
+    messages: { async fetch() { return managedMessage } },
+    async send(payload) {
+      if (managedSendError) throw managedSendError
+      if (payload.enforceNonce && nonces.has(payload.nonce)) return nonces.get(payload.nonce)
+      const message = {
+        id: "managed-message",
+        async edit(value) { edits.push(value); return this },
+        async delete() { deletes.push(this.id) }
+      }
+      managedMessage = message
+      nonces.set(payload.nonce, message)
+      sent.push({ ...payload, destination: "managed" })
+      return message
+    }
+  }
+  const guild = {
+    members: { me: {} },
+    channels: {
+      async fetch(channelId) {
+        if (channelId === managed.id) return managed
+        if (channelId === legacy.id) {
+          if (oldChannelError) throw oldChannelError
+          return legacy
+        }
+        return null
+      }
+    }
+  }
+  return {
+    client: { guilds: { async fetch() { return guild } } },
+    sent,
+    edits,
+    deletes,
+    oldMessage,
+    managed
   }
 }
 
@@ -613,6 +702,142 @@ test("persisted status card survives service restart and keeps profile wording i
     assert.match(discord.edits[0].content, new RegExp(expected))
     assert.doesNotMatch(discord.edits[0].content, new RegExp(unexpected))
   }
+})
+
+test("legacy status cards migrate once to the managed announcement channel on refresh", async () => {
+  const discord = statusCardMigrationDiscord()
+  const repository = statusCardRepository({
+    status: "completed",
+    channelId: "legacy-channel",
+    messageId: "legacy-message",
+    managedChannelId: "managed-channel",
+    configuredChannelId: "legacy-channel",
+    accountStats: { successfulRedemptions: 4, alreadyRedeemed: 2 },
+    communityStats: { successful_redemptions: 12, already_redeemed: 7 }
+  })
+  const service = createGiftCodeCommunityService({
+    repository,
+    client: discord.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+
+  const results = await Promise.all([
+    service.refreshStatusCard("777", "999"),
+    service.refreshStatusCard("777", "999")
+  ])
+  assert.deepEqual(results.sort(), [false, true])
+  assert.equal(discord.sent.length, 1)
+  assert.match(discord.sent[0].content, /Their successful redemptions: 4/)
+  assert.match(discord.sent[0].content, /Already claimed: 7/)
+  assert.equal(repository.state.event.channel_id, "managed-channel")
+  assert.equal(repository.state.event.message_id, "managed-message")
+  assert.equal(repository.state.event.metadata.statusCardGeneration, 1)
+  assert.deepEqual(discord.deletes, ["legacy-message"])
+
+  assert.equal(await service.refreshStatusCard("777", "999"), true)
+  assert.equal(discord.sent.length, 1, "future refresh should edit the canonical managed card")
+  assert.equal(discord.edits.length, 1)
+})
+
+test("legacy cleanup failures and stale old references never undo managed migration", async () => {
+  for (const fixtureOptions of [
+    { oldDeleteError: Object.assign(new Error("forbidden"), { code: 50013 }) },
+    { oldFetchError: Object.assign(new Error("unknown message"), { code: 10008 }) },
+    { oldChannelError: Object.assign(new Error("unknown channel"), { code: 10003 }) }
+  ]) {
+    const discord = statusCardMigrationDiscord(fixtureOptions)
+    const repository = statusCardRepository({
+      status: "completed",
+      channelId: "legacy-channel",
+      messageId: "legacy-message",
+      managedChannelId: "managed-channel",
+      configuredChannelId: "legacy-channel"
+    })
+    const warnings = []
+    const service = createGiftCodeCommunityService({
+      repository,
+      client: discord.client,
+      gameProfile: "wos",
+      logger: { warn(message) { warnings.push(message) } }
+    })
+    assert.equal(await service.refreshStatusCard("777", "999"), true)
+    assert.equal(repository.state.event.channel_id, "managed-channel")
+    assert.equal(repository.state.event.message_id, "managed-message")
+    assert.equal(repository.state.failures.length, 0)
+    assert.deepEqual(warnings, [], "expected stale cleanup should remain quiet")
+  }
+})
+
+test("managed destination failure preserves and refreshes the legacy canonical card", async () => {
+  const discord = statusCardMigrationDiscord({ managedSendError: new Error("temporary send failure") })
+  const repository = statusCardRepository({
+    status: "completed",
+    channelId: "legacy-channel",
+    messageId: "legacy-message",
+    managedChannelId: "managed-channel",
+    configuredChannelId: "legacy-channel"
+  })
+  const service = createGiftCodeCommunityService({
+    repository,
+    client: discord.client,
+    gameProfile: "kingshot",
+    logger: { warn() {} }
+  })
+
+  assert.equal(await service.refreshStatusCard("777", "999"), true)
+  assert.equal(discord.sent.length, 0)
+  assert.equal(discord.edits.length, 1)
+  assert.equal(repository.state.event.channel_id, "legacy-channel")
+  assert.equal(repository.state.event.message_id, "legacy-message")
+  assert.match(discord.edits[0].content, /Kingdom: 689/)
+})
+
+test("new status cards use the managed destination and no managed setup keeps legacy behavior", async () => {
+  const managedDiscord = statusCardMigrationDiscord()
+  const managedRepository = statusCardRepository({
+    managedChannelId: "managed-channel",
+    configuredChannelId: "legacy-channel"
+  })
+  const managedService = createGiftCodeCommunityService({
+    repository: managedRepository,
+    client: managedDiscord.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  await managedService.onAutoRedemptionEnabled(managedRepository.state.event)
+  assert.equal(managedRepository.state.event.channel_id, "managed-channel")
+  assert.equal(managedDiscord.sent.length, 1)
+
+  const legacyDiscord = discordFixture()
+  const legacyRepository = statusCardRepository()
+  const legacyService = createGiftCodeCommunityService({
+    repository: legacyRepository,
+    client: legacyDiscord.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  await legacyService.onAutoRedemptionEnabled(legacyRepository.state.event)
+  assert.equal(legacyRepository.state.event.channel_id, "123")
+  assert.equal(legacyDiscord.sent.length, 1)
+
+  const fallbackDiscord = statusCardMigrationDiscord({
+    managedSendError: new Error("managed unavailable"),
+    allowLegacySend: true
+  })
+  const fallbackRepository = statusCardRepository({
+    managedChannelId: "managed-channel",
+    configuredChannelId: "legacy-channel"
+  })
+  const fallbackService = createGiftCodeCommunityService({
+    repository: fallbackRepository,
+    client: fallbackDiscord.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  await fallbackService.onAutoRedemptionEnabled(fallbackRepository.state.event)
+  assert.equal(fallbackRepository.state.event.channel_id, "legacy-channel")
+  assert.equal(fallbackDiscord.sent[0].destination, "legacy")
 })
 
 test("successful and already-claimed redemptions refresh personal status counters", async () => {

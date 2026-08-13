@@ -369,10 +369,13 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
     async getEventPayload(eventId) {
       return (await pool.query(
         `SELECT e.*, s.gift_code_channel_id, s.contributor_role_id,
+                managed.gift_announcements_channel_id AS managed_gift_channel_id,
                 g.code, a.state_or_kingdom_number
            FROM gift_code_engagement_events e
            JOIN gift_code_guild_settings s
              ON s.game_profile = e.game_profile AND s.guild_id = e.guild_id
+           LEFT JOIN bot_managed_discord_setups managed
+             ON managed.game_profile = e.game_profile AND managed.guild_id = e.guild_id
            LEFT JOIN gift_codes g
              ON g.id = e.gift_code_id AND g.game_profile = e.game_profile
            LEFT JOIN player_accounts a

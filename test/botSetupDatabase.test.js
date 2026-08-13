@@ -34,6 +34,23 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     }
     const wos = createBotSetupRepository(pool, "wos")
     const kingshot = createBotSetupRepository(pool, "kingshot")
+    await pool.query(
+      `INSERT INTO gift_code_guild_settings (
+         game_profile, guild_id, gift_code_channel_id
+       ) VALUES ('wos', $1, '700000000000000098')`,
+      [guildId]
+    )
+    await pool.query(
+      `INSERT INTO gift_code_engagement_events (
+         id, game_profile, guild_id, event_type, discord_user_id,
+         status, channel_id, message_id
+       ) VALUES (
+         '11111111-1111-4111-8111-111111111111', 'wos', $1,
+         'auto_redeem_join', '700000000000000020', 'completed',
+         '700000000000000098', '700000000000000097'
+       )`,
+      [guildId]
+    )
     await wos.save(guildId, values)
     assert.equal(await kingshot.get(guildId), null)
     assert.equal((await wos.get(guildId)).gift_announcements_channel_id, values.gift_announcements_channel_id)
@@ -57,6 +74,14 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     )).rows[0]
     assert.equal(scheduler.event_channel_id, values.event_announcements_channel_id)
     assert.equal(scheduler.weekly_roundup_channel_id, values.event_announcements_channel_id)
+    const untouchedStatusCard = (await pool.query(
+      `SELECT channel_id, message_id FROM gift_code_engagement_events
+        WHERE id = '11111111-1111-4111-8111-111111111111'`
+    )).rows[0]
+    assert.deepEqual(untouchedStatusCard, {
+      channel_id: "700000000000000098",
+      message_id: "700000000000000097"
+    }, "/bot-setup must not bulk-migrate existing status cards")
 
     values.gift_auto_redeem_message_id = "700000000000000011"
     await wos.save(guildId, values)
