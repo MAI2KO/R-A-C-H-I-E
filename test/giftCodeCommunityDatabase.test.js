@@ -166,6 +166,63 @@ test("community configuration, auto-redemption cap and engagement state are dura
       [guild]
     )).rows[0].count, 1, "first-enable announcement was not idempotent")
 
+    const statusCardClaim = await wosCommunity.claimStatusCard(
+      guild,
+      owner,
+      "status-worker",
+      new Date("2026-08-11T09:30:00Z")
+    )
+    assert.ok(statusCardClaim)
+    await wosCommunity.completeEvent(statusCardClaim.id, "status-worker", {
+      channelId: "888888888888888888",
+      messageId: "444444444444444444",
+      finalized: true,
+      now: new Date("2026-08-11T09:30:01Z")
+    })
+    const persistedStatusCard = await wosCommunity.claimStatusCard(
+      guild,
+      owner,
+      "restarted-status-worker",
+      new Date("2026-08-11T09:31:00Z")
+    )
+    assert.equal(persistedStatusCard.channel_id, "888888888888888888")
+    assert.equal(persistedStatusCard.message_id, "444444444444444444")
+    await wosCommunity.completeEvent(persistedStatusCard.id, "restarted-status-worker", {
+      now: new Date("2026-08-11T09:31:01Z")
+    })
+    const staleStatusCard = await wosCommunity.claimStatusCard(
+      guild,
+      owner,
+      "stale-status-worker",
+      new Date("2026-08-11T09:32:00Z")
+    )
+    const clearedStatusCard = await wosCommunity.clearStatusCardReference(
+      staleStatusCard.id,
+      "stale-status-worker",
+      "10008",
+      new Date("2026-08-11T09:32:01Z")
+    )
+    assert.equal(clearedStatusCard.channel_id, null)
+    assert.equal(clearedStatusCard.message_id, null)
+    assert.equal(clearedStatusCard.metadata.statusCardGeneration, 1)
+    const replacementStatusCard = await wosCommunity.claimStatusCard(
+      guild,
+      owner,
+      "replacement-status-worker",
+      new Date("2026-08-11T09:33:00Z")
+    )
+    await wosCommunity.completeEvent(replacementStatusCard.id, "replacement-status-worker", {
+      channelId: "888888888888888888",
+      messageId: "444444444444444445",
+      finalized: true,
+      now: new Date("2026-08-11T09:33:01Z")
+    })
+    const statusTargets = await wosCommunity.statusCardTargetsForAccount(third.id)
+    assert.deepEqual(statusTargets, [{ guild_id: guild, discord_user_id: owner }])
+    const ownerStats = await wosCommunity.accountOwnerStats(owner, guild)
+    assert.equal(ownerStats.enabledCount, 2)
+    assert.match(ownerStats.locationNumber, /^\d+$/)
+
     const firstSubmission = await giftRepository.recordSubmission({
       code: "NewCode",
       submittedByDiscordUserId: owner,

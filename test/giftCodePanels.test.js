@@ -30,6 +30,7 @@ const {
 const {
   codeProgressMessage,
   joinMessage,
+  staleDiscordReference,
   createGiftCodeCommunityService
 } = require("../src/giftCodes/communityService")
 
@@ -303,7 +304,10 @@ function discordFixture({
   roleEditable = true,
   channelAvailable = true,
   manageRoles = true,
-  persistedRole = true
+  persistedRole = true,
+  fetchError = null,
+  editError = null,
+  sendError = null
 } = {}) {
   const sent = []
   const edits = []
@@ -328,14 +332,31 @@ function discordFixture({
       async add(value) { assigned.push(value.id) }
     }
   }
-  const message = { id: "789", async edit(payload) { edits.push(payload); return this } }
+  const message = {
+    id: "789",
+    async edit(payload) {
+      if (editError) throw editError
+      edits.push(payload)
+      return this
+    }
+  }
   const channel = {
     id: "123",
     type: ChannelType.GuildText,
     isSendable: () => channelAvailable,
     permissionsFor: () => ({ has: () => channelAvailable }),
-    async send(payload) { sent.push(payload); return message },
-    messages: { async fetch(messageId) { fetchedMessages.push(messageId); return message } }
+    async send(payload) {
+      if (sendError) throw sendError
+      sent.push(payload)
+      return message
+    },
+    messages: {
+      async fetch(messageId) {
+        fetchedMessages.push(messageId)
+        if (fetchError) throw fetchError
+        return message
+      }
+    }
   }
   const guild = {
     members: {
@@ -383,6 +404,90 @@ function discordFixture({
   }
 }
 
+function statusCardRepository({
+  accountStats = {},
+  communityStats = {},
+  status = "pending",
+  channelId = null,
+  messageId = null
+} = {}) {
+  const event = {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    event_type: "auto_redeem_join",
+    guild_id: "777",
+    discord_user_id: "999",
+    player_account_id: "account-id",
+    status,
+    channel_id: channelId,
+    message_id: messageId
+  }
+  const state = {
+    event,
+    accountStats: {
+      enabledCount: 1,
+      successfulRedemptions: 0,
+      alreadyRedeemed: 0,
+      locationNumber: "689",
+      ...accountStats
+    },
+    communityStats: {
+      auto_redeem_players: 1,
+      enabled_accounts: 1,
+      successful_redemptions: 0,
+      already_redeemed: 0,
+      ...communityStats
+    },
+    completions: [],
+    failures: [],
+    clears: []
+  }
+  return {
+    state,
+    async claimEvent() {
+      if (event.status !== "pending") return null
+      event.status = "claimed"
+      return { ...event }
+    },
+    async claimStatusCard() {
+      if (!["pending", "completed", "failed"].includes(event.status)) return null
+      event.status = "claimed"
+      return { ...event }
+    },
+    async getEventPayload() {
+      return {
+        ...event,
+        gift_code_channel_id: "123",
+        state_or_kingdom_number: "688"
+      }
+    },
+    async accountOwnerStats() { return { ...state.accountStats } },
+    async communityStats() { return { ...state.communityStats } },
+    async completeEvent(_id, _worker, values) {
+      event.status = "completed"
+      event.channel_id = values.channelId || event.channel_id
+      event.message_id = values.messageId || event.message_id
+      state.completions.push(values)
+      return { ...event }
+    },
+    async clearStatusCardReference(_id, _worker, errorCode) {
+      event.status = "completed"
+      event.channel_id = null
+      event.message_id = null
+      state.clears.push(errorCode)
+      return { ...event }
+    },
+    async failEvent(_id, _worker, errorCode) {
+      if (event.status === "claimed") event.status = "failed"
+      state.failures.push(errorCode)
+    },
+    async statusCardTargetsForAccount(playerAccountId) {
+      assert.equal(playerAccountId, "account-id")
+      return [{ guild_id: event.guild_id, discord_user_id: event.discord_user_id }]
+    },
+    async claimProgressRefresh() { return null }
+  }
+}
+
 test("community messages expose aggregates and location but never full Player ID", () => {
   const payload = {
     code: "ABC123",
@@ -419,6 +524,137 @@ test("community messages expose aggregates and location but never full Player ID
   assert.match(joined, /Their already claimed: 3/)
   assert.ok(!joined.includes("Player ID"))
   assert.doesNotMatch(`${codeMessage}\n${joined}`, /\b(?:free|paid|premium|subscription)\b/i)
+})
+
+test("activation stores one status card and later changes edit the same message", async () => {
+  const discord = discordFixture()
+  const repository = statusCardRepository()
+  const service = createGiftCodeCommunityService({
+    repository,
+    client: discord.client,
+    gameProfile: "wos",
+    maximumEnabledAccounts: 2,
+    logger: { warn() {} }
+  })
+
+  await service.onAutoRedemptionEnabled(repository.state.event)
+  assert.equal(discord.sent.length, 1)
+  assert.equal(repository.state.event.channel_id, "123")
+  assert.equal(repository.state.event.message_id, "789")
+
+  repository.state.accountStats.enabledCount = 2
+  repository.state.accountStats.successfulRedemptions = 4
+  repository.state.accountStats.alreadyRedeemed = 3
+  repository.state.communityStats.enabled_accounts = 7
+  repository.state.communityStats.successful_redemptions = 12
+  repository.state.communityStats.already_redeemed = 8
+  assert.equal(await service.onAutoRedemptionEnabled(null, {
+    guildId: "777",
+    discordUserId: "999"
+  }), true)
+  assert.equal(discord.sent.length, 1, "refresh posted a duplicate activation card")
+  assert.equal(discord.edits.length, 1)
+  assert.match(discord.edits[0].content, /Characters covered: 2 \/ 2/)
+  assert.match(discord.edits[0].content, /Their successful redemptions: 4/)
+  assert.match(discord.edits[0].content, /Their already claimed: 3/)
+  assert.match(discord.edits[0].content, /Characters covered: 7/)
+  assert.match(discord.edits[0].content, /Successful redemptions: 12/)
+
+  repository.state.accountStats.enabledCount = 0
+  repository.state.communityStats.enabled_accounts = 5
+  assert.equal(await service.refreshStatusCard("777", "999"), true)
+  assert.match(discord.edits[1].content, /Characters covered: 0 \/ 2/)
+  assert.match(discord.edits[1].content, /Characters covered: 5/)
+})
+
+test("persisted status card survives service restart and keeps profile wording isolated", async () => {
+  for (const [gameProfile, expected, unexpected] of [
+    ["wos", "State: 689", "Kingdom:"],
+    ["kingshot", "Kingdom: 689", "State:"]
+  ]) {
+    const discord = discordFixture()
+    const repository = statusCardRepository({ status: "completed", channelId: "123", messageId: "789" })
+    const restarted = createGiftCodeCommunityService({
+      repository,
+      client: discord.client,
+      gameProfile,
+      logger: { warn() {} }
+    })
+    assert.equal(await restarted.refreshStatusCard("777", "999"), true)
+    assert.deepEqual(discord.fetchedMessages, ["789"])
+    assert.equal(discord.sent.length, 0)
+    assert.match(discord.edits[0].content, new RegExp(expected))
+    assert.doesNotMatch(discord.edits[0].content, new RegExp(unexpected))
+  }
+})
+
+test("successful and already-claimed redemptions refresh personal status counters", async () => {
+  const discord = discordFixture()
+  const repository = statusCardRepository({ status: "completed", channelId: "123", messageId: "789" })
+  const service = createGiftCodeCommunityService({
+    repository,
+    client: discord.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+
+  repository.state.accountStats.successfulRedemptions = 1
+  assert.equal(await service.onRedemptionUpdated("code-a", "account-id", "success"), false)
+  repository.state.accountStats.alreadyRedeemed = 1
+  assert.equal(await service.onRedemptionUpdated("code-b", "account-id", "already_redeemed"), false)
+  assert.equal(discord.edits.length, 2)
+  assert.match(discord.edits[0].content, /Their successful redemptions: 1/)
+  assert.match(discord.edits[1].content, /Their already claimed: 1/)
+})
+
+test("deleted status card is replaced once while inaccessible references are cleared", async () => {
+  const unknownMessage = Object.assign(new Error("Unknown Message"), { code: 10008 })
+  const deleted = discordFixture({ fetchError: unknownMessage })
+  const deletedRepository = statusCardRepository({
+    status: "completed", channelId: "123", messageId: "old-message"
+  })
+  const deletedService = createGiftCodeCommunityService({
+    repository: deletedRepository,
+    client: deleted.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  assert.equal(await deletedService.refreshStatusCard("777", "999"), true)
+  assert.equal(deleted.sent.length, 1)
+  assert.equal(deletedRepository.state.event.message_id, "789")
+
+  const unavailable = discordFixture({ channelAvailable: false })
+  const unavailableRepository = statusCardRepository({
+    status: "completed", channelId: "123", messageId: "old-message"
+  })
+  const unavailableService = createGiftCodeCommunityService({
+    repository: unavailableRepository,
+    client: unavailable.client,
+    gameProfile: "wos",
+    logger: { warn() {} }
+  })
+  assert.equal(await unavailableService.refreshStatusCard("777", "999"), false)
+  assert.equal(unavailableRepository.state.event.message_id, null)
+  assert.equal(unavailableRepository.state.clears.length, 1)
+  assert.equal(staleDiscordReference(unknownMessage), true)
+})
+
+test("status card edit failure is contained without posting a duplicate", async () => {
+  const discord = discordFixture({ editError: new Error("temporary Discord failure") })
+  const repository = statusCardRepository({ status: "completed", channelId: "123", messageId: "789" })
+  const warnings = []
+  const service = createGiftCodeCommunityService({
+    repository,
+    client: discord.client,
+    gameProfile: "wos",
+    logger: { warn(message) { warnings.push(message) } }
+  })
+  assert.equal(await service.onRedemptionUpdated(
+    "code-id", "account-id", "success"
+  ), false)
+  assert.equal(discord.sent.length, 0)
+  assert.equal(repository.state.failures.length, 1)
+  assert.equal(warnings.length, 1)
 })
 
 test("new-code announcement and contributor confirmation are idempotent while duplicates stay silent", async () => {
@@ -774,7 +1010,16 @@ function panelDependencies({
 
 test("new player panel performs registration and State updates through private modals", async () => {
   const accounts = []
-  const dependencies = panelDependencies({ accounts })
+  const refreshes = []
+  const dependencies = panelDependencies({
+    accounts,
+    community: {
+      async refreshStatusCard(guildId, userId) {
+        refreshes.push([guildId, userId])
+        return false
+      }
+    }
+  })
   const command = panelInteraction({ commandName: "player-register" })
   await handleGiftCodePanelInteraction(command, dependencies)
   assert.match(command.edited.content, /Register your game account/)
@@ -804,6 +1049,10 @@ test("new player panel performs registration and State updates through private m
   })
   await handleGiftCodePanelInteraction(locationUpdate, dependencies)
   assert.match(locationUpdate.edited.content, /State: 700/)
+  assert.deepEqual(refreshes, [
+    ["777777777777777777", "999999999999999999"],
+    ["777777777777777777", "999999999999999999"]
+  ])
 })
 
 test("ordinary users can submit candidates without invoking admin authorization", async () => {

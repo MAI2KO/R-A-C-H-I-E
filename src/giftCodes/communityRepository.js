@@ -382,6 +382,74 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
       )).rows[0] || null
     },
 
+    async claimStatusCard(guildId, discordUserId, workerId, now, leaseSeconds = 60) {
+      return (await pool.query(
+        `UPDATE gift_code_engagement_events
+            SET status = 'claimed', claimed_by_worker = $4,
+                claimed_at_utc = $5,
+                claimed_until_utc = $5 + ($6 * interval '1 second'),
+                attempt_count = attempt_count + 1,
+                updated_at_utc = $5
+          WHERE game_profile = $1 AND guild_id = $2
+            AND discord_user_id = $3 AND event_type = 'auto_redeem_join'
+            AND (
+              status IN ('pending', 'completed', 'failed')
+              OR (status = 'claimed' AND claimed_until_utc <= $5)
+            )
+          RETURNING *`,
+        [gameProfile, guildId, discordUserId, workerId, now, leaseSeconds]
+      )).rows[0] || null
+    },
+
+    async statusCardTargetsForAccount(playerAccountId) {
+      return (await pool.query(
+        `SELECT DISTINCT e.guild_id, e.discord_user_id
+           FROM gift_code_engagement_events e
+           JOIN player_accounts a
+             ON a.game_profile = e.game_profile
+            AND a.discord_user_id = e.discord_user_id
+           JOIN player_account_guilds ag
+             ON ag.game_profile = a.game_profile
+            AND ag.player_account_id = a.id
+            AND ag.guild_id = e.guild_id
+          WHERE e.game_profile = $1
+            AND e.event_type = 'auto_redeem_join'
+            AND a.id = $2
+            AND ag.gift_code_enrolled = true
+          ORDER BY e.guild_id, e.discord_user_id`,
+        [gameProfile, playerAccountId]
+      )).rows
+    },
+
+    async clearStatusCardReference(eventId, workerId, errorCode, now = new Date()) {
+      return (await pool.query(
+        `UPDATE gift_code_engagement_events
+            SET status = 'completed', channel_id = NULL, message_id = NULL,
+                claimed_by_worker = NULL, claimed_at_utc = NULL,
+                claimed_until_utc = NULL, next_attempt_at_utc = NULL,
+                last_error = $4,
+                metadata = jsonb_set(
+                  metadata,
+                  '{statusCardGeneration}',
+                  to_jsonb(
+                    CASE WHEN metadata->>'statusCardGeneration' ~ '^[0-9]+$'
+                      THEN (metadata->>'statusCardGeneration')::integer + 1
+                      ELSE 1
+                    END
+                  )
+                ),
+                updated_at_utc = $5
+          WHERE id = $1 AND game_profile = $2
+            AND event_type = 'auto_redeem_join'
+            AND claimed_by_worker = $3
+          RETURNING *`,
+        [
+          eventId, gameProfile, workerId,
+          String(errorCode || "status_card_unavailable").slice(0, 200), now
+        ]
+      )).rows[0] || null
+    },
+
     async codeProgress(giftCodeId, guildId) {
       return (await pool.query(
         `SELECT
@@ -409,7 +477,26 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
              WHERE a.is_active = true AND a.gift_redemption_enabled = true
            )::integer AS "enabledCount",
            COUNT(r.id) FILTER (WHERE r.status = 'success')::integer AS "successfulRedemptions",
-           COUNT(r.id) FILTER (WHERE r.status = 'already_redeemed')::integer AS "alreadyRedeemed"
+           COUNT(r.id) FILTER (WHERE r.status = 'already_redeemed')::integer AS "alreadyRedeemed",
+           COALESCE(
+             (
+               SELECT location.state_or_kingdom_number
+                 FROM player_accounts location
+                 JOIN player_account_guilds location_guild
+                   ON location_guild.player_account_id = location.id
+                  AND location_guild.game_profile = location.game_profile
+                  AND location_guild.guild_id = $3
+                WHERE location.game_profile = $1
+                  AND location.discord_user_id = $2
+                ORDER BY
+                  (location.is_active AND location.gift_redemption_enabled
+                    AND location_guild.gift_code_enrolled) DESC,
+                  location.is_active DESC, location.is_primary DESC,
+                  location.created_at_utc, location.id
+                LIMIT 1
+             ),
+             ''
+           ) AS "locationNumber"
          FROM player_accounts a
          JOIN player_account_guilds ag
            ON ag.player_account_id = a.id AND ag.game_profile = a.game_profile

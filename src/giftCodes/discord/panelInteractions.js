@@ -564,6 +564,7 @@ async function handleGiftCodePanelInteraction(interaction, {
         playerId: interaction.fields.getTextInputValue("player_id"),
         locationNumber: interaction.fields.getTextInputValue("location")
       })
+      await community.refreshStatusCard?.(interaction.guildId, interaction.user.id)
       if (session.data.panel === "gift") await renderGift(sessionId, account.player_id)
       else await renderPlayer(sessionId, account.player_id)
       return true
@@ -574,6 +575,7 @@ async function handleGiftCodePanelInteraction(interaction, {
         playerId: session.data.selectedPlayerId,
         locationNumber: interaction.fields.getTextInputValue("location")
       })
+      await community.refreshStatusCard?.(interaction.guildId, interaction.user.id)
       await renderPlayer(sessionId, session.data.selectedPlayerId)
       return true
     }
@@ -582,6 +584,7 @@ async function handleGiftCodePanelInteraction(interaction, {
         discordUserId: interaction.user.id,
         playerId: session.data.selectedPlayerId
       })
+      await community.refreshStatusCard?.(interaction.guildId, interaction.user.id)
       await renderPlayer(sessionId)
       return true
     }
@@ -622,7 +625,10 @@ async function handleGiftCodePanelInteraction(interaction, {
         playerId: session.data.selectedPlayerId,
         enabled: !(current.gift_redemption_enabled && current.guild_gift_code_enrolled)
       })
-      await community.onAutoRedemptionEnabled(account.engagement_event)
+      await community.onAutoRedemptionEnabled(account.engagement_event, {
+        guildId: interaction.guildId,
+        discordUserId: interaction.user.id
+      })
       await renderGift(sessionId, account.player_id)
       return true
     }

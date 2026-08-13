@@ -47,6 +47,12 @@ function safeDiscordError(error) {
   return String(error?.code || error?.name || "discord_delivery_failed").slice(0, 100)
 }
 
+function staleDiscordReference(error) {
+  return new Set(["10003", "10008", "50001", "50013"]).has(String(error?.code || ""))
+    || error?.code === "GIFT_CODE_CHANNEL_UNAVAILABLE"
+    || error?.code === "GIFT_CODE_CHANNEL_NOT_SENDABLE"
+}
+
 function codeProgressMessage(payload, progress, terms, { initial = false } = {}) {
   const heading = initial ? "**New Gift Code Verified**" : `**Gift Code: ${payload.code}**`
   return [
@@ -87,6 +93,11 @@ function joinMessage(payload, stats, accountStats, terms, maximumEnabled) {
 
 function eventNonce(eventId) {
   return BigInt(`0x${eventId.replaceAll("-", "").slice(0, 16)}`).toString()
+}
+
+function statusCardNonce(event, generationOffset = 0) {
+  const generation = Number(event.metadata?.statusCardGeneration || 0) + generationOffset
+  return (BigInt(eventNonce(event.id)) + BigInt(generation)).toString()
 }
 
 function verificationResultMessage(classification) {
@@ -269,25 +280,10 @@ function createGiftCodeCommunityService({
       return repository.completeEvent(event.id, workerId, { now: now() })
     }
     const guild = await resolveGuild(payload.guild_id)
-    const channel = await resolveChannel(guild, payload.gift_code_channel_id)
     if (payload.event_type === "auto_redeem_join") {
-      const [stats, accountRows] = await Promise.all([
-        repository.communityStats(payload.guild_id),
-        repository.accountOwnerStats(payload.discord_user_id, payload.guild_id)
-      ])
-      const message = await channel.send({
-        content: joinMessage(payload, stats, accountRows, terms, maximumEnabledAccounts),
-        allowedMentions: PUBLIC_MENTIONS(payload.discord_user_id),
-        nonce: eventNonce(event.id),
-        enforceNonce: true
-      })
-      return repository.completeEvent(event.id, workerId, {
-        channelId: channel.id,
-        messageId: message.id,
-        finalized: true,
-        now: now()
-      })
+      return deliverStatusCard(event, payload, guild)
     }
+    const channel = await resolveChannel(guild, payload.gift_code_channel_id)
     const progress = await repository.codeProgress(payload.gift_code_id, payload.guild_id)
     const message = await channel.send({
       content: codeProgressMessage(payload, progress, terms, { initial: true }),
@@ -305,6 +301,102 @@ function createGiftCodeCommunityService({
       finalized: progress.remaining === 0,
       now: now()
     })
+  }
+
+  async function statusCardContent(payload) {
+    const [stats, accountStats] = await Promise.all([
+      repository.communityStats(payload.guild_id),
+      repository.accountOwnerStats(payload.discord_user_id, payload.guild_id)
+    ])
+    return joinMessage({
+      ...payload,
+      state_or_kingdom_number: accountStats.locationNumber
+        || payload.state_or_kingdom_number
+    }, stats, accountStats, terms, maximumEnabledAccounts)
+  }
+
+  async function deliverStatusCard(event, payload, resolvedGuild = null) {
+    const guild = resolvedGuild || await resolveGuild(payload.guild_id)
+    const content = await statusCardContent(payload)
+    const allowedMentions = PUBLIC_MENTIONS(payload.discord_user_id)
+    let staleError = null
+
+    if (event.message_id && event.channel_id) {
+      try {
+        const channel = await resolveChannel(guild, event.channel_id)
+        const message = await channel.messages.fetch(event.message_id)
+        await message.edit({ content, allowedMentions })
+        return repository.completeEvent(event.id, workerId, {
+          channelId: channel.id,
+          messageId: message.id,
+          finalized: true,
+          now: now()
+        })
+      } catch (error) {
+        if (!staleDiscordReference(error)) throw error
+        staleError = error
+      }
+    }
+
+    try {
+      const channel = await resolveChannel(guild, payload.gift_code_channel_id)
+      const sendOptions = {
+        content,
+        allowedMentions,
+        nonce: statusCardNonce(event, staleError ? 1 : 0),
+        enforceNonce: true
+      }
+      const message = await channel.send(sendOptions)
+      return repository.completeEvent(event.id, workerId, {
+        channelId: channel.id,
+        messageId: message.id,
+        finalized: true,
+        now: now()
+      })
+    } catch (error) {
+      const finalError = staleError || error
+      if (staleDiscordReference(finalError) || staleDiscordReference(error)) {
+        await repository.clearStatusCardReference(
+          event.id,
+          workerId,
+          safeDiscordError(finalError),
+          now()
+        ).catch(() => {})
+      }
+      throw error
+    }
+  }
+
+  async function refreshStatusCard(guildId, discordUserId) {
+    let event
+    try {
+      event = await repository.claimStatusCard(
+        guildId,
+        discordUserId,
+        workerId,
+        now()
+      )
+      if (!event) return false
+      const payload = await repository.getEventPayload(event.id)
+      if (!payload) throw new Error("status card payload unavailable")
+      await deliverStatusCard(event, payload)
+      return true
+    } catch (error) {
+      const errorCode = safeDiscordError(error)
+      if (event) {
+        await repository.failEvent(event.id, workerId, errorCode, now()).catch(() => {})
+      }
+      logger.warn(`[Gift codes] Status card refresh failed: ${errorCode}`)
+      return false
+    }
+  }
+
+  async function refreshStatusCardsForAccount(playerAccountId) {
+    const targets = await repository.statusCardTargetsForAccount(playerAccountId)
+    for (const target of targets) {
+      await refreshStatusCard(target.guild_id, target.discord_user_id)
+    }
+    return targets.length
   }
 
   async function deliverEvent(event) {
@@ -411,9 +503,13 @@ function createGiftCodeCommunityService({
       }
     },
 
-    async onAutoRedemptionEnabled(event) {
-      return deliverEvent(event)
+    async onAutoRedemptionEnabled(event, { guildId = null, discordUserId = null } = {}) {
+      if (event) return deliverEvent(event)
+      if (!guildId || !discordUserId) return null
+      return refreshStatusCard(guildId, discordUserId)
     },
+
+    refreshStatusCard,
 
     async onCodeActivated(giftCodeId, queuedCount) {
       const events = await repository.prepareCodeEngagement(giftCodeId, queuedCount)
@@ -432,6 +528,13 @@ function createGiftCodeCommunityService({
     },
 
     async onRedemptionUpdated(giftCodeId, playerAccountId, resultStatus) {
+      if (["success", "already_redeemed"].includes(resultStatus)) {
+        try {
+          await refreshStatusCardsForAccount(playerAccountId)
+        } catch (error) {
+          logger.warn(`[Gift codes] Status card target lookup failed: ${safeDiscordError(error)}`)
+        }
+      }
       const refresh = await repository.claimProgressRefresh(
         giftCodeId,
         playerAccountId,
@@ -512,6 +615,7 @@ module.exports = {
   ContributorRoleError,
   GiftCodeCommunityError,
   safeDiscordError,
+  staleDiscordReference,
   eventNonce,
   verificationResultMessage,
   codeProgressMessage,
