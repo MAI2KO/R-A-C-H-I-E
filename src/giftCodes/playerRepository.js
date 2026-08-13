@@ -37,14 +37,20 @@ function createPlayerRepository(pool, gameProfile) {
         )).rowCount > 0
         const canReactivate = existing && !existing.is_active &&
           existing.discord_user_id === discordUserId
-        const id = canReactivate ? existing.id : crypto.randomUUID()
-        const account = canReactivate
+        const canClaim = existing && existing.discord_user_id === null
+        const id = canReactivate || canClaim ? existing.id : crypto.randomUUID()
+        const account = canReactivate || canClaim
           ? (await client.query(
             `UPDATE player_accounts
-                SET state_or_kingdom_number = $4, is_active = true,
+                SET discord_user_id = $3, state_or_kingdom_number = $4, is_active = true,
                     is_primary = $5, gift_redemption_enabled = false,
+                    account_metadata = CASE WHEN discord_user_id IS NULL
+                      THEN account_metadata - 'autoRedeemPreference'
+                      ELSE account_metadata
+                    END,
                     updated_at_utc = now()
-              WHERE id = $1 AND game_profile = $2 AND discord_user_id = $3
+              WHERE id = $1 AND game_profile = $2
+                AND (discord_user_id = $3 OR discord_user_id IS NULL)
               RETURNING *`,
             [id, gameProfile, discordUserId, locationNumber, !hasActive]
           )).rows[0]
@@ -56,6 +62,16 @@ function createPlayerRepository(pool, gameProfile) {
              RETURNING *`,
             [id, gameProfile, discordUserId, playerId, locationNumber, !hasActive]
           )).rows[0]
+        if (canClaim) {
+          await client.query(
+            `INSERT INTO player_account_ownership_history (
+               id, game_profile, player_account_id, previous_discord_user_id,
+               new_discord_user_id, action_type, performed_by_discord_user_id,
+               source_metadata
+             ) VALUES ($1, $2, $3, NULL, $4, 'claim', $4, $5)`,
+            [crypto.randomUUID(), gameProfile, id, discordUserId, { source: "player_register" }]
+          )
+        }
         if (!canReactivate || existing.state_or_kingdom_number !== locationNumber) {
           await client.query(
             `INSERT INTO player_location_history (
@@ -64,7 +80,7 @@ function createPlayerRepository(pool, gameProfile) {
              ) VALUES ($1, $2, $3, $4, $5, $6, 'user_command')`,
             [
               crypto.randomUUID(), id, gameProfile,
-              canReactivate ? existing.state_or_kingdom_number : null,
+              canReactivate || canClaim ? existing.state_or_kingdom_number : null,
               locationNumber, discordUserId
             ]
           )
@@ -83,7 +99,7 @@ function createPlayerRepository(pool, gameProfile) {
         await client.query("COMMIT")
         return {
           ...account,
-          registration_status: canReactivate ? "reactivated" : "new"
+          registration_status: canReactivate ? "reactivated" : canClaim ? "claimed" : "new"
         }
       } catch (error) {
         await client.query("ROLLBACK")
@@ -110,6 +126,20 @@ function createPlayerRepository(pool, gameProfile) {
           WHERE game_profile = $1 AND discord_user_id = $2 AND player_id = $3
             AND ($4::boolean = true OR is_active = true)`,
         [gameProfile, discordUserId, playerId, includeInactive]
+      )
+      return result.rows[0] || null
+    },
+
+    async getAccountByPlayerId(playerId) {
+      const result = await pool.query(
+        `SELECT a.*,
+                COUNT(ag.guild_id)::integer AS guild_enrolment_count
+           FROM player_accounts a
+           LEFT JOIN player_account_guilds ag
+             ON ag.player_account_id = a.id AND ag.game_profile = a.game_profile
+          WHERE a.game_profile = $1 AND a.player_id = $2
+          GROUP BY a.id`,
+        [gameProfile, playerId]
       )
       return result.rows[0] || null
     },
@@ -223,6 +253,146 @@ function createPlayerRepository(pool, gameProfile) {
         }
         await client.query("COMMIT")
         return { account: { ...account, is_active: false, is_primary: false }, replacement }
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally {
+        client.release()
+      }
+    },
+
+    async releaseAccount({
+      playerId,
+      performedByDiscordUserId,
+      actionType,
+      expectedOwnerDiscordUserId = null,
+      expectedAccountId = null
+    }) {
+      if (!["release", "operator_release"].includes(actionType)) {
+        throw new Error("Unsupported ownership release action")
+      }
+      if (actionType === "operator_release"
+        && (!expectedAccountId || !expectedOwnerDiscordUserId)) {
+        throw new Error("Operator release requires confirmed account ownership")
+      }
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const account = (await client.query(
+          `SELECT * FROM player_accounts
+            WHERE game_profile = $1 AND player_id = $2
+            FOR UPDATE`,
+          [gameProfile, playerId]
+        )).rows[0] || null
+        if (
+          !account?.discord_user_id
+          || (expectedOwnerDiscordUserId !== null
+            && account.discord_user_id !== expectedOwnerDiscordUserId)
+          || (expectedAccountId !== null && String(account.id) !== String(expectedAccountId))
+        ) {
+          await client.query("ROLLBACK")
+          return null
+        }
+        if (actionType === "release" && account.discord_user_id !== performedByDiscordUserId) {
+          await client.query("ROLLBACK")
+          return null
+        }
+
+        const previousOwner = account.discord_user_id
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtext($1))",
+          [`player-primary:${gameProfile}:${previousOwner}`]
+        )
+        const guildIds = (await client.query(
+          `SELECT guild_id FROM player_account_guilds
+            WHERE game_profile = $1 AND player_account_id = $2
+            ORDER BY guild_id`,
+          [gameProfile, account.id]
+        )).rows.map(row => row.guild_id)
+
+        await client.query(
+          `UPDATE gift_code_redemptions
+              SET status = CASE
+                    WHEN status IN ('queued', 'claimed', 'rate_limited', 'temporary_error')
+                      THEN 'disabled'
+                    ELSE status
+                  END,
+                  retryable = false, next_retry_at_utc = NULL,
+                  claimed_by_worker = NULL, claimed_at_utc = NULL,
+                  claimed_until_utc = NULL,
+                  notification_status = CASE
+                    WHEN notification_status = 'sent' THEN 'sent'
+                    ELSE 'suppressed'
+                  END,
+                  updated_at_utc = now()
+            WHERE game_profile = $1 AND player_account_id = $2`,
+          [gameProfile, account.id]
+        )
+        await client.query(
+          `UPDATE gift_code_engagement_events
+              SET status = 'disabled', claimed_by_worker = NULL,
+                  claimed_at_utc = NULL, claimed_until_utc = NULL,
+                  next_attempt_at_utc = NULL, updated_at_utc = now()
+            WHERE game_profile = $1 AND player_account_id = $2
+              AND status IN ('pending', 'claimed', 'failed')`,
+          [gameProfile, account.id]
+        )
+        await client.query(
+          `DELETE FROM player_account_guilds
+            WHERE game_profile = $1 AND player_account_id = $2`,
+          [gameProfile, account.id]
+        )
+        const released = (await client.query(
+          `UPDATE player_accounts
+              SET discord_user_id = NULL, is_active = false, is_primary = false,
+                  gift_redemption_enabled = false,
+                  account_metadata = jsonb_set(
+                    account_metadata,
+                    '{autoRedeemPreference}',
+                    jsonb_build_object(
+                      'enabled', false,
+                      'explicit', true,
+                      'source', $3::varchar
+                    ),
+                    true
+                  ),
+                  updated_at_utc = now()
+            WHERE id = $1 AND game_profile = $2
+            RETURNING *`,
+          [account.id, gameProfile, actionType]
+        )).rows[0]
+        await client.query(
+          `INSERT INTO player_account_ownership_history (
+             id, game_profile, player_account_id, previous_discord_user_id,
+             new_discord_user_id, action_type, performed_by_discord_user_id,
+             source_metadata
+           ) VALUES ($1, $2, $3, $4, NULL, $5, $6, $7)`,
+          [
+            crypto.randomUUID(), gameProfile, account.id, previousOwner,
+            actionType, performedByDiscordUserId, { source: "discord" }
+          ]
+        )
+        let replacement = null
+        if (account.is_primary) {
+          replacement = (await client.query(
+            `UPDATE player_accounts
+                SET is_primary = true, updated_at_utc = now()
+              WHERE id = (
+                SELECT id FROM player_accounts
+                 WHERE game_profile = $1 AND discord_user_id = $2 AND is_active = true
+                 ORDER BY created_at_utc, id LIMIT 1
+              )
+              RETURNING *`,
+            [gameProfile, previousOwner]
+          )).rows[0] || null
+        }
+        await client.query("COMMIT")
+        return {
+          account: released,
+          previousOwnerDiscordUserId: previousOwner,
+          guildIds,
+          replacement
+        }
       } catch (error) {
         await client.query("ROLLBACK")
         throw error

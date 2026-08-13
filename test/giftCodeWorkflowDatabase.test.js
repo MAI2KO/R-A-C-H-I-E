@@ -42,8 +42,8 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     })
     const first = await runMigrations({ pool, logger: silentLogger })
     const second = await runMigrations({ pool, logger: silentLogger })
-    assert.equal(first.applied.length, 17)
-    assert.equal(first.applied.at(-1), "017_bot_managed_discord_setup.sql")
+    assert.equal(first.applied.length, 18)
+    assert.equal(first.applied.at(-1), "018_player_account_ownership_release.sql")
     assert.deepEqual(second.applied, [])
 
     const attemptColumns = (await pool.query(

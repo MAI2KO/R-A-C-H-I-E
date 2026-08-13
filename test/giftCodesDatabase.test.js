@@ -24,8 +24,8 @@ test("player and gift-code PostgreSQL foundation is profile scoped, transactiona
     })
     const first = await runMigrations({ pool, logger: { log() {}, error() {} } })
     const second = await runMigrations({ pool, logger: { log() {}, error() {} } })
-    assert.equal(first.applied.length, 17)
-    assert.equal(first.applied.at(-1), "017_bot_managed_discord_setup.sql")
+    assert.equal(first.applied.length, 18)
+    assert.equal(first.applied.at(-1), "018_player_account_ownership_release.sql")
     assert.deepEqual(second.applied, [])
 
     const column = (await pool.query(

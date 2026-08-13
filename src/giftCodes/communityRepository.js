@@ -503,6 +503,7 @@ function createGiftCodeCommunityRepository(pool, gameProfile) {
           AND ag.guild_id = $3 AND ag.gift_code_enrolled = true
          LEFT JOIN gift_code_redemptions r
            ON r.player_account_id = a.id AND r.game_profile = a.game_profile
+          AND r.discord_owner_id_snapshot = a.discord_user_id
          WHERE a.game_profile = $1 AND a.discord_user_id = $2`,
         [gameProfile, discordUserId, guildId]
       )).rows[0]

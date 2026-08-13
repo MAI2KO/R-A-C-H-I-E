@@ -7,11 +7,14 @@ const { ChannelType, MessageFlags } = require("discord.js")
 const { InteractionSessionStore } = require("../src/interactionSessions")
 const { createBanterConfigLookup } = require("../src/banterConfig")
 const { profileTerminology } = require("../src/giftCodes/terminology")
+const { PlayerAccountError } = require("../src/giftCodes/playerService")
 const {
   IDS,
   selectedAccount,
   accountMenu,
   playerPanel,
+  releaseConfirmationPanel,
+  operatorReleaseConfirmation,
   giftPanel,
   activeCodesPanel,
   registrationModal,
@@ -23,6 +26,7 @@ const {
 } = require("../src/giftCodes/discord/panelInteractions")
 const {
   buildPlayerRegisterCommand,
+  buildPlayerAdminCommand,
   buildGiftCodesCommand,
   buildGiftCodeAddCommand,
   buildGiftCodesAdminCommand,
@@ -62,6 +66,7 @@ const accounts = [
 
 test("visible command surface is consolidated while legacy booking register remains", () => {
   assert.equal(buildPlayerRegisterCommand("wos").toJSON().name, "player-register")
+  assert.equal(buildPlayerAdminCommand("wos").toJSON().name, "player-admin")
   assert.equal(buildGiftCodesCommand("wos").toJSON().name, "gift-codes")
   assert.equal(buildGiftCodeAddCommand("wos").toJSON().name, "gift-code-add")
   assert.equal(buildGiftCodesAdminCommand("wos").toJSON().name, "gift-codes-admin")
@@ -70,7 +75,7 @@ test("visible command surface is consolidated while legacy booking register rema
     ...getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "true", GAME_PROFILE: "wos" })
   ].map(command => command.name)
   assert.deepEqual(registered, [
-    "player-register", "gift-code-add", "gift-codes", "gift-codes-admin"
+    "player-register", "player-admin", "gift-code-add", "gift-codes", "gift-codes-admin"
   ])
   assert.ok(!registered.includes("player"))
   assert.ok(!registered.includes("gift"))
@@ -93,7 +98,7 @@ test("player panel supports empty registration and multiple-account selection", 
   assert.equal(menu.options.length, 2)
   assert.equal(menu.options[1].default, true)
   assert.deepEqual(panel.components[1].components.map(button => button.data.label), [
-    "Add Character", "Change State", "Enable Auto-Redeem", "Remove Character"
+    "Add Character", "Change State", "Enable Auto-Redeem", "Remove Character", "Release Character"
   ])
 })
 
@@ -123,6 +128,27 @@ test("registration modal and player panels use State or Kingdom correctly", () =
   assert.equal(wosModal.components[1].components[0].label, "State")
   assert.equal(kingshotModal.components[1].components[0].label, "Kingdom")
   assert.match(playerPanel({ sessionId: "s", accounts, selected: accounts[0], terms: kingshot }).content, /Kingdom: 689/)
+})
+
+test("release views distinguish destructive self release and private operator recovery", () => {
+  const release = releaseConfirmationPanel("session", "12345")
+  assert.match(release.content, /permanently disconnects/)
+  assert.match(release.content, /Use Remove Character instead/)
+  assert.deepEqual(release.components[0].components.map(button => button.data.label), [
+    "CONFIRM RELEASE", "Cancel"
+  ])
+
+  const operator = operatorReleaseConfirmation("session", {
+    player_id: "12345",
+    discord_user_id: "707866087248756736",
+    state_or_kingdom_number: "689",
+    is_active: true,
+    gift_redemption_enabled: true,
+    guild_enrolment_count: 2
+  }, wos)
+  assert.match(operator.content, /Current Discord owner: 707866087248756736/)
+  assert.match(operator.content, /State: 689/)
+  assert.deepEqual(operator.allowedMentions, { parse: [], repliedUser: false })
 })
 
 test("gift panel focuses on codes and routes character management to the canonical panel", () => {
@@ -939,8 +965,15 @@ function panelDependencies({
     userCanManageServer: authorization,
     healthProvider: () => ({ available: true, gameProfile: "wos" }),
     poolProvider: () => ({}),
-    playerRepositoryFactory: () => ({}),
+    playerRepositoryFactory: () => ({
+      async getOwnedAccount(discordUserId, playerId) {
+        return accounts.find(account => account.player_id === playerId
+          && account.is_active
+          && (!account.discord_user_id || account.discord_user_id === discordUserId)) || null
+      }
+    }),
     playerServiceFactory: () => ({
+      terms,
       async register({ playerId, locationNumber }) {
         const account = {
           id: `account-${playerId}`,
@@ -967,6 +1000,35 @@ function panelDependencies({
         const replacement = accounts.find(value => value.is_active) || null
         if (replacement) replacement.is_primary = true
         return { account, replacement }
+      },
+      async release({ discordUserId, playerId }) {
+        const account = accounts.find(value => value.player_id === playerId
+          && value.is_active
+          && (!value.discord_user_id || value.discord_user_id === discordUserId))
+        if (!account) throw new PlayerAccountError("PLAYER_OWNERSHIP_CHANGED", "You are no longer the current owner of that Player ID.")
+        account.is_active = false
+        account.is_primary = false
+        account.gift_redemption_enabled = false
+        account.discord_user_id = null
+        return {
+          account,
+          previousOwnerDiscordUserId: discordUserId,
+          guildIds: ["777777777777777777"]
+        }
+      },
+      async operatorLookup({ playerId }) {
+        return accounts.find(value => value.player_id === playerId) || null
+      },
+      async operatorRelease({ playerId, expectedAccountId, expectedOwnerDiscordUserId }) {
+        const account = accounts.find(value => value.player_id === playerId
+          && String(value.id) === expectedAccountId
+          && value.discord_user_id === expectedOwnerDiscordUserId)
+        if (!account) throw Object.assign(new Error("ownership changed"), { code: "PLAYER_OWNERSHIP_CHANGED" })
+        const previousOwnerDiscordUserId = account.discord_user_id
+        account.discord_user_id = null
+        account.is_active = false
+        account.gift_redemption_enabled = false
+        return { account, previousOwnerDiscordUserId, guildIds: [] }
       }
     }),
     giftRepositoryFactory: () => ({}),
@@ -1099,6 +1161,13 @@ test("registration default, historical opt-out and account limit remain distinct
   assert.equal(fresh.autoRedeemEnabled, true)
   assert.equal(calls[0].preferenceSource, "registration_default")
 
+  const claimed = await completeCharacterRegistration({
+    account: { player_id: "4", registration_status: "claimed" },
+    gifts, community, guildId: "777", discordUserId: "999"
+  })
+  assert.equal(claimed.autoRedeemEnabled, true)
+  assert.equal(calls[1].preferenceSource, "registration_default")
+
   const optedOut = await completeCharacterRegistration({
     account: {
       player_id: "2",
@@ -1108,7 +1177,7 @@ test("registration default, historical opt-out and account limit remain distinct
     gifts, community, guildId: "777", discordUserId: "999"
   })
   assert.equal(optedOut.autoRedeemEnabled, false)
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 2)
 
   const limit = await completeCharacterRegistration({
     account: { player_id: "3", registration_status: "new" },
@@ -1170,6 +1239,117 @@ test("removing the only active account immediately renders the empty state witho
   assert.equal(remove.edited.components[0].components[0].data.label, "Register Character")
   assert.doesNotMatch(remove.edited.content, /93986200|Active: No/)
   assert.deepEqual(logs, [])
+})
+
+test("self release requires confirmation, rechecks ownership and refreshes only the previous owner", async () => {
+  const ownerId = "999999999999999999"
+  const account = {
+    ...accounts[0],
+    id: "self-release-account",
+    player_id: "93986201",
+    discord_user_id: ownerId
+  }
+  const refreshes = []
+  const dependencies = panelDependencies({
+    accounts: [account],
+    community: {
+      async refreshStatusCard(guildId, userId) {
+        refreshes.push([guildId, userId])
+        return true
+      }
+    }
+  })
+  const command = panelInteraction({ commandName: "player-register" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+
+  const release = panelInteraction({
+    customId: command.edited.components.at(-1).components[4].data.custom_id
+  })
+  await handleGiftCodePanelInteraction(release, dependencies)
+  assert.equal(account.discord_user_id, ownerId, "opening confirmation must not release ownership")
+  assert.match(release.edited.content, /RELEASE CHARACTER/)
+
+  const confirm = panelInteraction({
+    customId: release.edited.components[0].components[0].data.custom_id
+  })
+  await handleGiftCodePanelInteraction(confirm, dependencies)
+  assert.equal(account.discord_user_id, null)
+  assert.equal(account.gift_redemption_enabled, false)
+  assert.match(confirm.edited.content, /has been released/)
+  assert.deepEqual(refreshes, [["777777777777777777", ownerId]])
+})
+
+test("self release rechecks ownership at destructive confirmation", async () => {
+  const account = {
+    ...accounts[0], id: "stale-account", player_id: "93986202",
+    discord_user_id: "999999999999999999"
+  }
+  const dependencies = panelDependencies({ accounts: [account] })
+  const command = panelInteraction({ commandName: "player-register" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  const release = panelInteraction({
+    customId: command.edited.components.at(-1).components[4].data.custom_id
+  })
+  await handleGiftCodePanelInteraction(release, dependencies)
+  assert.match(release.edited.content, /RELEASE CHARACTER/)
+  account.discord_user_id = "888888888888888888"
+  const confirm = panelInteraction({
+    customId: release.edited.components[0].components[0].data.custom_id
+  })
+  await handleGiftCodePanelInteraction(confirm, dependencies)
+  assert.match(confirm.edited.content, /no longer the current owner/)
+  assert.equal(account.discord_user_id, "888888888888888888")
+})
+
+test("guild authority never grants operator recovery and BOT_OWNER_IDS is rechecked", async () => {
+  const operatorId = "707866087248756736"
+  const target = {
+    ...accounts[0], id: "operator-account", player_id: "93986203",
+    discord_user_id: "888888888888888888"
+  }
+  let guildAuthorizationCalls = 0
+  const dependencies = panelDependencies({
+    accounts: [target],
+    authorization: async () => { guildAuthorizationCalls += 1; return true }
+  })
+
+  for (const authority of ["member", "administrator", "guild owner", "configured guild manager", "role holder"]) {
+    const denied = panelInteraction({ commandName: "player-admin", options: { player_id: target.player_id } })
+    denied.member = { authority }
+    denied.guild = { ownerId: authority === "guild owner" ? denied.user.id : "other" }
+    await handleGiftCodePanelInteraction(denied, dependencies)
+    assert.match(denied.edited.content, /only to configured bot operators/)
+  }
+  assert.equal(guildAuthorizationCalls, 0)
+
+  dependencies.env.BOT_OWNER_IDS = ` ${operatorId} `
+  const lookup = panelInteraction({ commandName: "player-admin", options: { player_id: target.player_id } })
+  lookup.user.id = operatorId
+  await handleGiftCodePanelInteraction(lookup, dependencies)
+  assert.match(lookup.edited.content, /GLOBAL OPERATOR RECOVERY RELEASE/)
+  assert.match(lookup.edited.content, /Current Discord owner/)
+  assert.equal(target.discord_user_id, "888888888888888888", "lookup must require confirmation")
+
+  dependencies.env.BOT_OWNER_IDS = ""
+  const staleConfirm = panelInteraction({
+    customId: lookup.edited.components[0].components[0].data.custom_id
+  })
+  staleConfirm.user.id = operatorId
+  await handleGiftCodePanelInteraction(staleConfirm, dependencies)
+  assert.match(staleConfirm.edited.content, /only to configured bot operators/)
+  assert.equal(target.discord_user_id, "888888888888888888")
+
+  dependencies.env.BOT_OWNER_IDS = operatorId
+  const retry = panelInteraction({ commandName: "player-admin", options: { player_id: target.player_id } })
+  retry.user.id = operatorId
+  await handleGiftCodePanelInteraction(retry, dependencies)
+  const confirmed = panelInteraction({
+    customId: retry.edited.components[0].components[0].data.custom_id
+  })
+  confirmed.user.id = operatorId
+  await handleGiftCodePanelInteraction(confirmed, dependencies)
+  assert.equal(target.discord_user_id, null)
+  assert.match(confirmed.edited.content, /Operator release completed/)
 })
 
 test("removing one account selects the remaining active account in both profile wordings", async () => {

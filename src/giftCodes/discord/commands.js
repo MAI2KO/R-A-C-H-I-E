@@ -9,6 +9,20 @@ function buildPlayerRegisterCommand(gameProfile) {
     .setDescription(`Register and manage your ${terms.gameName} player accounts`)
 }
 
+function buildPlayerAdminCommand(gameProfile) {
+  const terms = profileTerminology(gameProfile)
+  return new SlashCommandBuilder()
+    .setName("player-admin")
+    .setDescription(`Global operator recovery for ${terms.gameName} player ownership`)
+    .addSubcommand(command => command
+      .setName("release")
+      .setDescription("Release an accidentally linked Player ID")
+      .addStringOption(option => option
+        .setName("player_id")
+        .setDescription(terms.playerLabel)
+        .setRequired(true)))
+}
+
 function buildGiftCodesCommand(gameProfile) {
   const terms = profileTerminology(gameProfile)
   return new SlashCommandBuilder()
@@ -46,6 +60,7 @@ function getGiftCommandData(env = process.env) {
   if (!playerGiftCodesIsEnabled(env)) return []
   const gameProfile = profileFromEnvironment(env)
   return gameProfile ? [
+    buildPlayerAdminCommand(gameProfile).toJSON(),
     buildGiftCodeAddCommand(gameProfile).toJSON(),
     buildGiftCodesCommand(gameProfile).toJSON(),
     buildGiftCodesAdminCommand(gameProfile).toJSON()
@@ -54,6 +69,7 @@ function getGiftCommandData(env = process.env) {
 
 module.exports = {
   buildPlayerRegisterCommand,
+  buildPlayerAdminCommand,
   buildGiftCodesCommand,
   buildGiftCodesAdminCommand,
   buildGiftCodeAddCommand,

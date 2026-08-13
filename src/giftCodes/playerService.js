@@ -45,7 +45,9 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
         if (duplicatePlayerError(error)) {
           throw new PlayerAccountError(
             "PLAYER_ALREADY_REGISTERED",
-            `That ${terms.playerLabel} is already registered for ${terms.gameName}.`
+            `This ${terms.playerLabel} is already linked to another Discord account.\n\n` +
+            "If this is your character, the current owner needs to release it first. " +
+            "If it was linked by mistake and they cannot release it, contact the bot operator."
           )
         }
         throw error
@@ -90,6 +92,53 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
       const result = await repository.deactivateAccount({ discordUserId: owner, playerId: player })
       if (!result) {
         throw new PlayerAccountError("PLAYER_NOT_FOUND", `No active ${terms.playerLabel} was found.`)
+      }
+      return result
+    },
+
+    async release({ discordUserId, playerId }) {
+      const owner = normalizeDiscordUserId(discordUserId)
+      const player = normalizePlayerId(playerId, terms.playerLabel)
+      const result = await repository.releaseAccount({
+        playerId: player,
+        performedByDiscordUserId: owner,
+        actionType: "release",
+        expectedOwnerDiscordUserId: owner
+      })
+      if (!result) {
+        throw new PlayerAccountError(
+          "PLAYER_OWNERSHIP_CHANGED",
+          `You are no longer the current owner of that ${terms.playerLabel}.`
+        )
+      }
+      return result
+    },
+
+    async operatorLookup({ playerId }) {
+      const player = normalizePlayerId(playerId, terms.playerLabel)
+      return repository.getAccountByPlayerId(player)
+    },
+
+    async operatorRelease({
+      playerId,
+      operatorDiscordUserId,
+      expectedAccountId,
+      expectedOwnerDiscordUserId
+    }) {
+      const player = normalizePlayerId(playerId, terms.playerLabel)
+      const operator = normalizeDiscordUserId(operatorDiscordUserId)
+      const result = await repository.releaseAccount({
+        playerId: player,
+        performedByDiscordUserId: operator,
+        actionType: "operator_release",
+        expectedOwnerDiscordUserId,
+        expectedAccountId
+      })
+      if (!result) {
+        throw new PlayerAccountError(
+          "PLAYER_OWNERSHIP_CHANGED",
+          `That ${terms.playerLabel}'s ownership changed before confirmation. Start again.`
+        )
       }
       return result
     }

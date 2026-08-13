@@ -26,6 +26,7 @@ Optional on either profile:
 
 ```text
 PLAYER_GIFT_CODES_ENABLED=true
+BOT_OWNER_IDS=<comma-separated Discord user IDs>
 GIFT_CODE_VERIFICATION_ENABLED=false
 GIFT_CODE_REDEMPTION_WORKER_ENABLED=false
 GIFT_CODE_SOURCE_POLLING_ENABLED=false

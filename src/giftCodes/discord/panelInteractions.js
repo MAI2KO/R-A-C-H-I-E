@@ -12,6 +12,7 @@ const {
 } = require("discord.js")
 
 const { getPool } = require("../../db")
+const { isBotOperator } = require("../../botOperators")
 const { InteractionSessionError, InteractionSessionStore } = require("../../interactionSessions")
 const { createPlayerRepository } = require("../playerRepository")
 const { createPlayerService, PlayerAccountError } = require("../playerService")
@@ -33,6 +34,11 @@ const IDS = Object.freeze({
   playerLocation: `${PREFIX}pl:`,
   playerGift: `${PREFIX}pg:`,
   playerRemove: `${PREFIX}pr:`,
+  playerRelease: `${PREFIX}prel:`,
+  playerReleaseConfirm: `${PREFIX}prelc:`,
+  playerReleaseCancel: `${PREFIX}prelx:`,
+  operatorReleaseConfirm: `${PREFIX}orc:`,
+  operatorReleaseCancel: `${PREFIX}orx:`,
   playerSelect: `${PREFIX}ps:`,
   giftSubmit: `${PREFIX}gs:`,
   giftToggle: `${PREFIX}gt:`,
@@ -59,7 +65,9 @@ const IDS = Object.freeze({
   inspectModal: `${PREFIX}im:`,
   publicRegister: `${PREFIX}public-register`
 })
-const COMMANDS = new Set(["player-register", "gift-code-add", "gift-codes", "gift-codes-admin"])
+const COMMANDS = new Set([
+  "player-register", "player-admin", "gift-code-add", "gift-codes", "gift-codes-admin"
+])
 const sessionStore = new InteractionSessionStore({ maximumSessions: 250 })
 
 function suffix(customId, prefix) {
@@ -124,7 +132,9 @@ function playerPanel({ sessionId, accounts, selected, terms, notice = null }) {
         ? ButtonStyle.Danger
         : ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`${IDS.playerRemove}${sessionId}`)
-      .setLabel("Remove Character").setStyle(ButtonStyle.Danger)
+      .setLabel("Remove Character").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${IDS.playerRelease}${sessionId}`)
+      .setLabel("Release Character").setStyle(ButtonStyle.Danger)
   ))
   return {
     content: [
@@ -137,6 +147,49 @@ function playerPanel({ sessionId, accounts, selected, terms, notice = null }) {
       `Automatic gift-code redemption: ${selected.gift_redemption_enabled ? "Enabled" : "Disabled"}`
     ].filter(Boolean).join("\n"),
     components
+  }
+}
+
+function releaseConfirmationPanel(sessionId, playerId) {
+  return {
+    content:
+      `**RELEASE CHARACTER**\n\n` +
+      `Player ID ${playerId}\n\n` +
+      "This permanently disconnects this Player ID from your Discord account and " +
+      "allows another Discord user to register it.\n\n" +
+      "Auto-Redeem will be disabled.\n\n" +
+      "Your historical gift-code records will not be deleted.\n\n" +
+      "Use Remove Character instead if you may want to reactivate this character later.",
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${IDS.playerReleaseConfirm}${sessionId}`)
+        .setLabel("CONFIRM RELEASE").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`${IDS.playerReleaseCancel}${sessionId}`)
+        .setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    )]
+  }
+}
+
+function operatorReleaseConfirmation(sessionId, account, terms) {
+  return {
+    content: [
+      "**GLOBAL OPERATOR RECOVERY RELEASE**",
+      "",
+      `${terms.playerLabel}: ${account.player_id}`,
+      `Current Discord owner: ${account.discord_user_id || "Released"}`,
+      `Status: ${account.is_active ? "Active" : "Inactive"}`,
+      `${terms.locationLabel}: ${account.state_or_kingdom_number}`,
+      `Auto-Redeem: ${account.gift_redemption_enabled ? "Enabled" : "Disabled"}`,
+      `Guild enrolments: ${account.guild_enrolment_count || 0}`,
+      "",
+      "This globally releases ownership. Guild administrator permissions do not authorise this action."
+    ].join("\n"),
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${IDS.operatorReleaseConfirm}${sessionId}`)
+        .setLabel("CONFIRM OPERATOR RELEASE").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`${IDS.operatorReleaseCancel}${sessionId}`)
+        .setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    )],
+    allowedMentions: { parse: [], repliedUser: false }
   }
 }
 
@@ -225,11 +278,12 @@ async function completeCharacterRegistration({
   guildId,
   discordUserId
 }) {
+  const isFreshOwnership = ["new", "claimed"].includes(account.registration_status)
   let notice = account.registration_status === "reactivated"
     ? "Character reactivated. Your previous Auto-Redeem preference was preserved."
     : "Character registered."
   const priorAutoPreference = account.account_metadata?.autoRedeemPreference
-  const shouldEnable = account.registration_status === "new"
+  const shouldEnable = isFreshOwnership
     || (account.registration_status === "reactivated" && priorAutoPreference?.enabled === true)
   if (!shouldEnable) return { account, notice, autoRedeemEnabled: false }
 
@@ -239,15 +293,13 @@ async function completeCharacterRegistration({
       guildId,
       playerId: account.player_id,
       enabled: true,
-      preferenceSource: account.registration_status === "new"
-        ? "registration_default"
-        : "user"
+      preferenceSource: isFreshOwnership ? "registration_default" : "user"
     })
     await community.onAutoRedemptionEnabled?.(enabled.engagement_event, {
       guildId,
       discordUserId
     })
-    notice = account.registration_status === "new"
+    notice = isFreshOwnership
       ? "Character registered. Auto-Redeem Enabled."
       : "Character reactivated. Auto-Redeem Enabled."
     return { account: enabled, notice, autoRedeemEnabled: true }
@@ -491,6 +543,17 @@ async function handleGiftCodePanelInteraction(interaction, {
       return true
     }
 
+    const operatorInteraction = interaction.commandName === "player-admin"
+      || customId.startsWith(IDS.operatorReleaseConfirm)
+      || customId.startsWith(IDS.operatorReleaseCancel)
+    if (operatorInteraction && !isBotOperator(interaction.user.id, env)) {
+      await interaction.editReply({
+        content: "This global recovery command is available only to configured bot operators.",
+        components: []
+      })
+      return true
+    }
+
     const pool = poolProvider()
     const playerRepository = playerRepositoryFactory(pool, health.gameProfile)
     const players = playerServiceFactory({ repository: playerRepository, gameProfile: health.gameProfile, logger })
@@ -574,7 +637,36 @@ async function handleGiftCodePanelInteraction(interaction, {
       }))
     }
 
+    async function refreshReleasedOwner(result) {
+      for (const guildId of result.guildIds || []) {
+        await community.refreshStatusCard?.(guildId, result.previousOwnerDiscordUserId)
+          .catch(error => logger.warn(
+            `[Player accounts] Status refresh failed after release: ${error?.code || "error"}`
+          ))
+      }
+    }
+
     if (interaction.isChatInputCommand?.()) {
+      if (interaction.commandName === "player-admin") {
+        const playerId = interaction.options.getString("player_id")
+        const account = await players.operatorLookup({ playerId })
+        if (!account?.discord_user_id) {
+          throw new PlayerAccountError(
+            "PLAYER_NOT_OWNED",
+            account
+              ? `That ${players.terms.playerLabel} is already released.`
+              : `No matching ${players.terms.playerLabel} was found.`
+          )
+        }
+        const sessionId = sessions.create(context, {
+          panel: "operator-release",
+          selectedPlayerId: account.player_id,
+          expectedAccountId: String(account.id),
+          expectedOwnerDiscordUserId: account.discord_user_id
+        })
+        await interaction.editReply(operatorReleaseConfirmation(sessionId, account, players.terms))
+        return true
+      }
       if (interaction.commandName === "gift-code-add") {
         const result = await gifts.submit({
           discordUserId: interaction.user.id,
@@ -651,6 +743,62 @@ async function handleGiftCodePanelInteraction(interaction, {
       })
       await community.refreshStatusCard?.(interaction.guildId, interaction.user.id)
       await renderPlayer(sessionId)
+      return true
+    }
+    if (customId.startsWith(IDS.playerReleaseConfirm)) {
+      const result = await players.release({
+        discordUserId: interaction.user.id,
+        playerId: session.data.selectedPlayerId
+      })
+      await refreshReleasedOwner(result)
+      sessions.complete(sessionId, context)
+      await interaction.editReply({
+        content:
+          `Player ID ${result.account.player_id} has been released. ` +
+          "Another Discord user may now register it. Historical gift-code records were preserved.",
+        components: []
+      })
+      return true
+    }
+    if (customId.startsWith(IDS.playerRelease)) {
+      const account = await playerRepository.getOwnedAccount(
+        interaction.user.id,
+        session.data.selectedPlayerId
+      )
+      if (!account) {
+        throw new PlayerAccountError(
+          "PLAYER_OWNERSHIP_CHANGED",
+          `You are no longer the current owner of that ${players.terms.playerLabel}.`
+        )
+      }
+      await interaction.editReply(releaseConfirmationPanel(sessionId, account.player_id))
+      return true
+    }
+    if (customId.startsWith(IDS.playerReleaseCancel)) {
+      await renderPlayer(sessionId, session.data.selectedPlayerId)
+      return true
+    }
+    if (customId.startsWith(IDS.operatorReleaseConfirm)) {
+      const result = await players.operatorRelease({
+        playerId: session.data.selectedPlayerId,
+        operatorDiscordUserId: interaction.user.id,
+        expectedAccountId: session.data.expectedAccountId,
+        expectedOwnerDiscordUserId: session.data.expectedOwnerDiscordUserId
+      })
+      await refreshReleasedOwner(result)
+      sessions.complete(sessionId, context)
+      await interaction.editReply({
+        content:
+          `Operator release completed for Player ID ${result.account.player_id}. ` +
+          `Previous owner: ${result.previousOwnerDiscordUserId}. Historical records were preserved.`,
+        components: [],
+        allowedMentions: { parse: [], repliedUser: false }
+      })
+      return true
+    }
+    if (customId.startsWith(IDS.operatorReleaseCancel)) {
+      sessions.complete(sessionId, context)
+      await interaction.editReply({ content: "Operator release cancelled.", components: [] })
       return true
     }
     if (customId.startsWith(IDS.playerGift)) {
@@ -849,6 +997,8 @@ module.exports = {
   selectedAccount,
   accountMenu,
   playerPanel,
+  releaseConfirmationPanel,
+  operatorReleaseConfirmation,
   giftPanel,
   activeCodesPanel,
   registrationModal,

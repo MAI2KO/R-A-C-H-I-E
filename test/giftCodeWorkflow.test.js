@@ -993,7 +993,7 @@ test("gift panel commands register for both profiles and status uses State or Ki
   assert.match(wosStatus, /Completed redemption checks: 3/)
   assert.match(formatPlayerGiftStatus(account, profileTerminology("kingshot")), /Kingdom: 689/)
   assert.equal(getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "false" }).length, 0)
-  assert.equal(getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "true", GAME_PROFILE: "wos" }).length, 3)
+  assert.equal(getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "true", GAME_PROFILE: "wos" }).length, 4)
 })
 
 test("verification processor leaves candidates pending when verifier is absent", async () => {

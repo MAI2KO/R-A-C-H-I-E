@@ -255,7 +255,7 @@ function createRedemptionProcessor({
   async function notify(claim, status) {
     const notification = await repository.claimNotification(claim.id, now())
     if (!notification) return
-    const outcome = await notifier(claim, status)
+    const outcome = await notifier({ ...claim, ...notification }, status)
     await repository.finishNotification(claim.id, {
       sent: outcome.sent,
       now: now(),

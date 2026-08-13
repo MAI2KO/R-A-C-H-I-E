@@ -130,7 +130,11 @@ function createGiftCodeService({ repository, gameProfile, env = process.env, ing
       const account = await selectOwnedAccount(discordUserId, playerId)
       return {
         account,
-        redemptions: await repository.redemptionHistory(account.id, limit)
+        redemptions: await repository.redemptionHistory(
+          account.id,
+          normalizeDiscordUserId(discordUserId),
+          limit
+        )
       }
     },
 

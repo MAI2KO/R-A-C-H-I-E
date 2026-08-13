@@ -65,11 +65,13 @@ function createGiftCodeRepository(pool, gameProfile) {
              COUNT(*) FILTER (WHERE status = 'already_redeemed') AS already_redeemed_count
              FROM gift_code_redemptions r
             WHERE r.game_profile = a.game_profile AND r.player_account_id = a.id
+              AND r.discord_owner_id_snapshot = a.discord_user_id
          ) stats ON true
          LEFT JOIN LATERAL (
            SELECT status, api_message
              FROM gift_code_redemptions r
             WHERE r.game_profile = a.game_profile AND r.player_account_id = a.id
+              AND r.discord_owner_id_snapshot = a.discord_user_id
             ORDER BY COALESCE(r.completed_at_utc, r.attempted_at_utc, r.created_at_utc) DESC, r.id
             LIMIT 1
          ) latest ON true
@@ -238,12 +240,13 @@ function createGiftCodeRepository(pool, gameProfile) {
             await client.query(
               `INSERT INTO gift_code_redemptions (
                  id, game_profile, gift_code_id, player_account_id,
-                 player_id_snapshot, location_number_snapshot
-               ) VALUES ($1, $2, $3, $4, $5, $6)
+                 player_id_snapshot, location_number_snapshot,
+                 discord_owner_id_snapshot
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                ON CONFLICT (game_profile, gift_code_id, player_account_id) DO NOTHING`,
               [
                 crypto.randomUUID(), gameProfile, giftCode.id, account.id,
-                account.player_id, account.state_or_kingdom_number
+                account.player_id, account.state_or_kingdom_number, discordUserId
               ]
             )
           }
@@ -307,7 +310,7 @@ function createGiftCodeRepository(pool, gameProfile) {
       return accountStatuses(discordUserId, playerId, guildId, false)
     },
 
-    async redemptionHistory(playerAccountId, limit = 10) {
+    async redemptionHistory(playerAccountId, discordUserId, limit = 10) {
       const result = await pool.query(
         `SELECT r.status, r.completed_at_utc, r.attempted_at_utc,
                 r.location_number_snapshot, g.code
@@ -315,9 +318,10 @@ function createGiftCodeRepository(pool, gameProfile) {
            JOIN gift_codes g
              ON g.id = r.gift_code_id AND g.game_profile = r.game_profile
           WHERE r.game_profile = $1 AND r.player_account_id = $2
+            AND r.discord_owner_id_snapshot = $3
           ORDER BY COALESCE(r.completed_at_utc, r.attempted_at_utc, r.created_at_utc) DESC, r.id
-          LIMIT $3`,
-        [gameProfile, playerAccountId, Math.min(25, Math.max(1, Number(limit) || 10))]
+          LIMIT $4`,
+        [gameProfile, playerAccountId, discordUserId, Math.min(25, Math.max(1, Number(limit) || 10))]
       )
       return result.rows
     },
@@ -326,9 +330,11 @@ function createGiftCodeRepository(pool, gameProfile) {
       const result = await pool.query(
         `INSERT INTO gift_code_redemptions (
            id, game_profile, gift_code_id, player_account_id,
-           player_id_snapshot, location_number_snapshot, bot_instance_name
+           player_id_snapshot, location_number_snapshot, bot_instance_name,
+           discord_owner_id_snapshot
          )
-         SELECT $1, $2::varchar, $3, a.id, a.player_id, a.state_or_kingdom_number, $5
+         SELECT $1, $2::varchar, $3, a.id, a.player_id, a.state_or_kingdom_number, $5,
+                a.discord_user_id
            FROM player_accounts a
           WHERE a.id = $4 AND a.game_profile = $2 AND a.is_active = true
             AND ($6::boolean = false OR a.gift_redemption_enabled = true)
@@ -347,7 +353,7 @@ function createGiftCodeRepository(pool, gameProfile) {
 
     async fanOutActiveCode({ giftCodeId, botInstanceName = null, client = pool }) {
       const accounts = (await client.query(
-        `SELECT a.id, a.player_id, a.state_or_kingdom_number
+        `SELECT a.id, a.player_id, a.state_or_kingdom_number, a.discord_user_id
            FROM player_accounts a
            JOIN gift_codes c ON c.game_profile = a.game_profile
           WHERE c.id = $2 AND c.game_profile = $1 AND c.status = 'active'
@@ -360,13 +366,15 @@ function createGiftCodeRepository(pool, gameProfile) {
         const row = (await client.query(
           `INSERT INTO gift_code_redemptions (
              id, game_profile, gift_code_id, player_account_id,
-             player_id_snapshot, location_number_snapshot, bot_instance_name
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+             player_id_snapshot, location_number_snapshot, bot_instance_name,
+             discord_owner_id_snapshot
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (game_profile, gift_code_id, player_account_id) DO NOTHING
            RETURNING *`,
           [
             crypto.randomUUID(), gameProfile, giftCodeId, account.id,
-            account.player_id, account.state_or_kingdom_number, botInstanceName
+            account.player_id, account.state_or_kingdom_number, botInstanceName,
+            account.discord_user_id
           ]
         )).rows[0]
         if (row) queued.push(row)
@@ -707,7 +715,7 @@ function createGiftCodeRepository(pool, gameProfile) {
         const terminal = TERMINAL_REDEMPTION_STATES.has(status)
         const notificationStatus = ["success", "already_redeemed", "invalid_player", "restricted", "unknown"]
           .includes(status) ? "pending" : "suppressed"
-        const updated = (await client.query(
+        let updated = (await client.query(
           `UPDATE gift_code_redemptions
               SET status = $5::varchar, api_code = $6, err_code = $7,
                   api_message = $8, http_status = $9,
@@ -729,8 +737,18 @@ function createGiftCodeRepository(pool, gameProfile) {
             Boolean(retryable), nextRetryAt, terminal, notificationStatus
           ]
         )).rows[0]
-        if (!updated) throw new Error("Redemption claim ownership was lost")
-        if (status === "invalid_player") {
+        let releasedDuringAttempt = false
+        if (!updated) {
+          const current = (await client.query(
+            `SELECT * FROM gift_code_redemptions
+              WHERE id = $1 AND game_profile = $2 AND status = 'disabled'`,
+            [claim.id, gameProfile]
+          )).rows[0] || null
+          if (!current) throw new Error("Redemption claim ownership was lost")
+          updated = current
+          releasedDuringAttempt = true
+        }
+        if (!releasedDuringAttempt && status === "invalid_player") {
           await client.query(
             `UPDATE player_accounts
                 SET verification_status = 'failed', verification_error_code = $3,
@@ -739,7 +757,7 @@ function createGiftCodeRepository(pool, gameProfile) {
               WHERE id = $1 AND game_profile = $2`,
             [claim.player_account_id, gameProfile, fields.errCode?.toString() || null, fields.apiMessage, now]
           )
-        } else if (["success", "already_redeemed"].includes(status)) {
+        } else if (!releasedDuringAttempt && ["success", "already_redeemed"].includes(status)) {
           await client.query(
             `UPDATE player_accounts
                 SET verification_status = 'verified', verification_error_code = NULL,
@@ -750,7 +768,7 @@ function createGiftCodeRepository(pool, gameProfile) {
           )
         }
         await client.query("COMMIT")
-        return updated
+        return { ...updated, released_during_attempt: releasedDuringAttempt }
       } catch (error) {
         await client.query("ROLLBACK")
         throw error
@@ -761,11 +779,15 @@ function createGiftCodeRepository(pool, gameProfile) {
 
     async claimNotification(redemptionId, now = new Date()) {
       return (await pool.query(
-        `UPDATE gift_code_redemptions
+        `UPDATE gift_code_redemptions r
             SET notification_status = 'sending', notification_attempted_at_utc = $3,
                 updated_at_utc = $3
-          WHERE id = $1 AND game_profile = $2 AND notification_status = 'pending'
-          RETURNING *`,
+           FROM player_accounts a
+          WHERE r.id = $1 AND r.game_profile = $2 AND r.notification_status = 'pending'
+            AND a.id = r.player_account_id AND a.game_profile = r.game_profile
+            AND a.is_active = true
+            AND a.discord_user_id = r.discord_owner_id_snapshot
+          RETURNING r.*, a.discord_user_id`,
         [redemptionId, gameProfile, now]
       )).rows[0] || null
     },

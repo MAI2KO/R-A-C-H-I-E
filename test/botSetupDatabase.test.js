@@ -17,7 +17,7 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     await admin.query(`CREATE SCHEMA "${schema}"`)
     pool = new Pool({ connectionString: databaseUrl, max: 8, options: `-c search_path=${schema}` })
     const migrated = await runMigrations({ pool, logger: { log() {}, error() {} } })
-    assert.equal(migrated.applied.at(-1), "017_bot_managed_discord_setup.sql")
+    assert.equal(migrated.applied.at(-1), "018_player_account_ownership_release.sql")
     assert.deepEqual((await runMigrations({ pool, logger: { log() {}, error() {} } })).applied, [])
 
     const guildId = "700000000000000001"
