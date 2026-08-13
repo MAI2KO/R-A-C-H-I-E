@@ -6,7 +6,7 @@ const {
   normalizePlayerId
 } = require("./validation")
 const { profileTerminology } = require("./terminology")
-const { giftAccountConfig } = require("./config")
+const { giftAccountConfig, giftWorkerConfig } = require("./config")
 
 class GiftCodeError extends Error {
   constructor(code, message) {
@@ -30,6 +30,7 @@ const SUBMISSION_LABELS = Object.freeze({
 function createGiftCodeService({ repository, gameProfile, env = process.env, ingestion = null }) {
   const terms = profileTerminology(gameProfile)
   const accountConfig = giftAccountConfig(env)
+  const workerConfig = giftWorkerConfig(env)
 
   async function selectOwnedAccount(discordUserId, playerId = null, guildId = null) {
     const owner = normalizeDiscordUserId(discordUserId)
@@ -147,7 +148,10 @@ function createGiftCodeService({ repository, gameProfile, env = process.env, ing
     },
 
     async adminCode(code) {
-      return repository.codeDiagnostics(normalizeGiftCode(code))
+      const diagnostics = await repository.codeDiagnostics(normalizeGiftCode(code))
+      return diagnostics
+        ? { ...diagnostics, maximum_verification_attempts: workerConfig.maximumAttempts }
+        : null
     }
   })
 }

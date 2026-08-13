@@ -7,6 +7,7 @@ Century responses are classified by numeric `err_code` before any other field. T
 Evidence labels:
 
 - **LIVE VERIFIED**: observed in a captured official request and response.
+- **LIVE OBSERVED**: observed during production operation, without claiming official semantic documentation.
 - **OFFICIAL FRONTEND VERIFIED**: the official numeric map and supplied official localization semantics establish the result.
 - **UNRESOLVED**: the numeric key was extracted, but the supplied localization evidence does not establish safe bot behavior.
 
@@ -20,7 +21,7 @@ Evidence labels:
 | 40001 | `0x9c41` | `input_roleId_tips3` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
 | 40002 | `0x9c42` | `frequency_tip1` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
 | 40003 | `0x9c43` | `exchange_tips4` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
-| 40004 | `0x9c44` | `frequency_tip2` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
+| 40004 | `0x9c44` | `frequency_tip2` | Exact `TIMEOUT RETRY.` response is timeout-style and retryable; other messages unresolved | `server_busy_timeout` only for HTTP 200 + exact normalized message | Bounded durable retry; code validity unresolved | LIVE OBSERVED + official frontend numeric mapping |
 | 40005 | `0x9c45` | `error_msg3` | Claim limit exceeded | `claim_limit` | Terminal attempt; account-specific | OFFICIAL FRONTEND VERIFIED |
 | 40006 | `0x9c46` | `error_msg4` | Insufficient Town Center / City level | `level_restriction` | Terminal attempt; account-specific | OFFICIAL FRONTEND VERIFIED |
 | 40007 | `0x9c47` | `error_msg2` | Redemption period expired | `expired` | Terminal; code-global | LIVE + OFFICIAL FRONTEND VERIFIED |
@@ -48,7 +49,7 @@ Evidence labels:
 | 40001 | `0x9c41` | `input_roleId_tips3` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
 | 40002 | `0x9c42` | `frequency_tip1` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
 | 40003 | `0x9c43` | `exchange_tips4` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
-| 40004 | `0x9c44` | `frequency_tip2` | Exact semantic not established | `unknown_response` | Review; unresolved | UNRESOLVED |
+| 40004 | `0x9c44` | `frequency_tip2` | Exact `TIMEOUT RETRY.` response uses shared timeout-style handling; other messages unresolved | `server_busy_timeout` only for HTTP 200 + exact normalized message | Bounded durable retry; code validity unresolved | Shared protocol rule + official frontend numeric mapping |
 | 40005 | `0x9c45` | `error_msg3` | Claim limit exceeded | `claim_limit` | Terminal attempt; account-specific | OFFICIAL FRONTEND VERIFIED |
 | 40006 | `0x9c46` | `error_msg4` | Insufficient Town Center / City level | `level_restriction` | Terminal attempt; account-specific | OFFICIAL FRONTEND VERIFIED |
 | 40007 | `0x9c47` | `error_msg2` | Redemption period expired | `expired` | Terminal; code-global | LIVE + OFFICIAL FRONTEND VERIFIED |
@@ -71,6 +72,14 @@ Evidence labels:
 
 WOS alone contains `40018 -> error_msg18`, whose meaning remains unresolved. The clients also differ at `40020`: WOS maps it to `error_msg19` and has a live `USER INFO ERROR.` observation, while Kingshot maps it to the supplied `error_msg16` character-information text. Both safely classify it as `invalid_player`, but the evidence paths remain separate.
 
-No numeric map entry references `error_msg9`, so the prerequisite text is not assigned to a Century number. The non-error keys `input_roleId_tips3`, `frequency_tip1`, `frequency_tip2`, `exchange_tips4`, and `exchange_tips5` remain recorded but fail closed because their exact response semantics were not established by the supplied localization catalogue.
+No numeric map entry references `error_msg9`, so the prerequisite text is not assigned to a Century number. The non-error keys `input_roleId_tips3`, `frequency_tip1`, `frequency_tip2`, `exchange_tips4`, and `exchange_tips5` remain unresolved from localization evidence alone. They fail closed except for the independently live-observed, exact 40004 response documented below.
+
+### Exact 40004 timeout-style response
+
+R.A.C.H.I.E observed a WOS production verification response with HTTP status 200, Century `err_code` 40004, JSON response type, and message `TIMEOUT RETRY.` while a newly released code was becoming available. Both official frontend maps independently contain `40004 -> frequency_tip2`, but that localization key alone does not establish the internal cause.
+
+The runtime therefore classifies only HTTP 200 + `err_code` 40004 + a case-insensitive, whitespace-trimmed `TIMEOUT RETRY` message (with optional terminal punctuation) as `server_busy_timeout`. This means a server-busy / timeout-style transient response: the existing durable bounded backoff applies and code validity remains unresolved until stronger evidence arrives. The explicit retry wording and live behavior strongly support retryability, but temporary Century-side load, contention, or processing timeout remains an inference rather than an officially documented cause.
+
+The same exact matcher is enabled for Kingshot because both official clients contain the same numeric mapping and both adapters use the same Century response protocol. Arbitrary 40004 messages in either profile remain `unknown_response` and require review.
 
 `40016 -> error_msg10` is deliberately not retried. Its wording may indicate that Century accepted the redemption and deferred reward delivery; retrying could duplicate an accepted operation. `40015 -> error_msg8` is likewise too generic for safe automated behavior.

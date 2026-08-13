@@ -5,6 +5,14 @@ function integerOrNull(value) {
   return Number.isInteger(number) ? number : null
 }
 
+function normalizedSemanticMessage(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[.!?]+$/, "")
+    .trim()
+    .toUpperCase()
+}
+
 function classifyCenturyResponse({ httpStatus, data, profileMappings = {} }) {
   const raw = Object.freeze({
     code: integerOrNull(data?.code),
@@ -18,7 +26,13 @@ function classifyCenturyResponse({ httpStatus, data, profileMappings = {} }) {
     const errCodes = profileMappings.errCodes || profileMappings
     const codes = profileMappings.codes || {}
     const messages = profileMappings.messages || {}
-    state = errCodes[raw.errCode]
+    const semanticResponse = (profileMappings.semanticResponses || []).find(mapping =>
+      Number(httpStatus) === mapping.httpStatus
+      && raw.errCode === mapping.errCode
+      && normalizedSemanticMessage(raw.message) === normalizedSemanticMessage(mapping.message)
+    )
+    state = semanticResponse?.state
+      || errCodes[raw.errCode]
       || KNOWN_ERROR_STATES[raw.errCode]
       || codes[raw.code]
       || messages[raw.message]
@@ -29,7 +43,7 @@ function classifyCenturyResponse({ httpStatus, data, profileMappings = {} }) {
     state,
     retryable: [
       "rate_limited", "temporary_error", "verification_throttle",
-      "simultaneous_action_throttle"
+      "simultaneous_action_throttle", "server_busy_timeout"
     ].includes(state),
     permanent: [
       "success", "already_redeemed", "expired", "invalid_code", "invalid_player",
@@ -40,4 +54,4 @@ function classifyCenturyResponse({ httpStatus, data, profileMappings = {} }) {
   })
 }
 
-module.exports = { KNOWN_ERROR_STATES, classifyCenturyResponse }
+module.exports = { KNOWN_ERROR_STATES, normalizedSemanticMessage, classifyCenturyResponse }

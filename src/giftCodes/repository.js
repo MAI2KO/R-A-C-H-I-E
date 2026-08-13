@@ -415,12 +415,15 @@ function createGiftCodeRepository(pool, gameProfile) {
       return result.rows[0] || null
     },
 
-    async storedVerificationReview({ errCodes, code = null }) {
+    async storedVerificationReview({ errCodes, exactResponses = [], code = null }) {
       const exactCode = code === null ? null : normalizeGiftCode(code)
       const safeErrCodes = [...new Set(errCodes || [])]
         .map(Number)
         .filter(Number.isInteger)
-      if (!safeErrCodes.length) return null
+      const exactErrCodes = exactResponses.map(response => Number(response?.errCode))
+      const exactMessages = exactResponses.map(response => String(response?.message || "")
+        .trim().replace(/[.!?]+$/, "").trim().toUpperCase())
+      if (!safeErrCodes.length && !exactErrCodes.length) return null
       return (await pool.query(
         `SELECT g.*, attempt.id AS stored_attempt_id,
                   attempt.http_status AS stored_http_status,
@@ -440,11 +443,19 @@ function createGiftCodeRepository(pool, gameProfile) {
            AND g.verification_state = 'review'
            AND attempt.classification = 'unknown_response'
            AND attempt.http_status = 200
-           AND attempt.err_code = ANY($2::integer[])
-           AND ($3::varchar IS NULL OR g.code = $3)
+           AND (
+             attempt.err_code = ANY($2::integer[])
+             OR EXISTS (
+               SELECT 1
+                 FROM unnest($3::integer[], $4::varchar[]) expected(err_code, message)
+                WHERE expected.err_code = attempt.err_code
+                  AND regexp_replace(upper(btrim(attempt.api_message)), '[.!?]+$', '') = expected.message
+             )
+           )
+           AND ($5::varchar IS NULL OR g.code = $5)
          ORDER BY g.last_verification_at_utc, g.id
          LIMIT 1`,
-        [gameProfile, safeErrCodes, exactCode]
+        [gameProfile, safeErrCodes, exactErrCodes, exactMessages, exactCode]
       )).rows[0] || null
     },
 
@@ -454,6 +465,7 @@ function createGiftCodeRepository(pool, gameProfile) {
       now,
       codeStatus,
       verificationState,
+      nextRetryAt = null,
       botInstanceName = null
     }) {
       const client = await pool.connect()
@@ -462,7 +474,7 @@ function createGiftCodeRepository(pool, gameProfile) {
         const updated = (await client.query(
           `UPDATE gift_codes
               SET status = $5::varchar, verification_state = $6::varchar,
-                  verification_next_retry_at_utc = NULL,
+                  verification_next_retry_at_utc = $8,
                   verification_claimed_by_worker = NULL,
                   verification_claimed_at_utc = NULL,
                   verification_claimed_until_utc = NULL,
@@ -486,7 +498,7 @@ function createGiftCodeRepository(pool, gameProfile) {
             RETURNING *`,
           [
             claim.id, gameProfile, claim.stored_attempt_id, now, codeStatus,
-            verificationState, classification
+            verificationState, classification, nextRetryAt
           ]
         )).rows[0]
         if (!updated) {

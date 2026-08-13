@@ -51,7 +51,7 @@ function centuryResult(state, overrides = {}) {
     headers: overrides.headers || {},
     classification: {
       state,
-      retryable: ["rate_limited", "temporary_error"].includes(state),
+      retryable: ["rate_limited", "temporary_error", "server_busy_timeout"].includes(state),
       raw: {
         code: overrides.code ?? 1,
         errCode: overrides.errCode ?? 49999,
@@ -191,6 +191,49 @@ test("official frontend mappings classify proven account and transient outcomes"
       assert.equal(classified.permanent, permanent, `${profile} ${errCode}`)
     }
   }
+})
+
+test("exact 40004 TIMEOUT RETRY response is narrowly retryable for both profiles", () => {
+  const now = new Date("2026-08-12T12:00:00Z")
+  for (const profile of ["wos", "kingshot"]) {
+    for (const message of ["TIMEOUT RETRY.", " timeout retry ", "Timeout Retry!"]) {
+      const classified = classifyCenturyResponse({
+        httpStatus: 200,
+        data: { code: 1, err_code: 40004, msg: message },
+        profileMappings: centuryAdapter(profile, {}).responseMappings
+      })
+      assert.equal(classified.state, "server_busy_timeout", `${profile}: ${message}`)
+      assert.equal(classified.retryable, true)
+      assert.equal(classified.permanent, false)
+    }
+    for (const input of [
+      { httpStatus: 200, err_code: 40004, msg: "SOMETHING ELSE" },
+      { httpStatus: 201, err_code: 40004, msg: "TIMEOUT RETRY." },
+      { httpStatus: 200, err_code: 49999, msg: "TIMEOUT RETRY." }
+    ]) {
+      assert.equal(classifyCenturyResponse({
+        httpStatus: input.httpStatus,
+        data: { code: 1, err_code: input.err_code, msg: input.msg },
+        profileMappings: centuryAdapter(profile, {}).responseMappings
+      }).state, "unknown_response")
+    }
+  }
+
+  const retry = verificationTransition("server_busy_timeout", 1, now, config)
+  assert.deepEqual(retry, {
+    codeStatus: "candidate",
+    verificationState: "retry",
+    nextRetryAt: new Date("2026-08-12T12:00:10Z")
+  })
+  assert.deepEqual(verificationTransition("server_busy_timeout", 3, now, config), {
+    codeStatus: "unknown",
+    verificationState: "review"
+  })
+  assert.deepEqual(redemptionTransition("server_busy_timeout", 1, now, config), {
+    status: "temporary_error",
+    retryable: true,
+    nextRetryAt: new Date("2026-08-12T12:00:10Z")
+  })
 })
 
 test("unresolved frontend mappings remain profile-scoped and fail closed", () => {
@@ -476,6 +519,7 @@ test("stored 40011 recovery uses the current adapter without a Century request",
       gameProfile: "kingshot",
       async storedVerificationReview(input) {
         assert.deepEqual(input.errCodes, [40011])
+        assert.deepEqual(input.exactResponses, [{ errCode: 40004, message: "TIMEOUT RETRY" }])
         if (!claimed) return null
         claimed = false
         return {
@@ -511,6 +555,104 @@ test("stored 40011 recovery uses the current adapter without a Century request",
   assert.equal(finished.codeStatus, "active")
   assert.equal(finished.verificationState, "complete")
   assert.equal(await processor.tick(), 0, "restart-style repeat must not recover twice")
+})
+
+test("stored 40004 timeout recovery schedules a bounded retry without a Century request", async () => {
+  let available = true
+  let finished
+  let requests = 0
+  let claims = 0
+  const processor = createVerificationProcessor({
+    repository: {
+      gameProfile: "wos",
+      async storedVerificationReview() {
+        if (!available) return null
+        available = false
+        return {
+          id: "stored-timeout",
+          code: "StoredTimeout",
+          verification_attempt_count: 1,
+          stored_attempt_id: "stored-attempt",
+          stored_http_status: 200,
+          stored_api_code: 1,
+          stored_err_code: 40004,
+          stored_api_message: "  timeout retry. "
+        }
+      },
+      async finishStoredVerificationRecovery(input) {
+        finished = input
+        return { giftCode: { id: "stored-timeout", status: input.codeStatus }, queued: [] }
+      },
+      async claimVerification() { claims += 1; return null }
+    },
+    client: {
+      adapter: centuryAdapter("wos", {}),
+      async redeem() { requests += 1; throw new Error("must not request Century during recovery") }
+    },
+    verifier: { configured: true, playerId: "282021376", locationNumber: "689" },
+    config,
+    botInstanceName: "rachie-wos",
+    logger: { log() {}, warn() {}, error() {} },
+    now: () => new Date("2026-08-12T12:00:00Z"),
+    workerId: "stored-timeout-worker"
+  })
+
+  assert.equal(await processor.tick(), 1)
+  assert.equal(requests, 0)
+  assert.equal(claims, 0, "recovery tick must not immediately claim the retry")
+  assert.equal(finished.classification, "server_busy_timeout")
+  assert.equal(finished.codeStatus, "candidate")
+  assert.equal(finished.verificationState, "retry")
+  assert.equal(finished.nextRetryAt.toISOString(), "2026-08-12T12:00:10.000Z")
+  assert.equal(await processor.tick(), 0)
+  assert.equal(claims, 1)
+  assert.equal(requests, 0)
+})
+
+test("fresh server timeout performs one rate-limited request and schedules durable retry", async () => {
+  let finished
+  let lockCalls = 0
+  let requests = 0
+  const processor = createVerificationProcessor({
+    repository: {
+      gameProfile: "wos",
+      async storedVerificationReview() { return null },
+      async claimVerification() {
+        return requests === 0
+          ? { id: "timeout-code", code: "SummerCode", verification_attempt_count: 1 }
+          : null
+      },
+      async withProfileRequestLock(operation) { lockCalls += 1; return operation() },
+      async finishVerification(input) {
+        finished = input
+        return { giftCode: { id: "timeout-code", status: input.codeStatus }, queued: [] }
+      }
+    },
+    client: {
+      adapter: centuryAdapter("wos", {}),
+      limiter: { minimumDelayMs: 1000 },
+      async redeem() {
+        requests += 1
+        return centuryResult("server_busy_timeout", {
+          errCode: 40004,
+          message: "TIMEOUT RETRY."
+        })
+      }
+    },
+    verifier: { configured: true, playerId: "282021376", locationNumber: "689" },
+    config,
+    botInstanceName: "rachie-wos",
+    logger: { log() {}, warn() {}, error() {} },
+    now: () => new Date("2026-08-12T12:00:00Z"),
+    workerId: "fresh-timeout-worker"
+  })
+
+  assert.equal(await processor.tick(), 1)
+  assert.equal(requests, 1)
+  assert.equal(lockCalls, 1)
+  assert.equal(finished.codeStatus, "candidate")
+  assert.equal(finished.verificationState, "retry")
+  assert.equal(finished.nextRetryAt.toISOString(), "2026-08-12T12:00:10.000Z")
 })
 
 test("account-specific verifier restrictions activate and fan out without global invalidation", async () => {
@@ -708,6 +850,45 @@ test("Inspect Code does not recommend transport recovery for semantic unknown re
     failed_count: 0
   })
   assert.doesNotMatch(output, /Re-verification with the current client is required/)
+})
+
+test("Inspect Code reports server timeout retry and exhaustion without overstating cause", () => {
+  const base = {
+    code: "SummerCode",
+    status: "candidate",
+    verification_state: "retry",
+    verification_attempt_count: 2,
+    maximum_verification_attempts: 5,
+    verification_next_retry_at_utc: new Date("2026-08-12T12:05:00Z"),
+    latest_verification_attempt_id: "attempt",
+    latest_verification_http_status: 200,
+    latest_verification_err_code: 40004,
+    latest_verification_api_message: "TIMEOUT RETRY.",
+    latest_verification_classification: "server_busy_timeout",
+    latest_verification_metadata: { response: { responseType: "json" } },
+    pending_count: 0,
+    success_count: 0,
+    already_redeemed_count: 0,
+    failed_count: 0
+  }
+  const retrying = formatCodeDiagnostics(base)
+  assert.match(retrying, /Classification: Server Busy \/ Timeout/)
+  assert.match(retrying, /Verification: Retry scheduled/)
+  assert.match(retrying, /Attempts: 2 \/ 5/)
+  assert.match(retrying, /Next retry: <t:/)
+  assert.match(retrying, /exact internal cause is unproven/)
+  assert.doesNotMatch(retrying, /overload confirmed/i)
+
+  const exhausted = formatCodeDiagnostics({
+    ...base,
+    status: "unknown",
+    verification_state: "review",
+    verification_attempt_count: 5,
+    verification_next_retry_at_utc: null
+  })
+  assert.match(exhausted, /Verification: Retry limit reached - review required/)
+  assert.match(exhausted, /Attempts: 5 \/ 5/)
+  assert.doesNotMatch(exhausted, /Next retry:/)
 })
 
 test("Inspect Code shows sanitized verification and latest redemption messages", () => {

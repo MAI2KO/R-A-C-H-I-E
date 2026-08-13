@@ -16,6 +16,7 @@ function centuryMessage(value, redactedValues = []) {
 }
 
 function titleCase(value) {
+  if (value === "server_busy_timeout") return "Server Busy / Timeout"
   if (["html", "json", "http"].includes(String(value).toLowerCase())) {
     return String(value).toUpperCase()
   }
@@ -34,7 +35,8 @@ function classificationMeaning(value) {
     account_age_restriction: "This account does not meet the required account age",
     verification_throttle: "Verification requests were made too frequently",
     verification_error: "The frontend verification code was incorrect or expired",
-    simultaneous_action_throttle: "Too many simultaneous actions were in progress"
+    simultaneous_action_throttle: "Too many simultaneous actions were in progress",
+    server_busy_timeout: "Server-busy / timeout-style transient response; exact internal cause is unproven"
   }[value] || null
 }
 
@@ -71,6 +73,7 @@ function formatCodeDiagnostics(code) {
   const verificationMetadata = code.latest_verification_metadata || metadata
   const verificationResponse = verificationMetadata.response || response
   const verificationClassification = code.latest_verification_classification || classification
+  const maximumAttempts = Number(code.maximum_verification_attempts) || null
   const lines = [
     `**Gift code ${code.code}**`,
     `Current status: ${code.status}`,
@@ -91,6 +94,20 @@ function formatCodeDiagnostics(code) {
   )
   const verificationMeaning = classificationMeaning(verificationClassification)
   if (verificationMeaning) lines.push(`Meaning: ${verificationMeaning}`)
+  if (verificationClassification === "server_busy_timeout") {
+    const exhausted = code.verification_state === "review"
+      && maximumAttempts !== null
+      && Number(code.verification_attempt_count) >= maximumAttempts
+    lines.push(`Verification: ${exhausted
+      ? "Retry limit reached - review required"
+      : code.verification_state === "retry" ? "Retry scheduled" : titleCase(code.verification_state)}`)
+    if (maximumAttempts !== null) {
+      lines.push(`Attempts: ${code.verification_attempt_count} / ${maximumAttempts}`)
+    }
+    if (code.verification_state === "retry" && code.verification_next_retry_at_utc) {
+      lines.push(`Next retry: <t:${Math.floor(new Date(code.verification_next_retry_at_utc).getTime() / 1000)}:f>`)
+    }
+  }
   if (historicalProtocolReview({
     status: code.status,
     verificationState: code.verification_state,

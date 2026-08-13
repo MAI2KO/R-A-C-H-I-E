@@ -9,6 +9,14 @@ function whiteoutAdapter(env = process.env) {
     redemptionPath: "/gift_code",
     signingSuffix: String(env.CENTURY_WOS_SIGNING_SUFFIX || DEFAULT_SIGNING_SUFFIX),
     responseMappings: Object.freeze({
+      semanticResponses: Object.freeze([
+        Object.freeze({
+          httpStatus: 200,
+          errCode: 40004,
+          message: "TIMEOUT RETRY",
+          state: "server_busy_timeout"
+        })
+      ]),
       errCodes: Object.freeze({
         20000: "success",
         40008: "already_redeemed",

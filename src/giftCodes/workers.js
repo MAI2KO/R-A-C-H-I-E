@@ -3,6 +3,9 @@ const { retryAfterMilliseconds } = require("./rateLimiter")
 const { classifyCenturyResponse } = require("./responseClassifier")
 
 const RECOVERABLE_STORED_VERIFICATION_CODES = Object.freeze([40011])
+const RECOVERABLE_STORED_VERIFICATION_RESPONSES = Object.freeze([
+  Object.freeze({ errCode: 40004, message: "TIMEOUT RETRY" })
+])
 
 function retryAt(now, attemptNumber, config) {
   const seconds = Math.min(
@@ -32,10 +35,12 @@ function verificationTransition(classification, attemptNumber, now, config, retr
   }
   if ([
     "rate_limited", "temporary_error", "verification_throttle",
-    "simultaneous_action_throttle"
+    "simultaneous_action_throttle", "server_busy_timeout"
   ].includes(classification)) {
     if (attemptNumber >= config.maximumAttempts) {
-      return { codeStatus: "candidate", verificationState: "blocked" }
+      return classification === "server_busy_timeout"
+        ? { codeStatus: "unknown", verificationState: "review" }
+        : { codeStatus: "candidate", verificationState: "blocked" }
     }
     return {
       codeStatus: "candidate",
@@ -59,14 +64,15 @@ function redemptionTransition(classification, attemptNumber, now, config, retryA
   }
   if ([
     "rate_limited", "temporary_error", "verification_throttle",
-    "simultaneous_action_throttle"
+    "simultaneous_action_throttle", "server_busy_timeout"
   ].includes(classification)) {
     if (attemptNumber >= config.maximumAttempts) {
       return { status: "retry_exhausted", retryable: false }
     }
     return {
       status: classification === "verification_throttle" ? "rate_limited" :
-        classification === "simultaneous_action_throttle" ? "temporary_error" : classification,
+        ["simultaneous_action_throttle", "server_busy_timeout"].includes(classification)
+          ? "temporary_error" : classification,
       retryable: true,
       nextRetryAt: retryDate(now, attemptNumber, config, retryAfterMs)
     }
@@ -101,6 +107,7 @@ function createVerificationProcessor({
     if (typeof repository.storedVerificationReview !== "function" || !client.adapter) return null
     const claim = await repository.storedVerificationReview({
       errCodes: RECOVERABLE_STORED_VERIFICATION_CODES,
+      exactResponses: RECOVERABLE_STORED_VERIFICATION_RESPONSES,
       code
     })
     if (!claim) return null
@@ -113,7 +120,7 @@ function createVerificationProcessor({
       },
       profileMappings: client.adapter.responseMappings || {}
     })
-    if (classified.state !== "redemption_limit") return null
+    if (!["redemption_limit", "server_busy_timeout"].includes(classified.state)) return null
     const completedAt = now()
     const transition = verificationTransition(
       classified.state,

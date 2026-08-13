@@ -634,6 +634,197 @@ test("stored 40011 review attempts recover once without another Century request"
   }
 })
 
+test("stored 40004 timeout review becomes one bounded retry and later activates once", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 })
+  const schema = `gift_40004_recovery_${process.pid}_${Date.now()}`
+  let pool
+  try {
+    await admin.query(`CREATE SCHEMA "${schema}"`)
+    pool = new Pool({
+      connectionString: databaseUrl,
+      max: 10,
+      options: `-c search_path=${schema}`
+    })
+    await runMigrations({ pool, logger: silentLogger })
+    await pool.query(
+      `INSERT INTO player_accounts (
+         id, game_profile, discord_user_id, player_id,
+         state_or_kingdom_number, gift_redemption_enabled
+       ) VALUES (
+         '30000000-0000-4000-8000-000000000001', 'wos',
+         '300000000000000001', '282021376', '689', true
+       )`
+    )
+    const repository = createGiftCodeRepository(pool, "wos")
+
+    async function storeReview(code, message, attemptCount = 1) {
+      const candidate = await repository.recordSubmission({ code })
+      const claim = await repository.claimVerification({
+        workerId: `old-${code}`,
+        now: new Date("2026-08-12T10:00:00Z"),
+        leaseSeconds: 60,
+        code,
+        manual: true
+      })
+      await repository.finishVerification({
+        claim,
+        workerId: `old-${code}`,
+        result: apiResult("unknown_response", {
+          httpStatus: 200,
+          errCode: 40004,
+          message
+        }),
+        now: new Date("2026-08-12T10:00:01Z"),
+        codeStatus: "unknown",
+        verificationState: "review"
+      })
+      if (attemptCount !== 1) {
+        await pool.query(
+          `UPDATE gift_codes SET verification_attempt_count = $2
+            WHERE id = $1 AND game_profile = 'wos'`,
+          [candidate.giftCode.id, attemptCount]
+        )
+      }
+      return candidate.giftCode
+    }
+
+    const recoverable = await storeReview("StoredTimeout", " TIMEOUT RETRY. ")
+    const unrelated = await storeReview("Different40004", "FREQUENCY LIMIT")
+    const exhausted = await storeReview("ExhaustedTimeout", "timeout retry!", 5)
+    const processorConfig = {
+      leaseSeconds: 60,
+      maximumAttempts: 5,
+      retryBaseSeconds: 60,
+      retryCapSeconds: 3600
+    }
+    let requests = 0
+    const recovery = createVerificationProcessor({
+      repository,
+      client: {
+        adapter: centuryAdapter("wos", {}),
+        async redeem() { requests += 1; throw new Error("recovery must not call Century") }
+      },
+      verifier: { configured: true, playerId: "282021376", locationNumber: "689" },
+      config: processorConfig,
+      botInstanceName: "rachie-wos",
+      logger: silentLogger,
+      now: () => new Date("2026-08-12T11:00:00Z"),
+      workerId: "recover-timeout"
+    })
+
+    assert.ok(await recovery.recoverStoredReview(recoverable.code))
+    assert.equal(requests, 0)
+    const recoveredCode = (await pool.query(
+      `SELECT status, verification_state, verification_attempt_count,
+              verification_next_retry_at_utc, verification_metadata
+         FROM gift_codes WHERE id = $1 AND game_profile = 'wos'`,
+      [recoverable.id]
+    )).rows[0]
+    assert.equal(recoveredCode.status, "candidate")
+    assert.equal(recoveredCode.verification_state, "retry")
+    assert.equal(recoveredCode.verification_attempt_count, 1)
+    assert.equal(
+      new Date(recoveredCode.verification_next_retry_at_utc).toISOString(),
+      "2026-08-12T11:01:00.000Z"
+    )
+    assert.equal(recoveredCode.verification_metadata.classification, "server_busy_timeout")
+    const recoveredAttempt = (await pool.query(
+      `SELECT classification, http_status, err_code, api_message,
+              request_started_at_utc, response_received_at_utc, response_metadata
+         FROM gift_code_attempts
+        WHERE gift_code_id = $1 AND game_profile = 'wos'`,
+      [recoverable.id]
+    )).rows[0]
+    assert.equal(recoveredAttempt.classification, "server_busy_timeout")
+    assert.equal(recoveredAttempt.http_status, 200)
+    assert.equal(recoveredAttempt.err_code, 40004)
+    assert.equal(recoveredAttempt.api_message, " TIMEOUT RETRY. ")
+    assert.equal(recoveredAttempt.response_metadata.reclassifiedFrom, "unknown_response")
+    assert.ok(recoveredAttempt.response_metadata.reclassifiedAt)
+    assert.ok(recoveredAttempt.request_started_at_utc)
+    assert.ok(recoveredAttempt.response_received_at_utc)
+    assert.equal(await repository.claimVerification({
+      workerId: "too-early",
+      now: new Date("2026-08-12T11:00:59Z"),
+      leaseSeconds: 60
+    }), null)
+
+    assert.ok(await recovery.recoverStoredReview(exhausted.code), "exhausted exact row should be audited once")
+    const exhaustedCode = (await pool.query(
+      `SELECT status, verification_state, verification_attempt_count,
+              verification_next_retry_at_utc
+         FROM gift_codes WHERE id = $1 AND game_profile = 'wos'`,
+      [exhausted.id]
+    )).rows[0]
+    assert.deepEqual(exhaustedCode, {
+      status: "unknown",
+      verification_state: "review",
+      verification_attempt_count: 5,
+      verification_next_retry_at_utc: null
+    })
+    assert.equal(await recovery.recoverStoredReview(), null)
+    assert.deepEqual(
+      await pool.query(
+        `SELECT status, verification_state FROM gift_codes
+          WHERE id = $1 AND game_profile = 'wos'`,
+        [unrelated.id]
+      ).then(result => result.rows[0]),
+      { status: "unknown", verification_state: "review" }
+    )
+
+    let activations = 0
+    const retryProcessor = createVerificationProcessor({
+      repository,
+      client: {
+        adapter: centuryAdapter("wos", {}),
+        async redeem() {
+          requests += 1
+          return apiResult("success", { errCode: 20000, message: "SUCCESS" })
+        }
+      },
+      verifier: { configured: true, playerId: "282021376", locationNumber: "689" },
+      community: { async onCodeActivated() { activations += 1 } },
+      config: processorConfig,
+      botInstanceName: "rachie-wos",
+      logger: silentLogger,
+      now: () => new Date("2026-08-12T11:01:00Z"),
+      workerId: "retry-timeout"
+    })
+    assert.equal(await retryProcessor.tick(), 1)
+    assert.equal(requests, 1)
+    assert.equal(activations, 1)
+    const activated = (await pool.query(
+      `SELECT status, verification_state, verification_attempt_count
+         FROM gift_codes WHERE id = $1 AND game_profile = 'wos'`,
+      [recoverable.id]
+    )).rows[0]
+    assert.deepEqual(activated, {
+      status: "active",
+      verification_state: "complete",
+      verification_attempt_count: 2
+    })
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count FROM gift_code_attempts
+        WHERE gift_code_id = $1 AND game_profile = 'wos'`,
+      [recoverable.id]
+    )).rows[0].count, 2)
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count FROM gift_code_redemptions
+        WHERE gift_code_id = $1 AND game_profile = 'wos'`,
+      [recoverable.id]
+    )).rows[0].count, 1)
+    assert.equal(await retryProcessor.tick(), 0)
+    assert.equal(requests, 1)
+    assert.equal(activations, 1)
+  } finally {
+    await pool?.end().catch(() => {})
+    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
+    await admin.end()
+  }
+})
+
 test("admin re-verifies historical WOS protocol reviews with the current worker path", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
