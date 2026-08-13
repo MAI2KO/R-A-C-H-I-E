@@ -81,7 +81,13 @@ function createGiftCodeService({ repository, gameProfile, env = process.env, ing
       }
     },
 
-    async setAutomaticRedemption({ discordUserId, guildId = null, playerId = null, enabled }) {
+    async setAutomaticRedemption({
+      discordUserId,
+      guildId = null,
+      playerId = null,
+      enabled,
+      preferenceSource = "user"
+    }) {
       const guild = guildId ? normalizeGuildId(guildId) : null
       const account = await selectOwnedAccount(discordUserId, playerId, guild)
       if (!account.is_active) {
@@ -92,7 +98,8 @@ function createGiftCodeService({ repository, gameProfile, env = process.env, ing
         playerId: account.player_id,
         enabled: Boolean(enabled),
         guildId: guild,
-        maximumEnabledAccounts: accountConfig.maximumAutoRedeemAccountsPerUser
+        maximumEnabledAccounts: accountConfig.maximumAutoRedeemAccountsPerUser,
+        preferenceSource
       })
       if (!result?.account) throw new GiftCodeError("PLAYER_NOT_FOUND", `No active ${terms.playerLabel} was found.`)
       if (result.limitReached) {

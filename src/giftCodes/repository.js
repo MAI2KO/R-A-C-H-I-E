@@ -152,7 +152,8 @@ function createGiftCodeRepository(pool, gameProfile) {
       playerId,
       enabled,
       guildId = null,
-      maximumEnabledAccounts = 2
+      maximumEnabledAccounts = 2,
+      preferenceSource = "user"
     }) {
       const client = await pool.connect()
       try {
@@ -189,13 +190,22 @@ function createGiftCodeRepository(pool, gameProfile) {
           }
         }
         const changed = current.gift_redemption_enabled !== Boolean(enabled)
-        const account = changed ? (await client.query(
+        const account = (await client.query(
           `UPDATE player_accounts
-              SET gift_redemption_enabled = $4, updated_at_utc = now()
+              SET gift_redemption_enabled = $4,
+                  account_metadata = jsonb_set(
+                    account_metadata,
+                    '{autoRedeemPreference}',
+                    jsonb_build_object(
+                      'enabled', $4::boolean,
+                      'explicit', $5::varchar = 'user'
+                    )
+                  ),
+                  updated_at_utc = now()
             WHERE id = $1 AND game_profile = $2 AND discord_user_id = $3
             RETURNING *`,
-          [current.id, gameProfile, discordUserId, Boolean(enabled)]
-        )).rows[0] : current
+          [current.id, gameProfile, discordUserId, Boolean(enabled), preferenceSource]
+        )).rows[0]
         let newlyEnrolledInGuild = false
         if (guildId && enabled) {
           const enrolment = (await client.query(

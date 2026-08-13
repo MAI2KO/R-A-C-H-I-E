@@ -38,6 +38,7 @@ const IDS = Object.freeze({
   giftToggle: `${PREFIX}gt:`,
   giftHistory: `${PREFIX}gh:`,
   giftChange: `${PREFIX}gc:`,
+  giftManage: `${PREFIX}gm:`,
   giftActive: `${PREFIX}gal:`,
   giftActivePrevious: `${PREFIX}gap:`,
   giftActiveNext: `${PREFIX}gan:`,
@@ -55,7 +56,8 @@ const IDS = Object.freeze({
   adminSourceChannel: `${PREFIX}asc:`,
   adminSourceChannelSelect: `${PREFIX}ascs:`,
   verifyModal: `${PREFIX}vm:`,
-  inspectModal: `${PREFIX}im:`
+  inspectModal: `${PREFIX}im:`,
+  publicRegister: `${PREFIX}public-register`
 })
 const COMMANDS = new Set(["player-register", "gift-code-add", "gift-codes", "gift-codes-admin"])
 const sessionStore = new InteractionSessionStore({ maximumSessions: 250 })
@@ -96,13 +98,13 @@ function accountMenu(sessionId, accounts, selected) {
   )
 }
 
-function playerPanel({ sessionId, accounts, selected, terms }) {
+function playerPanel({ sessionId, accounts, selected, terms, notice = null }) {
   if (!selected) {
     return {
-      content: "Register your game account to use supported player features such as automatic gift-code redemption.",
+      content: [notice, "Register your game account to use supported player features such as automatic gift-code redemption."].filter(Boolean).join("\n\n"),
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`${IDS.playerAdd}${sessionId}`)
-          .setLabel("Register Player").setStyle(ButtonStyle.Primary)
+          .setLabel("Register Character").setStyle(ButtonStyle.Primary)
       )]
     }
   }
@@ -111,23 +113,29 @@ function playerPanel({ sessionId, accounts, selected, terms }) {
   if (menu) components.push(menu)
   components.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`${IDS.playerAdd}${sessionId}`)
-      .setLabel("Add Account").setStyle(ButtonStyle.Primary),
+      .setLabel("Add Character").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`${IDS.playerLocation}${sessionId}`)
       .setLabel(`Change ${terms.locationLabel}`).setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${IDS.playerGift}${sessionId}`)
-      .setLabel("Gift Code Settings").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${IDS.giftToggle}${sessionId}`)
+      .setLabel(selected.gift_redemption_enabled && selected.guild_gift_code_enrolled
+        ? "Disable Auto-Redeem"
+        : "Enable Auto-Redeem")
+      .setStyle(selected.gift_redemption_enabled && selected.guild_gift_code_enrolled
+        ? ButtonStyle.Danger
+        : ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`${IDS.playerRemove}${sessionId}`)
-      .setLabel("Remove Account").setStyle(ButtonStyle.Danger)
+      .setLabel("Remove Character").setStyle(ButtonStyle.Danger)
   ))
   return {
     content: [
-      `**${terms.gameName} Player Accounts**`,
+      notice,
+      `**${terms.gameName} Characters**`,
       `Selected: Player ID ${selected.player_id}`,
       `${terms.locationLabel}: ${selected.state_or_kingdom_number}`,
       `Primary: ${selected.is_primary ? "Yes" : "No"}`,
       `Active: ${selected.is_active ? "Yes" : "No"}`,
       `Automatic gift-code redemption: ${selected.gift_redemption_enabled ? "Enabled" : "Disabled"}`
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
     components
   }
 }
@@ -138,46 +146,35 @@ function giftPanel({ sessionId, accounts, selected, terms, maximumEnabled }) {
     return {
       content: [
         `**${terms.gameName} Gift Codes**`,
-        "No registered player account is available."
+        "Register a character to receive personal redemption results."
       ].join("\n"),
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`${IDS.giftSubmit}${sessionId}`)
           .setLabel("Submit Gift Code").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(`${IDS.giftActive}${sessionId}`)
           .setLabel("Active Codes").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`${IDS.giftRegister}${sessionId}`)
-          .setLabel("Register Player").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId(`${IDS.giftManage}${sessionId}`)
+          .setLabel("Manage Characters").setStyle(ButtonStyle.Secondary)
       )]
     }
   }
   const components = []
-  const menu = accountMenu(sessionId, accounts, selected)
-  if (menu) components.push(menu)
   components.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`${IDS.giftSubmit}${sessionId}`)
       .setLabel("Submit Gift Code").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`${IDS.giftToggle}${sessionId}`)
-      .setLabel(selected.gift_redemption_enabled
-        ? (selected.guild_gift_code_enrolled ? "Disable Auto-Redeem" : "Join This Server")
-        : "Enable Auto-Redeem")
-      .setStyle(selected.gift_redemption_enabled && selected.guild_gift_code_enrolled
-        ? ButtonStyle.Danger
-        : ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`${IDS.giftHistory}${sessionId}`)
       .setLabel("Redemption History").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`${IDS.giftActive}${sessionId}`)
       .setLabel("Active Codes").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${IDS.giftChange}${sessionId}`)
-      .setLabel("Change Player").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`${IDS.giftManage}${sessionId}`)
+      .setLabel("Manage Characters").setStyle(ButtonStyle.Secondary)
   ))
   return {
     content: [
       `**${terms.gameName} Gift Codes**`,
       `Selected player: ${selected.player_id}`,
       `${terms.locationLabel}: ${selected.state_or_kingdom_number}`,
-      `Auto-redemption: ${selected.gift_redemption_enabled ? "Enabled" : "Disabled"}`,
-      `This server: ${selected.guild_gift_code_enrolled ? "Enrolled" : "Not enrolled"}`,
-      `Accounts enabled: ${enabledCount} / ${maximumEnabled}`,
+      `Characters covered: ${enabledCount} / ${maximumEnabled}`,
       `Recent result: ${selected.last_redemption_status || "None"}`
     ].join("\n"),
     components
@@ -219,6 +216,50 @@ function registrationModal(sessionId, terms) {
           .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
       )
     )
+}
+
+async function completeCharacterRegistration({
+  account,
+  gifts,
+  community,
+  guildId,
+  discordUserId
+}) {
+  let notice = account.registration_status === "reactivated"
+    ? "Character reactivated. Your previous Auto-Redeem preference was preserved."
+    : "Character registered."
+  const priorAutoPreference = account.account_metadata?.autoRedeemPreference
+  const shouldEnable = account.registration_status === "new"
+    || (account.registration_status === "reactivated" && priorAutoPreference?.enabled === true)
+  if (!shouldEnable) return { account, notice, autoRedeemEnabled: false }
+
+  try {
+    const enabled = await gifts.setAutomaticRedemption({
+      discordUserId,
+      guildId,
+      playerId: account.player_id,
+      enabled: true,
+      preferenceSource: account.registration_status === "new"
+        ? "registration_default"
+        : "user"
+    })
+    await community.onAutoRedemptionEnabled?.(enabled.engagement_event, {
+      guildId,
+      discordUserId
+    })
+    notice = account.registration_status === "new"
+      ? "Character registered. Auto-Redeem Enabled."
+      : "Character reactivated. Auto-Redeem Enabled."
+    return { account: enabled, notice, autoRedeemEnabled: true }
+  } catch (error) {
+    if (error?.code !== "AUTO_REDEEM_ACCOUNT_LIMIT") throw error
+    return {
+      account,
+      notice: "Character registered. Auto-Redeem remains disabled because your covered-character limit is already reached. Manage another character to change coverage.",
+      autoRedeemEnabled: false,
+      limitReached: true
+    }
+  }
 }
 
 function oneFieldModal(customId, title, fieldId, label, maximumLength = 128) {
@@ -387,6 +428,22 @@ async function handleGiftCodePanelInteraction(interaction, {
 
   try {
     const customId = String(interaction.customId || "")
+    if (customId === IDS.publicRegister) {
+      if (!health.available) {
+        await interaction.reply({
+          content: "Player registration is temporarily unavailable. Please try again later.",
+          flags: MessageFlags.Ephemeral
+        })
+        return true
+      }
+      const context = interactionContext(interaction, health)
+      const sessionId = sessions.create(context, { panel: "player", selectedPlayerId: null })
+      await interaction.showModal(registrationModal(
+        sessionId,
+        require("../terminology").profileTerminology(health.gameProfile)
+      ))
+      return true
+    }
     const modalPrefix = [IDS.playerAdd, IDS.giftRegister].find(prefix => customId.startsWith(prefix))
     if (modalPrefix) {
       const sessionId = suffix(customId, modalPrefix)
@@ -473,11 +530,13 @@ async function handleGiftCodePanelInteraction(interaction, {
       return gifts.status({ discordUserId: interaction.user.id, guildId: interaction.guildId })
     }
 
-    async function renderPlayer(sessionId, preferredPlayerId = null) {
+    async function renderPlayer(sessionId, preferredPlayerId = null, notice = null) {
       const accounts = await loadAccounts()
       const selected = selectedAccount(accounts, preferredPlayerId)
       sessions.update(sessionId, context, { selectedPlayerId: selected?.player_id || null, panel: "player" })
-      await interaction.editReply(playerPanel({ sessionId, accounts, selected, terms: gifts.terms }))
+      await interaction.editReply(playerPanel({
+        sessionId, accounts, selected, terms: gifts.terms, notice
+      }))
     }
 
     async function renderGift(sessionId, preferredPlayerId = null) {
@@ -564,9 +623,15 @@ async function handleGiftCodePanelInteraction(interaction, {
         playerId: interaction.fields.getTextInputValue("player_id"),
         locationNumber: interaction.fields.getTextInputValue("location")
       })
+      const registration = await completeCharacterRegistration({
+        account,
+        gifts,
+        community,
+        guildId: interaction.guildId,
+        discordUserId: interaction.user.id
+      })
       await community.refreshStatusCard?.(interaction.guildId, interaction.user.id)
-      if (session.data.panel === "gift") await renderGift(sessionId, account.player_id)
-      else await renderPlayer(sessionId, account.player_id)
+      await renderPlayer(sessionId, account.player_id, registration.notice)
       return true
     }
     if (customId.startsWith(IDS.locationModal)) {
@@ -590,6 +655,10 @@ async function handleGiftCodePanelInteraction(interaction, {
     }
     if (customId.startsWith(IDS.playerGift)) {
       await renderGift(sessionId, session.data.selectedPlayerId)
+      return true
+    }
+    if (customId.startsWith(IDS.giftManage)) {
+      await renderPlayer(sessionId, session.data.selectedPlayerId)
       return true
     }
     if (customId.startsWith(IDS.giftChange)) {
@@ -629,7 +698,8 @@ async function handleGiftCodePanelInteraction(interaction, {
         guildId: interaction.guildId,
         discordUserId: interaction.user.id
       })
-      await renderGift(sessionId, account.player_id)
+      if (session.data.panel === "player") await renderPlayer(sessionId, account.player_id)
+      else await renderGift(sessionId, account.player_id)
       return true
     }
     if (customId.startsWith(IDS.giftHistory)) {
@@ -782,6 +852,7 @@ module.exports = {
   giftPanel,
   activeCodesPanel,
   registrationModal,
+  completeCharacterRegistration,
   adminPanel,
   formatCommunityStats,
   giftCodePanelHandler,

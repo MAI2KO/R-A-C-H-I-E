@@ -13,7 +13,7 @@ function buildGiftCodesCommand(gameProfile) {
   const terms = profileTerminology(gameProfile)
   return new SlashCommandBuilder()
     .setName("gift-codes")
-    .setDescription(`Gift codes and automatic redemption for ${terms.gameName}`)
+    .setDescription(`Gift-code status and results for ${terms.gameName}`)
 }
 
 function buildGiftCodesAdminCommand(gameProfile) {

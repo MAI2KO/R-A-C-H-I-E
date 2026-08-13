@@ -27,8 +27,8 @@ test("gift-code source migration, provenance, attribution and profile isolation 
     })
     const first = await runMigrations({ pool, logger: { log() {}, error() {} } })
     const second = await runMigrations({ pool, logger: { log() {}, error() {} } })
-    assert.equal(first.applied.length, 16)
-    assert.equal(first.applied.at(-1), "016_gift_code_sources.sql")
+    assert.equal(first.applied.length, 17)
+    assert.equal(first.applied.at(-1), "017_bot_managed_discord_setup.sql")
     assert.deepEqual(second.applied, [])
 
     const columns = (await pool.query(

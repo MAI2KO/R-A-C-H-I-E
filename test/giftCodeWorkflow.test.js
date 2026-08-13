@@ -963,7 +963,8 @@ test("gift settings target one owned account and preserve profile terminology", 
     playerId: "222",
     enabled: true,
     guildId: null,
-    maximumEnabledAccounts: 2
+    maximumEnabledAccounts: 2,
+    preferenceSource: "user"
   })
 })
 

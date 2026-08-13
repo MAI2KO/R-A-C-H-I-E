@@ -55,7 +55,7 @@ Set `PLAYER_GIFT_CODES_ENABLED=true` to register the profile-specific `/player-r
 
 Migration 011 establishes case-sensitive gift codes, source/submission provenance, and restart-safe redemption identities with initial Player ID and State/Kingdom snapshots. Migration 016 adds profile-scoped Discord mirror configuration, durable source observations, source-reported expiry, catalogue health, and disappearance tracking. Discovery never activates a code; the existing Century verifier remains authoritative. See [Player Accounts And Gift Codes](docs/player-gift-codes.md).
 
-Migration 012 adds durable verification claims, immutable API-attempt history, notification state, and concurrency-safe redemption workers. Migration 013 adds profile-scoped guild settings, account/guild links, and restart-safe engagement delivery state. Migration 014 reconciles earlier applied 013 schemas with the final contributor-role and engagement-retry contract. `/gift-codes` provides candidate submission, per-account opt-in/out, history, and private status. `/gift-codes-admin` provides authorized diagnostics, native channel configuration, contributor-role health, community statistics, and controlled one-code verification. Both live Century workers default to disabled.
+Migration 012 adds durable verification claims, immutable API-attempt history, notification state, and concurrency-safe redemption workers. Migration 013 adds profile-scoped guild settings, account/guild links, and restart-safe engagement delivery state. Migration 014 reconciles earlier applied 013 schemas with the final contributor-role and engagement-retry contract. Migration 017 stores profile-scoped bot-managed Discord channels and setup-card references. `/player-register` manages characters and Auto-Redeem preferences. `/gift-codes` provides candidate submission, active-code visibility, redemption history, and community status. `/gift-codes-admin` provides authorized diagnostics, native channel configuration, contributor-role health, community statistics, and controlled one-code verification. Both live Century workers default to disabled.
 
 ## Installation
 
@@ -70,6 +70,12 @@ npm start
 ```
 
 `.env` is ignored by Git. Keep real credentials in local environment configuration or Railway variables; never commit them.
+
+### Discord Permissions
+
+New installations should grant the bot **Manage Channels**, **View Channel**, **Send Messages**, **Embed Links**, **Attach Files**, **Read Message History**, and **Use Application Commands**. **Manage Roles** is additionally required for the bot-managed contributor reward role. Administrator and Manage Threads are not required.
+
+Existing servers can grant Manage Channels to the bot's existing role and run `/bot-setup`; removing and reinviting the bot is not required. Setup creates or reconciles the profile-specific category and five read-only parent channels. Public threads are enabled only in the gift-code and event announcement channels.
 
 ## Environment
 

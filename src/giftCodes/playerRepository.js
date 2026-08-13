@@ -81,7 +81,10 @@ function createPlayerRepository(pool, gameProfile) {
           )
         }
         await client.query("COMMIT")
-        return account
+        return {
+          ...account,
+          registration_status: canReactivate ? "reactivated" : "new"
+        }
       } catch (error) {
         await client.query("ROLLBACK")
         throw error

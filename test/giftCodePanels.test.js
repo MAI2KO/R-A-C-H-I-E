@@ -15,6 +15,7 @@ const {
   giftPanel,
   activeCodesPanel,
   registrationModal,
+  completeCharacterRegistration,
   adminPanel,
   formatCommunityStats,
   giftCodePanelFailureDiagnostics,
@@ -82,7 +83,7 @@ test("visible command surface is consolidated while legacy booking register rema
 test("player panel supports empty registration and multiple-account selection", () => {
   const empty = playerPanel({ sessionId: "s", accounts: [], selected: null, terms: wos })
   assert.match(empty.content, /Register your game account/)
-  assert.equal(empty.components[0].components[0].data.label, "Register Player")
+  assert.equal(empty.components[0].components[0].data.label, "Register Character")
 
   const selected = selectedAccount(accounts, "222")
   const panel = playerPanel({ sessionId: "s", accounts, selected, terms: wos })
@@ -92,7 +93,7 @@ test("player panel supports empty registration and multiple-account selection", 
   assert.equal(menu.options.length, 2)
   assert.equal(menu.options[1].default, true)
   assert.deepEqual(panel.components[1].components.map(button => button.data.label), [
-    "Add Account", "Change State", "Gift Code Settings", "Remove Account"
+    "Add Character", "Change State", "Enable Auto-Redeem", "Remove Character"
   ])
 })
 
@@ -109,7 +110,7 @@ test("inactive historical accounts are excluded from player selectors and empty 
     sessionId: "s", accounts: [inactive], selected: selectedAccount([inactive]), terms: wos
   })
   assert.match(empty.content, /Register your game account/)
-  assert.equal(empty.components[0].components[0].data.label, "Register Player")
+  assert.equal(empty.components[0].components[0].data.label, "Register Character")
   assert.doesNotMatch(empty.content, /93986200|Active: No/)
 
   const menu = accountMenu("s", [inactive, accounts[1]], accounts[1])
@@ -124,7 +125,7 @@ test("registration modal and player panels use State or Kingdom correctly", () =
   assert.match(playerPanel({ sessionId: "s", accounts, selected: accounts[0], terms: kingshot }).content, /Kingdom: 689/)
 })
 
-test("gift panel exposes public submission, one-account toggle and cap state", () => {
+test("gift panel focuses on codes and routes character management to the canonical panel", () => {
   const panel = giftPanel({
     sessionId: "s",
     accounts,
@@ -132,16 +133,16 @@ test("gift panel exposes public submission, one-account toggle and cap state", (
     terms: wos,
     maximumEnabled: 2
   })
-  assert.match(panel.content, /Accounts enabled: 1 \/ 2/)
+  assert.match(panel.content, /Characters covered: 1 \/ 2/)
   assert.match(panel.content, /Recent result: success/)
   assert.deepEqual(panel.components.at(-1).components.map(button => button.data.label), [
-    "Submit Gift Code", "Disable Auto-Redeem", "Redemption History", "Active Codes", "Change Player"
+    "Submit Gift Code", "Redemption History", "Active Codes", "Manage Characters"
   ])
   const noAccount = giftPanel({
     sessionId: "s", accounts: [], selected: null, terms: wos, maximumEnabled: 2
   })
   assert.deepEqual(noAccount.components[0].components.map(button => button.data.label), [
-    "Submit Gift Code", "Active Codes", "Register Player"
+    "Submit Gift Code", "Active Codes", "Manage Characters"
   ])
 })
 
@@ -947,7 +948,9 @@ function panelDependencies({
           state_or_kingdom_number: locationNumber,
           is_primary: accounts.length === 0,
           is_active: true,
-          gift_redemption_enabled: false
+          gift_redemption_enabled: false,
+          guild_gift_code_enrolled: false,
+          registration_status: "new"
         }
         accounts.push(account)
         return account
@@ -990,6 +993,12 @@ function panelDependencies({
         return activePages[page] || {
           codes: [], activeCount: 0, expiredCount: 0, page, pageSize: 15
         }
+      },
+      async setAutomaticRedemption({ playerId, enabled }) {
+        const account = accounts.find(value => value.player_id === playerId)
+        account.gift_redemption_enabled = enabled
+        account.guild_gift_code_enrolled = enabled
+        return { ...account, engagement_event: null }
       },
       async adminStatus() {
         if (!adminDiagnostics) throw new Error("authorization must run before diagnostics")
@@ -1055,6 +1064,67 @@ test("new player panel performs registration and State updates through private m
   ])
 })
 
+test("persistent Register Character button launches the canonical player registration flow", async () => {
+  const localAccounts = []
+  const dependencies = panelDependencies({ accounts: localAccounts })
+  const button = panelInteraction({ customId: IDS.publicRegister })
+  await handleGiftCodePanelInteraction(button, dependencies)
+  assert.match(button.modal.title, /Register/)
+  assert.equal(button.modal.components[1].components[0].label, "State")
+
+  const registration = panelInteraction({
+    customId: button.modal.custom_id,
+    modal: true,
+    fields: { player_id: "12345", location: "689" }
+  })
+  await handleGiftCodePanelInteraction(registration, dependencies)
+  assert.match(registration.edited.content, /Character registered\. Auto-Redeem Enabled\./)
+  assert.match(registration.edited.content, /Automatic gift-code redemption: Enabled/)
+  assert.equal(localAccounts[0].gift_redemption_enabled, true)
+})
+
+test("registration default, historical opt-out and account limit remain distinct", async () => {
+  const calls = []
+  const community = { async onAutoRedemptionEnabled() {} }
+  const gifts = {
+    async setAutomaticRedemption(input) {
+      calls.push(input)
+      return { player_id: input.playerId, engagement_event: null }
+    }
+  }
+  const fresh = await completeCharacterRegistration({
+    account: { player_id: "1", registration_status: "new" },
+    gifts, community, guildId: "777", discordUserId: "999"
+  })
+  assert.equal(fresh.autoRedeemEnabled, true)
+  assert.equal(calls[0].preferenceSource, "registration_default")
+
+  const optedOut = await completeCharacterRegistration({
+    account: {
+      player_id: "2",
+      registration_status: "reactivated",
+      account_metadata: { autoRedeemPreference: { enabled: false, explicit: true } }
+    },
+    gifts, community, guildId: "777", discordUserId: "999"
+  })
+  assert.equal(optedOut.autoRedeemEnabled, false)
+  assert.equal(calls.length, 1)
+
+  const limit = await completeCharacterRegistration({
+    account: { player_id: "3", registration_status: "new" },
+    gifts: {
+      async setAutomaticRedemption() {
+        throw Object.assign(new Error("limit"), { code: "AUTO_REDEEM_ACCOUNT_LIMIT" })
+      }
+    },
+    community,
+    guildId: "777",
+    discordUserId: "999"
+  })
+  assert.equal(limit.limitReached, true)
+  assert.match(limit.notice, /covered-character limit/)
+})
+
 test("ordinary users can submit candidates without invoking admin authorization", async () => {
   const accounts = []
   const submissions = []
@@ -1097,7 +1167,7 @@ test("removing the only active account immediately renders the empty state witho
   await handleGiftCodePanelInteraction(remove, dependencies)
   assert.equal(sole.is_active, false)
   assert.match(remove.edited.content, /Register your game account/)
-  assert.equal(remove.edited.components[0].components[0].data.label, "Register Player")
+  assert.equal(remove.edited.components[0].components[0].data.label, "Register Character")
   assert.doesNotMatch(remove.edited.content, /93986200|Active: No/)
   assert.deepEqual(logs, [])
 })

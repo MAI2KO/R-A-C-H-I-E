@@ -30,6 +30,11 @@ const {
 const { getPlayerCommandData, getGiftCommandData } = require("./src/giftCodes/discord/commands")
 const { handleGiftCodePanelInteraction } = require("./src/giftCodes/discord/panelInteractions")
 const { createBanterConfigLookup } = require("./src/banterConfig")
+const {
+  buildBotSetupCommand,
+  handleBotSetupInteraction,
+  handlePersistentOnboardingInteraction
+} = require("./src/botSetupInteractions")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -1704,6 +1709,7 @@ if (eventSchedulerHelpCommand) commands.push(eventSchedulerHelpCommand)
 const playerCommand = getPlayerCommandData()
 if (playerCommand) commands.push(playerCommand)
 commands.push(...getGiftCommandData())
+commands.push(buildBotSetupCommand().toJSON())
 
 /* -------------------- COMMAND REGISTRATION -------------------- */
 
@@ -1742,6 +1748,10 @@ client.once("clientReady", () => {
 
 client.on("interactionCreate", async interaction => {
   try {
+    if (await handlePersistentOnboardingInteraction(interaction, {
+      ministerModalBuilder: buildRegisterModal
+    })) return
+    if (await handleBotSetupInteraction(interaction, { userCanManageServer })) return
     if (await handleGiftCodePanelInteraction(interaction, { userCanManageServer })) return
 
     if (await schedulerInteractionWasHandled(

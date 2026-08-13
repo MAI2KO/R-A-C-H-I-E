@@ -65,6 +65,18 @@ test("soft-deactivated accounts leave current UX and safely reactivate without l
       assert.equal((await giftRepository.activeAccountStatuses(owner, null, guildId)).length, 1)
       assert.equal((await community.communityStats(guildId)).enabled_accounts, 1)
 
+      await gifts.setAutomaticRedemption({
+        discordUserId: owner,
+        guildId,
+        playerId,
+        enabled: false
+      })
+      const optedOut = await playerRepository.getOwnedAccount(owner, playerId)
+      assert.deepEqual(optedOut.account_metadata.autoRedeemPreference, {
+        enabled: false,
+        explicit: true
+      })
+
       const removal = await players.remove({ discordUserId: owner, playerId })
       assert.equal(removal.account.is_active, false)
       assert.equal(removal.replacement, null)
@@ -104,6 +116,10 @@ test("soft-deactivated accounts leave current UX and safely reactivate without l
       assert.equal(reactivated.is_active, true)
       assert.equal(reactivated.is_primary, true)
       assert.equal(reactivated.gift_redemption_enabled, false)
+      assert.deepEqual(reactivated.account_metadata.autoRedeemPreference, {
+        enabled: false,
+        explicit: true
+      })
       assert.equal(reactivated.state_or_kingdom_number, nextLocation)
       assert.equal((await pool.query(
         `SELECT COUNT(*)::integer AS count FROM player_accounts
