@@ -81,7 +81,7 @@ Existing servers can grant Manage Channels to the bot's existing role and run `/
 
 All variables read by the code are represented in [.env.example](.env.example):
 
-- Required existing bot variables: `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and `OPENAI_API_KEY` where those existing features are used.
+- Required existing bot variables: `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and `OPENAI_API_KEY` where those existing features are used. Optional `BOOKING_APPS_SCRIPT_URL`, `STATE_APPS_SCRIPT_URL`, `CONFIG_APPS_SCRIPT_URL`, and `BANTER_APPS_SCRIPT_URL` overrides each fall back to `APPS_SCRIPT_URL` when unset, so existing deployments require no changes.
 - Profile variables: `GAME_PROFILE` (`wos` default or `kingshot`) and `BANTER_PROFILE` (`rachie` default).
 - Scheduler variables: `EVENT_SCHEDULER_ENABLED`, `DATABASE_URL`, and `BOT_INSTANCE_NAME`.
 - Player/gift-code variables: `PLAYER_GIFT_CODES_ENABLED`, `GIFT_CODE_MAX_AUTO_REDEEM_ACCOUNTS_PER_USER` (default `2` per user/profile), separately gated verification/redemption workers, profile-specific optional verifier characters, the shared standard `DATABASE_URL`, optional signing-suffix overrides, conservative Century delay/backoff controls, and independently gated source polling variables.

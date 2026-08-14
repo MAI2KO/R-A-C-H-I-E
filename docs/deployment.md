@@ -45,6 +45,20 @@ Verifier characters are independently optional per profile: `WOS_GIFT_VERIFY_FID
 
 Each service keeps its own `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and any `OPENAI_API_KEY`/`BANTER_PROFILE` configuration. Do not combine Apps Script deployments or booking sheets.
 
+The Apps Script integration also accepts these optional per-service overrides:
+
+```text
+BOOKING_APPS_SCRIPT_URL=
+STATE_APPS_SCRIPT_URL=
+CONFIG_APPS_SCRIPT_URL=
+BANTER_APPS_SCRIPT_URL=
+```
+
+An unset or empty override falls back to that service's existing `APPS_SCRIPT_URL`.
+Leave all four unset for the current production topology; existing Railway services
+continue using the same deployment without configuration changes. A future split
+can override one responsibility independently without redirecting the other three.
+
 Every variable read by the repository is listed in [`.env.example`](../.env.example). Scheduler tuning variables are optional; invalid or out-of-range values fall back to defaults.
 
 ## Pre-Deployment Gate

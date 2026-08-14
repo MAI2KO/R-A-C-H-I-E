@@ -16,8 +16,12 @@ const {
   PermissionFlagsBits
 } = require("discord.js")
 
-const axios = require("axios")
 const OpenAI = require("openai")
+const { createAppsScriptTransport } = require("./src/appsScript/transport")
+const { createBookingAppsScriptClient } = require("./src/appsScript/bookingClient")
+const { createStateAppsScriptClient } = require("./src/appsScript/stateClient")
+const { createConfigAppsScriptClient } = require("./src/appsScript/configClient")
+const { createBanterAppsScriptClient } = require("./src/appsScript/banterClient")
 const {
   getEventSchedulerCommandData,
   getEventSchedulerHelpCommandData
@@ -81,10 +85,16 @@ const nameTriggerCooldowns = new Map()
 const BOOKING_PAGE_SIZE = 25
 const BOOKING_TTL_MS = 15 * 60 * 1000
 
+const appsScriptTransport = createAppsScriptTransport()
+const bookingAppsScriptClient = createBookingAppsScriptClient({ transport: appsScriptTransport })
+const stateAppsScriptClient = createStateAppsScriptClient({ transport: appsScriptTransport })
+const configAppsScriptClient = createConfigAppsScriptClient({ transport: appsScriptTransport })
+const banterAppsScriptClient = createBanterAppsScriptClient({ transport: appsScriptTransport })
+
 const BANTER_CONFIG_TTL_MS = 5 * 60 * 1000
 const banterConfigLookup = createBanterConfigLookup({
   ttlMs: BANTER_CONFIG_TTL_MS,
-  fetchAction: (action, guildId) => postToAppsScript({
+  fetchAction: (action, guildId) => banterAppsScriptClient.post({
     action,
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: guildId
@@ -821,7 +831,7 @@ function ensureNumericOrEmpty(value, fieldName) {
 }
 
 async function submitBookingFromEntry(entry, overrides = {}) {
-  return await postToAppsScript({
+  return await bookingAppsScriptClient.post({
     action: "book_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: entry.discordServerId,
@@ -841,7 +851,7 @@ async function userCanManageServer(interaction) {
   }
 
   try {
-    const result = await postToAppsScript({
+    const result = await configAppsScriptClient.post({
       action: "get_bot_admin_role_for_server",
       adminKey: process.env.ADMIN_API_KEY,
       discordServerId: interaction.guildId
@@ -904,7 +914,7 @@ async function sendBookingDm(user, message) {
 }
 
 async function fetchSettingsForServer(interaction) {
-  return await postToAppsScript({
+  return await configAppsScriptClient.post({
     action: "get_settings_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId
@@ -912,7 +922,7 @@ async function fetchSettingsForServer(interaction) {
 }
 
 async function sendAnnouncementToLinkedServers(interaction, announcement) {
-  const result = await postToAppsScript({
+  const result = await stateAppsScriptClient.post({
     action: "get_linked_servers_for_current_state",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId
@@ -1724,18 +1734,6 @@ async function registerCommands() {
   console.log("Slash commands registered")
 }
 
-/* -------------------- API HELPER -------------------- */
-
-async function postToAppsScript(payload) {
-  const response = await axios.post(
-    process.env.APPS_SCRIPT_URL,
-    payload,
-    { headers: { "Content-Type": "application/json" } }
-  )
-
-  return response.data
-}
-
 /* -------------------- BOT READY -------------------- */
 
 client.once("clientReady", () => {
@@ -1779,7 +1777,7 @@ client.on("interactionCreate", async interaction => {
 
         const value = interaction.values[0]
 
-        const updateResult = await postToAppsScript({
+        const updateResult = await configAppsScriptClient.post({
           action: "update_setting_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -1823,7 +1821,7 @@ client.on("interactionCreate", async interaction => {
 
         const value = interaction.values[0]
 
-        const updateResult = await postToAppsScript({
+        const updateResult = await configAppsScriptClient.post({
           action: "update_setting_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -1987,7 +1985,7 @@ client.on("interactionCreate", async interaction => {
           components: []
         })
 
-        const result = await postToAppsScript({
+        const result = await bookingAppsScriptClient.post({
           action: "admin_reserve_slots_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -2051,7 +2049,7 @@ client.on("interactionCreate", async interaction => {
 
         const targetDiscordServerId = interaction.values[0]
 
-        const result = await postToAppsScript({
+        const result = await stateAppsScriptClient.post({
           action: "unlink_state_server_by_id",
           adminKey: process.env.ADMIN_API_KEY,
           targetDiscordServerId: targetDiscordServerId
@@ -2121,7 +2119,7 @@ client.on("interactionCreate", async interaction => {
     components: []
   })
 
-  const result = await postToAppsScript({
+  const result = await bookingAppsScriptClient.post({
     action: "admin_remove_reserved_slots_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId,
@@ -2214,7 +2212,7 @@ client.on("interactionCreate", async interaction => {
 
         const currentValue = Boolean(settingsResult.settings[key])
 
-        const updateResult = await postToAppsScript({
+        const updateResult = await configAppsScriptClient.post({
           action: "update_setting_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -2359,7 +2357,7 @@ client.on("interactionCreate", async interaction => {
         const state = String(interaction.fields.getTextInputValue("state") || "").trim()
         const serverName = String(interaction.fields.getTextInputValue("server") || "").trim()
 
-        const result = await postToAppsScript({
+        const result = await stateAppsScriptClient.post({
           action: "setup_state",
           adminKey: process.env.ADMIN_API_KEY,
           stateCode: state,
@@ -2400,7 +2398,7 @@ client.on("interactionCreate", async interaction => {
         const password = String(interaction.fields.getTextInputValue("password") || "").trim()
         const serverName = String(interaction.fields.getTextInputValue("server") || "").trim()
 
-        const result = await postToAppsScript({
+        const result = await stateAppsScriptClient.post({
           action: "link_state",
           adminKey: process.env.ADMIN_API_KEY,
           stateCode: state,
@@ -2454,7 +2452,7 @@ client.on("interactionCreate", async interaction => {
           return
         }
 
-        const result = await postToAppsScript({
+        const result = await bookingAppsScriptClient.post({
           action: "register_player_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -2496,7 +2494,7 @@ client.on("interactionCreate", async interaction => {
           return
         }
 
-        const result = await postToAppsScript({
+        const result = await bookingAppsScriptClient.post({
           action: "clear_bookings_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId
@@ -2531,7 +2529,7 @@ client.on("interactionCreate", async interaction => {
           return
         }
 
-        const result = await postToAppsScript({
+        const result = await stateAppsScriptClient.post({
           action: "grant_sheet_access_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -2568,7 +2566,7 @@ client.on("interactionCreate", async interaction => {
           return
         }
 
-        const result = await postToAppsScript({
+        const result = await bookingAppsScriptClient.post({
           action: "admin_remove_booking_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -2639,7 +2637,7 @@ client.on("interactionCreate", async interaction => {
           return
         }
 
-        const result = await postToAppsScript({
+        const result = await bookingAppsScriptClient.post({
           action: "admin_add_booking_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
@@ -2756,7 +2754,7 @@ client.on("interactionCreate", async interaction => {
     return
   }
 
-  const result = await postToAppsScript({
+  const result = await banterAppsScriptClient.post({
     action: "set_banter_channel_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId,
@@ -2781,7 +2779,7 @@ if (interaction.commandName === "clear-banter-channel") {
     return
   }
 
-  const result = await postToAppsScript({
+  const result = await banterAppsScriptClient.post({
     action: "clear_banter_channel_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId
@@ -2807,7 +2805,7 @@ if (interaction.commandName === "set-banter-spice") {
 
   const level = interaction.options.getString("level")
 
-  const result = await postToAppsScript({
+  const result = await banterAppsScriptClient.post({
     action: "set_banter_spice_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId,
@@ -2835,7 +2833,7 @@ if (interaction.commandName === "set-banter-spice") {
 
   const role = interaction.options.getRole("role")
 
-  const result = await postToAppsScript({
+  const result = await configAppsScriptClient.post({
     action: "set_bot_admin_role_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId,
@@ -2859,7 +2857,7 @@ if (interaction.commandName === "clear-bot-admin-role") {
     return
   }
 
-  const result = await postToAppsScript({
+  const result = await configAppsScriptClient.post({
     action: "clear_bot_admin_role_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId
@@ -2892,7 +2890,7 @@ if (interaction.commandName === "set-booking-date") {
     String(month).padStart(2, "0") + "-" +
     String(dayOfMonth).padStart(2, "0")
 
-  const result = await postToAppsScript({
+  const result = await bookingAppsScriptClient.post({
     action: "set_booking_date_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId,
@@ -2964,7 +2962,7 @@ if (interaction.commandName === "set-booking-date") {
 
       const day = interaction.options.getString("day")
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "get_times_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId,
@@ -3006,7 +3004,7 @@ if (interaction.commandName === "set-booking-date") {
 
       const day = interaction.options.getString("day")
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "get_times_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId,
@@ -3080,7 +3078,7 @@ If a slot is taken, run /book again and choose another time.`
         return
       }
 
-      const result = await postToAppsScript({
+      const result = await stateAppsScriptClient.post({
         action: "reset_state_password",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId
@@ -3290,7 +3288,7 @@ Recommended order
         return
       }
 
-      const result = await postToAppsScript({
+      const result = await stateAppsScriptClient.post({
         action: "get_linked_servers_for_current_state",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId
@@ -3333,7 +3331,7 @@ Recommended order
         return
       }
 
-      const result = await postToAppsScript({
+      const result = await stateAppsScriptClient.post({
         action: "set_announcement_channel",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId,
@@ -3357,7 +3355,7 @@ Recommended order
         return
       }
 
-      const result = await postToAppsScript({
+      const result = await stateAppsScriptClient.post({
         action: "get_sheet_link_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId
@@ -3403,7 +3401,7 @@ Recommended order
         return
       }
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "open_bookings_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId
@@ -3463,7 +3461,7 @@ Use:
     return
   }
 
-  const result = await postToAppsScript({
+  const result = await bookingAppsScriptClient.post({
     action: "close_bookings_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId
@@ -3513,7 +3511,7 @@ if (interaction.commandName === "admin-remove-reserved") {
 
   const day = interaction.options.getString("day")
 
-  const result = await postToAppsScript({
+  const result = await bookingAppsScriptClient.post({
     action: "get_reserved_times_for_server",
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: interaction.guildId,
@@ -3574,7 +3572,7 @@ if (interaction.commandName === "admin-remove-reserved") {
     if (interaction.commandName === "booking-link") {
       await interaction.deferReply({ flags: 64 })
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "get_booking_link_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId
@@ -3595,13 +3593,13 @@ if (interaction.commandName === "admin-remove-reserved") {
   const day = interaction.options.getString("day")
 
   const [timesResult, dateResult] = await Promise.all([
-    postToAppsScript({
+    bookingAppsScriptClient.post({
       action: "get_times_for_server",
       adminKey: process.env.ADMIN_API_KEY,
       discordServerId: interaction.guildId,
       day: day
     }),
-    postToAppsScript({
+    bookingAppsScriptClient.post({
       action: "get_booking_date_for_server",
       adminKey: process.env.ADMIN_API_KEY,
       discordServerId: interaction.guildId,
@@ -3635,7 +3633,7 @@ if (interaction.commandName === "admin-remove-reserved") {
     if (interaction.commandName === "my-bookings") {
       await interaction.deferReply({ flags: 64 })
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "get_my_bookings_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId,
@@ -3668,7 +3666,7 @@ if (interaction.commandName === "admin-remove-reserved") {
     if (interaction.commandName === "my-info") {
       await interaction.deferReply({ flags: 64 })
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "get_registered_player_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId,
@@ -3689,7 +3687,7 @@ if (interaction.commandName === "admin-remove-reserved") {
     if (interaction.commandName === "unregister") {
       await interaction.deferReply({ flags: 64 })
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "delete_registered_player_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId,
@@ -3711,13 +3709,13 @@ if (interaction.commandName === "admin-remove-reserved") {
       const day = interaction.options.getString("day")
 
       const [timesResult, configResult] = await Promise.all([
-        postToAppsScript({
+        bookingAppsScriptClient.post({
           action: "get_times_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId,
           day: day
         }),
-        postToAppsScript({
+        configAppsScriptClient.post({
           action: "get_booking_config_for_server",
           adminKey: process.env.ADMIN_API_KEY,
           discordServerId: interaction.guildId
@@ -3763,7 +3761,7 @@ if (interaction.commandName === "admin-remove-reserved") {
         return
       }
 
-      const result = await postToAppsScript({
+      const result = await stateAppsScriptClient.post({
         action: "get_linked_servers_for_current_state",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId
@@ -3812,7 +3810,7 @@ if (interaction.commandName === "admin-remove-reserved") {
 
       const day = interaction.options.getString("day")
 
-      const result = await postToAppsScript({
+      const result = await bookingAppsScriptClient.post({
         action: "remove_booking_for_server",
         adminKey: process.env.ADMIN_API_KEY,
         discordServerId: interaction.guildId,

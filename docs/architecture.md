@@ -13,7 +13,14 @@ The bot services may share standard Postgres. `game_profile` is included in sche
 
 ## Existing Apps Script Boundary
 
-`index.js` retains the existing Apps Script client and actions for booking, sheet-backed state behavior, administration, announcements, and related commands. The scheduler neither calls those actions nor reuses their channel fields. Each bot keeps its own `APPS_SCRIPT_URL` and sheet.
+`index.js` routes the unchanged Apps Script action payloads through four internal clients that share one Axios transport:
+
+- booking: registration, availability, booking dates and links, open/close, user/admin bookings, cancellation, clearing, and reservations;
+- state/registry: setup, linking/unlinking, linked-server lookup, join-password reset, announcement configuration, and Sheet links/access;
+- configuration/admin-role: booking requirement/settings reads and writes plus bot-admin role lookup/update;
+- banter: channel and spice reads/writes, still wrapped by the existing five-minute cache.
+
+Each client has an optional responsibility-specific URL and otherwise resolves to the existing `APPS_SCRIPT_URL`. The action names, bodies, admin key, Axios JSON headers, response handling, and profile-independent code path are unchanged. The scheduler neither calls these actions nor reuses their channel fields. Each bot keeps its own Apps Script deployment and sheets.
 
 The canonical player-account subsystem is also separate from Apps Script booking identities. Its optional mirror is an interface only; no Sheet write is guessed. A mirror failure occurs after the PostgreSQL commit and is safe to retry.
 
