@@ -9,6 +9,7 @@ const { createGiftCodeService } = require("../src/giftCodes/service")
 const { createGiftCodeCommunityRepository } = require("../src/giftCodes/communityRepository")
 const { createGiftCodeSourceRepository } = require("../src/giftCodes/sourceRepository")
 const { createGiftCodeSourceIngestionService } = require("../src/giftCodes/sourceIngestion")
+const { createCataloguePoller } = require("../src/giftCodes/catalogueSources")
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 
@@ -258,6 +259,230 @@ test("gift-code source migration, provenance, attribution and profile isolation 
     assert.equal(lateHuman.duplicate, true)
     await pool.query("UPDATE gift_codes SET status = 'active' WHERE id = $1", [automaticFirst.giftCode.id])
     assert.deepEqual(await community.prepareCodeEngagement(automaticFirst.giftCode.id, 0), [])
+  } finally {
+    await pool?.end().catch(() => {})
+    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
+    await admin.end()
+  }
+})
+
+test("source summaries derive current unique presence and unresolved candidates", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const admin = new Pool({ connectionString: databaseUrl, max: 1 })
+  const schema = `gift_source_summary_${process.pid}_${Date.now()}`
+  let pool
+  try {
+    await admin.query(`CREATE SCHEMA "${schema}"`)
+    pool = new Pool({
+      connectionString: databaseUrl,
+      max: 8,
+      options: `-c search_path=${schema}`
+    })
+    await runMigrations({ pool, logger: { log() {}, error() {} } })
+
+    const wosGifts = createGiftCodeRepository(pool, "wos")
+    const wosSources = createGiftCodeSourceRepository(pool, "wos")
+    const wosIngestion = createGiftCodeSourceIngestionService({
+      giftRepository: wosGifts,
+      sourceRepository: wosSources,
+      gameProfile: "wos"
+    })
+    const kingshotGifts = createGiftCodeRepository(pool, "kingshot")
+    const kingshotSources = createGiftCodeSourceRepository(pool, "kingshot")
+    const kingshotIngestion = createGiftCodeSourceIngestionService({
+      giftRepository: kingshotGifts,
+      sourceRepository: kingshotSources,
+      gameProfile: "kingshot"
+    })
+    const catalogueA = { sourceType: "public_catalogue", sourceName: "Catalogue A" }
+    const catalogueB = { sourceType: "public_catalogue", sourceName: "Catalogue B" }
+    const observedCodes = [
+      "SHARED", "CAT_ONLY", "EXPIRED", "INVALID", "RESTRICTED", "REVIEW", "RETRY"
+    ]
+    const records = {}
+    for (const code of observedCodes) {
+      records[code] = await wosIngestion.ingest({
+        source: catalogueA,
+        code,
+        observationKey: `catalogue:${code}`,
+        provenance: { transport: "http_catalogue" }
+      })
+    }
+    const sharedB = await wosIngestion.ingest({
+      source: catalogueB,
+      code: "SHARED",
+      observationKey: "catalogue:SHARED",
+      provenance: { transport: "http_catalogue" }
+    })
+    assert.equal(sharedB.giftCode.id, records.SHARED.giftCode.id)
+    assert.deepEqual((await wosSources.sourceStatus("111")).summary, {
+      codes_observed: 7,
+      new_candidates: 7
+    })
+
+    await pool.query(
+      `UPDATE gift_codes
+          SET status = CASE code
+                WHEN 'SHARED' THEN 'active'
+                WHEN 'EXPIRED' THEN 'expired'
+                WHEN 'INVALID' THEN 'invalid'
+                WHEN 'RESTRICTED' THEN 'restricted'
+                WHEN 'REVIEW' THEN 'unknown'
+                ELSE status
+              END,
+              verification_state = CASE code
+                WHEN 'REVIEW' THEN 'review'
+                WHEN 'SHARED' THEN 'complete'
+                WHEN 'EXPIRED' THEN 'complete'
+                WHEN 'INVALID' THEN 'complete'
+                WHEN 'RESTRICTED' THEN 'complete'
+                WHEN 'RETRY' THEN 'retry'
+                ELSE verification_state
+              END,
+              verification_attempt_count = CASE
+                WHEN code IN (
+                  'SHARED', 'EXPIRED', 'INVALID', 'RESTRICTED', 'REVIEW', 'RETRY'
+                ) THEN 1
+                ELSE verification_attempt_count
+              END
+        WHERE game_profile = 'wos' AND code = ANY($1::varchar[])`,
+      [observedCodes]
+    )
+    assert.deepEqual((await wosSources.sourceStatus("111")).summary, {
+      codes_observed: 7,
+      new_candidates: 1
+    })
+    await pool.query(
+      `UPDATE gift_codes SET status = 'active', verification_state = 'complete',
+              verification_attempt_count = 1
+        WHERE game_profile = 'wos' AND code = 'CAT_ONLY'`
+    )
+    assert.equal((await wosSources.sourceStatus("111")).summary.new_candidates, 0)
+
+    const catalogueASource = records.SHARED.source
+    const catalogueBSource = sharedB.source
+    await wosSources.markCataloguePoll(catalogueASource.id, {
+      successful: true,
+      observedCodes: observedCodes.filter(code => code !== "SHARED"),
+      now: new Date("2026-08-14T10:00:00Z")
+    })
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 7)
+
+    await wosSources.markCataloguePoll(catalogueBSource.id, {
+      successful: false,
+      observedCodes: [],
+      errorCode: "ETIMEDOUT",
+      now: new Date("2026-08-14T10:05:00Z")
+    })
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 7)
+    const failedParserPoll = createCataloguePoller({
+      gameProfile: "wos",
+      sourceRepository: wosSources,
+      ingestion: wosIngestion,
+      adapter: {
+        name: "Catalogue B",
+        url: "https://example.invalid/",
+        async fetchActiveCodes() {
+          throw Object.assign(new Error("parser failed"), { code: "SOURCE_MARKUP_UNRECOGNISED" })
+        }
+      },
+      enabled: true,
+      logger: { warn() {} }
+    })
+    assert.equal((await failedParserPoll.poll()).failed, true)
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 7)
+
+    await wosSources.markCataloguePoll(catalogueBSource.id, {
+      successful: true,
+      observedCodes: [],
+      now: new Date("2026-08-14T10:10:00Z")
+    })
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 6)
+    assert.equal((await wosGifts.getCode("SHARED")).status, "active")
+    const sharedHistory = (await pool.query(
+      `SELECT no_longer_observed_at_utc FROM gift_code_source_observations
+        WHERE game_profile = 'wos' AND gift_code_id = $1`,
+      [records.SHARED.giftCode.id]
+    )).rows
+    assert.equal(sharedHistory.length, 2)
+    assert.equal(sharedHistory.every(row => row.no_longer_observed_at_utc), true)
+
+    await pool.query(
+      "UPDATE gift_code_sources SET enabled = false WHERE id = $1 AND game_profile = 'wos'",
+      [catalogueASource.id]
+    )
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 0)
+    assert.equal((await wosSources.sourceStatus("111", {
+      publicCatalogueEnabled: false
+    })).summary.codes_observed, 0)
+
+    const feed = await wosIngestion.ingest({
+      source: { sourceType: "rss_feed", sourceName: "Future provider" },
+      code: "FEED_ONLY",
+      observationKey: "feed:FEED_ONLY",
+      provenance: { transport: "rss" }
+    })
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 1)
+    assert.equal(feed.giftCode.status, "candidate")
+
+    const manualService = createGiftCodeService({
+      repository: wosGifts,
+      gameProfile: "wos",
+      ingestion: wosIngestion
+    })
+    await manualService.submit({ discordUserId: "555", guildId: "111", code: "MANUAL_ONLY" })
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 1)
+
+    const mirror111 = await wosSources.configureDiscordChannel({ guildId: "111", channelId: "222" })
+    const mirror999 = await wosSources.configureDiscordChannel({ guildId: "999", channelId: "888" })
+    await wosIngestion.ingest({
+      source: {
+        sourceType: "discord_mirror",
+        sourceName: "Discord mirror 111/222",
+        sourceReference: "discord:111:222",
+        trusted: true
+      },
+      code: "MIRROR_111",
+      observationKey: "discord-message:111",
+      provenance: { transport: "discord", guildId: "111" }
+    })
+    await wosIngestion.ingest({
+      source: {
+        sourceType: "discord_mirror",
+        sourceName: "Discord mirror 999/888",
+        sourceReference: "discord:999:888",
+        trusted: true
+      },
+      code: "MIRROR_999",
+      observationKey: "discord-message:999",
+      provenance: { transport: "discord", guildId: "999" }
+    })
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 2)
+    assert.equal((await wosSources.sourceStatus("999")).summary.codes_observed, 2)
+    await pool.query(
+      `UPDATE gift_code_source_channels SET enabled = false
+        WHERE game_profile = 'wos' AND source_id = $1`,
+      [mirror111.source_id]
+    )
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 1)
+    assert.equal(mirror999.guild_id, "999")
+
+    await kingshotIngestion.ingest({
+      source: { sourceType: "public_catalogue", sourceName: "KingshotRewards" },
+      code: "SHARED",
+      observationKey: "catalogue:SHARED",
+      provenance: { transport: "http_catalogue" }
+    })
+    assert.deepEqual((await kingshotSources.sourceStatus("111")).summary, {
+      codes_observed: 1,
+      new_candidates: 1
+    })
+    assert.equal((await wosSources.sourceStatus("111")).summary.codes_observed, 1)
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::integer AS count FROM gift_code_source_observations
+        WHERE game_profile = 'wos'`
+    )).rows[0].count, 12)
   } finally {
     await pool?.end().catch(() => {})
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})

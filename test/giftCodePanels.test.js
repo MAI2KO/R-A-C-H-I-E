@@ -253,6 +253,7 @@ test("admin panel exposes bounded profile source health", () => {
     configuration: { settings: null, channelAvailable: false, roleAvailable: false },
     sourceStatus: {
       channels: [{ enabled: true }, { enabled: true }],
+      summary: { codes_observed: 7, new_candidates: 2 },
       sources: [
         {
           source_type: "discord_mirror",
@@ -268,8 +269,6 @@ test("admin panel exposes bounded profile source health", () => {
           source_type: "public_catalogue",
           last_poll_at_utc: "2026-08-12T00:00:00Z",
           last_successful_poll_at_utc: "2026-08-11T23:45:00Z",
-          observations_count: 7,
-          candidates_count: 2,
           last_error: "ETIMEDOUT"
         }
       ]
@@ -1182,6 +1181,8 @@ function panelDependencies({
   community = null,
   submissionResult = null,
   sourceChannels = [],
+  sourceStatusProvider = async () => ({ sources: [], channels: [], summary: {} }),
+  runtimeStatus = { verificationEnabled: true, verifierConfigured: true },
   logger = { error() {} }
 } = {}) {
   const terms = profileTerminology("wos")
@@ -1258,7 +1259,7 @@ function panelDependencies({
     }),
     giftRepositoryFactory: () => ({}),
     sourceRepositoryFactory: () => ({
-      async sourceStatus() { return { sources: [], channels: [] } },
+      sourceStatus: sourceStatusProvider,
       async configureDiscordChannel(input) { sourceChannels.push(input) }
     }),
     sourceIngestionFactory: () => ({ async ingest() {} }),
@@ -1297,7 +1298,7 @@ function panelDependencies({
       async configuration() { return { settings: null, channelAvailable: false, roleAvailable: false } }
     }),
     runtimeProvider: () => ({
-      status: () => ({ verificationEnabled: true, verifierConfigured: true })
+      status: () => runtimeStatus
     }),
     env: { GIFT_CODE_MAX_AUTO_REDEEM_ACCOUNTS_PER_USER: "2" },
     logger
@@ -1674,6 +1675,50 @@ test("gift-code administration retains the existing authorization gate", async (
   await handleGiftCodePanelInteraction(command, dependencies)
   assert.equal(authorizationCalls, 1)
   assert.match(command.edited.content, /do not have permission/)
+})
+
+test("gift-code administration open and Refresh recalculate database source state only", async () => {
+  const sourceCalls = []
+  const summaries = [
+    { codes_observed: 3, new_candidates: 1 },
+    { codes_observed: 2, new_candidates: 0 }
+  ]
+  const dependencies = panelDependencies({
+    accounts: [],
+    adminDiagnostics: adminDiagnostics(),
+    runtimeStatus: {
+      verificationEnabled: true,
+      redemptionEnabled: true,
+      verifierConfigured: true,
+      sourcePollingEnabled: true
+    },
+    sourceStatusProvider: async (guildId, options) => {
+      sourceCalls.push({ guildId, options })
+      return { sources: [], channels: [], summary: summaries.shift() }
+    }
+  })
+  const command = panelInteraction({ commandName: "gift-codes-admin" })
+  await handleGiftCodePanelInteraction(command, dependencies)
+  assert.match(command.edited.content, /Codes observed: 3/)
+  assert.match(command.edited.content, /New candidates: 1/)
+
+  const refreshButton = command.edited.components
+    .flatMap(row => row.components)
+    .find(button => button.data.label === "Refresh")
+  const refresh = panelInteraction({ customId: refreshButton.data.custom_id })
+  await handleGiftCodePanelInteraction(refresh, dependencies)
+  assert.match(refresh.edited.content, /Codes observed: 2/)
+  assert.match(refresh.edited.content, /New candidates: 0/)
+  assert.deepEqual(sourceCalls, [
+    {
+      guildId: "777777777777777777",
+      options: { publicCatalogueEnabled: true }
+    },
+    {
+      guildId: "777777777777777777",
+      options: { publicCatalogueEnabled: true }
+    }
+  ])
 })
 
 function adminDiagnostics() {

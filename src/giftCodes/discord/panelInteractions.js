@@ -347,6 +347,7 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, sourceStat
   const mirrorChannels = sourceStatus?.channels?.filter(channel => channel.enabled) || []
   const catalogue = sourceStatus?.sources?.find(source => source.source_type === "public_catalogue")
   const mirrors = sourceStatus?.sources?.filter(source => source.source_type === "discord_mirror") || []
+  const sourceSummary = sourceStatus?.summary || {}
   return {
     content: [
       "**Gift Code Administration**",
@@ -372,8 +373,8 @@ function adminPanel({ sessionId, runtime, diagnostics, configuration, sourceStat
       `Public catalogue: ${runtime.sourcePollingEnabled ? "Enabled" : "Disabled"}`,
       `Last poll: ${sourceTime(catalogue?.last_poll_at_utc)}`,
       `Last successful poll: ${sourceTime(catalogue?.last_successful_poll_at_utc)}`,
-      `Codes observed: ${catalogue?.observations_count || 0}`,
-      `New candidates: ${catalogue?.candidates_count || 0}`,
+      `Codes observed: ${sourceSummary.codes_observed || 0}`,
+      `New candidates: ${sourceSummary.new_candidates || 0}`,
       `Last source error: ${catalogue?.last_error || "None"}`
     ].join("\n"),
     components: [
@@ -622,16 +623,19 @@ async function handleGiftCodePanelInteraction(interaction, {
     }
 
     async function renderAdmin(sessionId) {
-      const [diagnostics, configuration, sourceStatus] = await Promise.all([
-        gifts.adminStatus(),
-        community.configuration(interaction.guildId),
-        sourceRepository.sourceStatus(interaction.guildId)
-      ])
       const runtime = runtimeProvider()?.status() || {
         verificationEnabled: false,
         redemptionEnabled: false,
-        verifierConfigured: false
+        verifierConfigured: false,
+        sourcePollingEnabled: false
       }
+      const [diagnostics, configuration, sourceStatus] = await Promise.all([
+        gifts.adminStatus(),
+        community.configuration(interaction.guildId),
+        sourceRepository.sourceStatus(interaction.guildId, {
+          publicCatalogueEnabled: runtime.sourcePollingEnabled
+        })
+      ])
       await interaction.editReply(adminPanel({
         sessionId, runtime, diagnostics, configuration, sourceStatus, terms: gifts.terms
       }))

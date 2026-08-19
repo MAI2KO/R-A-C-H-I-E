@@ -172,7 +172,7 @@ function createGiftCodeSourceRepository(pool, gameProfile) {
       )
     },
 
-    async sourceStatus(guildId = null) {
+    async sourceStatus(guildId = null, { publicCatalogueEnabled = true } = {}) {
       const sources = (await pool.query(
         `SELECT source_type, source_name, enabled, last_observation_at_utc,
                 last_candidate_at_utc, last_poll_at_utc, last_successful_poll_at_utc,
@@ -198,7 +198,36 @@ function createGiftCodeSourceRepository(pool, gameProfile) {
           ORDER BY guild_id, channel_id`,
         [gameProfile, guildId]
       )).rows
-      return { sources, channels }
+      const summary = (await pool.query(
+        `SELECT
+           COUNT(DISTINCT o.gift_code_id)::integer AS codes_observed,
+           COUNT(DISTINCT o.gift_code_id) FILTER (
+             WHERE g.status = 'candidate'
+               AND g.verification_state = 'pending'
+               AND g.verification_attempt_count = 0
+           )::integer AS new_candidates
+           FROM gift_code_source_observations o
+           JOIN gift_code_sources s
+             ON s.id = o.source_id AND s.game_profile = o.game_profile
+           JOIN gift_codes g
+             ON g.id = o.gift_code_id AND g.game_profile = o.game_profile
+          WHERE o.game_profile = $1
+            AND o.no_longer_observed_at_utc IS NULL
+            AND s.enabled = true
+            AND s.source_type NOT IN ('manual_user', 'manual_admin')
+            AND (s.source_type <> 'public_catalogue' OR $3::boolean = true)
+            AND (
+              s.source_type <> 'discord_mirror'
+              OR EXISTS (
+                SELECT 1 FROM gift_code_source_channels c
+                 WHERE c.game_profile = s.game_profile AND c.source_id = s.id
+                   AND c.enabled = true
+                   AND ($2::varchar IS NULL OR c.guild_id = $2)
+              )
+            )`,
+        [gameProfile, guildId, Boolean(publicCatalogueEnabled)]
+      )).rows[0]
+      return { sources, channels, summary }
     }
   })
 }
