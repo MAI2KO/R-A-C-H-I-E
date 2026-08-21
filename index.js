@@ -39,6 +39,13 @@ const {
   handleBotSetupInteraction,
   handlePersistentOnboardingInteraction
 } = require("./src/botSetupInteractions")
+const {
+  bookingWebsiteConfig
+} = require("./src/bookingWebsiteClient")
+const {
+  handleBookingApprovalInteraction
+} = require("./src/bookingDiscordIntegration")
+const { createBookingWebsiteBootstrap } = require("./src/bookingWebsiteBootstrap")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -50,15 +57,18 @@ console.log("OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY)
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
+const bookingWebsiteConfiguration = bookingWebsiteConfig()
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    ...(bookingWebsiteConfiguration.enabled ? [GatewayIntentBits.GuildMembers] : [])
   ]
 })
 let allianceEventDeliveryRuntime = null
 let giftCodeWorkflowRuntime = null
+let bookingWebsiteApi = null
 
 const pendingUnlinks = new Map()
 const pendingBookings = new Map()
@@ -1746,6 +1756,7 @@ client.once("clientReady", () => {
 
 client.on("interactionCreate", async interaction => {
   try {
+    if (bookingWebsiteApi && await handleBookingApprovalInteraction(interaction, bookingWebsiteApi)) return
     if (await handlePersistentOnboardingInteraction(interaction, {
       ministerModalBuilder: buildRegisterModal
     })) return
@@ -3959,6 +3970,11 @@ const { createGiftCodeWorkflowRuntime } = require("./src/giftCodes/workflowRunti
 /* -------------------- START BOT -------------------- */
 
 async function main() {
+  const bookingWebsiteBootstrap = createBookingWebsiteBootstrap({
+    client,
+    configuration: bookingWebsiteConfiguration
+  })
+  bookingWebsiteApi = bookingWebsiteBootstrap.api
   const giftCodeInitialization = initializePlayerGiftCodesSubsystem().catch(() => {
     console.error("[Player accounts] Initialization failed unexpectedly")
     return null

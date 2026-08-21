@@ -15,6 +15,10 @@ Postgres owns scheduler data and, when enabled, canonical player accounts and gi
 
 See [Architecture](docs/architecture.md) for the complete boundary and data model.
 
+The optional native-booking Discord delivery worker is documented in
+[Native booking website integration](docs/booking-website-integration.md). It is
+disabled by default and does not replace existing Apps Script behavior.
+
 ## Event Scheduler
 
 Administrators use `/event-scheduler`; authorization uses the existing `userCanManageServer(interaction)` behavior. `/event-scheduler-help` provides private, database-independent setup, creation, reminder, management, roundup, state-link and troubleshooting pages. The management home also includes a **Help** control.
@@ -73,7 +77,7 @@ npm start
 
 ### Discord Permissions
 
-New installations should grant the bot **Manage Channels**, **View Channel**, **Send Messages**, **Embed Links**, **Attach Files**, **Read Message History**, and **Use Application Commands**. **Manage Roles** is additionally required for the bot-managed contributor reward role. Administrator and Manage Threads are not required.
+New installations should grant the bot **Manage Channels**, **View Channel**, **Send Messages**, **Embed Links**, **Attach Files**, **Read Message History**, and **Use Application Commands**. **Manage Roles** is additionally required for the bot-managed contributor reward role. Administrator and Manage Threads are not required. If native booking manager DMs are enabled, also enable the privileged **Server Members Intent** in the Discord Developer Portal; it is required to discover every current Administrator/manager rather than only cached members.
 
 Existing servers can grant Manage Channels to the bot's existing role and run `/bot-setup`; removing and reinviting the bot is not required. Setup creates or reconciles the profile-specific category and five read-only parent channels. Public threads are enabled only in the gift-code and event announcement channels.
 
@@ -83,6 +87,7 @@ All variables read by the code are represented in [.env.example](.env.example):
 
 - Required existing bot variables: `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and `OPENAI_API_KEY` where those existing features are used. Optional `BOOKING_APPS_SCRIPT_URL`, `STATE_APPS_SCRIPT_URL`, `CONFIG_APPS_SCRIPT_URL`, and `BANTER_APPS_SCRIPT_URL` overrides each fall back to `APPS_SCRIPT_URL` when unset, so existing deployments require no changes.
 - Profile variables: `GAME_PROFILE` (`wos` default or `kingshot`) and `BANTER_PROFILE` (`rachie` default).
+- Native booking website variables: `BOOKING_WEBSITE_INTEGRATION_ENABLED`, the matching profile's `BOOKING_WEBSITE_BASE_URL` and `BOOKING_WEBSITE_INTEGRATION_SECRET`, and optional polling interval. The integration is disabled unless the complete opt-in configuration is valid.
 - Scheduler variables: `EVENT_SCHEDULER_ENABLED`, `DATABASE_URL`, and `BOT_INSTANCE_NAME`.
 - Player/gift-code variables: `PLAYER_GIFT_CODES_ENABLED`, `GIFT_CODE_MAX_AUTO_REDEEM_ACCOUNTS_PER_USER` (default `2` per user/profile), separately gated verification/redemption workers, profile-specific optional verifier characters, the shared standard `DATABASE_URL`, optional signing-suffix overrides, conservative Century delay/backoff controls, and independently gated source polling variables.
 - Optional scheduler tuning: `EVENT_SCHEDULER_LOOKAHEAD_MINUTES`, `EVENT_SCHEDULER_GRACE_MINUTES`, `EVENT_SCHEDULER_POLL_INTERVAL_MS`, `EVENT_SCHEDULER_BATCH_SIZE`, `EVENT_SCHEDULER_CLAIM_LEASE_SECONDS`, and `EVENT_SCHEDULER_HANDLER_TIMEOUT_MS`.
