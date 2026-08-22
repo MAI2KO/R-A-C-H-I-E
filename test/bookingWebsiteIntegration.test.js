@@ -159,6 +159,34 @@ test("player and reminder rendering uses profile terminology and bounded private
   assert.match(reminder.content, /in 30 minutes[\s\S]*Kingdom 9999[\s\S]*Alliance: ABC/)
 })
 
+test("manager mutations add bounded attribution while self-service notifications remain unattributed", () => {
+  for (const [profile, place] of [["wos", "State 9999"], ["kingshot", "Kingdom 9999"]]) {
+    const rescheduled = renderWork({ workId, type: "player_rescheduled", profile,
+      communityCode: "9999", communityName: "Test Server", serviceLabel: "Construction",
+      previousDate: "2030-08-21", previousTime: "14:00", date: "2030-08-21", time: "14:30",
+      attributionDisplayName: "MAI2KO" })
+    assert.match(rescheduled.content, /Appointment rescheduled/)
+    assert.match(rescheduled.content, /Previous: 21 August at 14:00 UTC/)
+    assert.match(rescheduled.content, /New: 21 August at 14:30 UTC/)
+    assert.match(rescheduled.content, /Rescheduled by MAI2KO$/)
+
+    const cancelled = renderWork({ workId, type: "player_cancelled", profile,
+      communityCode: "9999", communityName: "Test Server", serviceLabel: "Construction",
+      date: "2030-08-21", time: "14:30", attributionDisplayName: "Jenn" })
+    assert.match(cancelled.content, new RegExp(place))
+    assert.match(cancelled.content, /Cancelled by Jenn$/)
+
+    const selfRescheduled = renderWork({ workId, type: "player_rescheduled", profile,
+      communityCode: "9999", communityName: "Test Server", serviceLabel: "Construction",
+      previousDate: "2030-08-21", previousTime: "14:00", date: "2030-08-21", time: "14:30" })
+    const selfCancelled = renderWork({ workId, type: "player_cancelled", profile,
+      communityCode: "9999", communityName: "Test Server", serviceLabel: "Construction",
+      date: "2030-08-21", time: "14:30" })
+    assert.doesNotMatch(selfRescheduled.content, /Rescheduled by/)
+    assert.doesNotMatch(selfCancelled.content, /Cancelled by/)
+  }
+})
+
 test("manager discovery includes owner, administrators and manager role and deduplicates guilds", async () => {
   const member = (id, { owner = false, admin = false, role = false } = {}) => ({ id,
     user: { bot: false }, permissions: { has: () => admin }, roles: { cache: { has: () => role } }, owner })
