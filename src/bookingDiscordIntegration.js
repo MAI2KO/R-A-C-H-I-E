@@ -18,21 +18,36 @@ function approvalComponents(requestId) {
     new ButtonBuilder().setCustomId(`${BUTTON_PREFIX}${requestId}:deny`).setLabel("Deny").setStyle(ButtonStyle.Danger)
   )]
 }
-function renderWork(work) {
+const pendingManagerFooter = "This request is holding the slot temporarily."
+function withoutManagerActionSection(content) {
+  const pendingSuffix = `\n\n${pendingManagerFooter}`
+  if (content.endsWith(pendingSuffix)) return content.slice(0, -pendingSuffix.length)
+  const finalMarkers = ["\n\nAPPROVED\n", "\n\nDENIED\n", "\n\nEXPIRED\n"]
+  const markerIndex = Math.max(...finalMarkers.map(marker => content.lastIndexOf(marker)))
+  return markerIndex === -1 ? content : content.slice(0, markerIndex)
+}
+function managerRequestContext(work) {
+  if (work.originalContent) return withoutManagerActionSection(work.originalContent)
   const place = `${locationLabel(work.profile)} ${work.communityCode} — ${work.communityName}`
+  return [`New ${work.serviceLabel} appointment request`, "", place, "",
+    `Player: ${work.playerName}`, `Alliance: ${work.alliance}`, `Player ID: ${work.playerId}`,
+    `Time: ${work.time} UTC`, `Date: ${dateText(work.date)}`, requirementsText(work.requirements)]
+    .filter(line => line !== "").join("\n")
+}
+function renderManagerRequest(work) {
+  const content = managerRequestContext(work)
   if (work.type === "manager_request") return {
-    content: [`New ${work.serviceLabel} appointment request`, "", place, "",
-      `Player: ${work.playerName}`, `Alliance: ${work.alliance}`, `Player ID: ${work.playerId}`,
-      `Time: ${work.time} UTC`, `Date: ${dateText(work.date)}`, requirementsText(work.requirements), "",
-      "This request is holding the slot temporarily."].filter(line => line !== "").join("\n"),
+    content: `${content}\n\n${pendingManagerFooter}`,
     components: approvalComponents(work.requestId)
   }
-  if (work.type === "manager_update") {
-    const label = work.status === "confirmed" ? "APPROVED" : work.status === "denied" ? "DENIED" : "EXPIRED"
-    const detail = work.status === "confirmed" ? `Approved by ${work.decidedByDisplayName}`
-      : work.status === "denied" ? `Denied by ${work.decidedByDisplayName}` : "The temporary booking hold expired."
-    return { content: `${label}\n${detail}`, components: [] }
-  }
+  const label = work.status === "confirmed" ? "APPROVED" : work.status === "denied" ? "DENIED" : "EXPIRED"
+  const detail = work.status === "confirmed" ? `Approved by ${work.decidedByDisplayName}`
+    : work.status === "denied" ? `Denied by ${work.decidedByDisplayName}` : "The temporary booking hold expired."
+  return { content: `${content}\n\n${label}\n${detail}`, components: [] }
+}
+function renderWork(work) {
+  const place = `${locationLabel(work.profile)} ${work.communityCode} — ${work.communityName}`
+  if (work.type === "manager_request" || work.type === "manager_update") return renderManagerRequest(work)
   const heading = { player_confirmed: "Appointment confirmed", player_approved: "Appointment approved",
     player_rescheduled: "Appointment rescheduled", player_cancelled: "Appointment cancelled",
     appointment_reminder: "Appointment reminder" }[work.type]
@@ -79,7 +94,7 @@ async function deliverWork(client, api, work) {
     try {
       const channel = await client.channels.fetch(work.discordChannelId)
       const message = await channel.messages.fetch(work.discordMessageId)
-      await message.edit(renderWork(work))
+      await message.edit(renderWork({ ...work, originalContent: message.content }))
       return api.outcome(work, { status: "sent", discordChannelId: channel.id, discordMessageId: message.id })
     } catch (error) {
       return api.outcome(work, { status: permanentDiscordCodes.has(error?.code) ? "permanent_failure" : "retry",
