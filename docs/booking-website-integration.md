@@ -1,5 +1,11 @@
 # Native booking website integration
 
+## Player-local appointment display
+
+All player-facing booking messages—automatic confirmations, manually approved confirmations, reschedules, cancellations, and 30-minute reminders—show both the canonical UTC appointment and a Discord-native `<t:UNIX:F>` timestamp. Discord renders the native timestamp in the recipient's configured locale and timezone, so daylight-saving rules are handled by Discord and the bot does not persist user timezones or fixed UTC offsets.
+
+The website supplies the exact PostgreSQL appointment instant from the booked slot. Reschedules supply separate old and new instants. This is presentation-only: UTC storage, reminder timing, reminder deduplication, reschedule supersession, and cancellation suppression are unchanged. The formatting uses the same safe Discord timestamp helper as the event scheduler. Missing or malformed instants never produce invalid Discord markup.
+
 This optional subsystem connects one bot deployment to the matching native booking website profile. It is disabled unless `BOOKING_WEBSITE_INTEGRATION_ENABLED=true` and a valid profile, HTTPS base URL, and 32-character-or-longer secret are all present. Plain HTTP is accepted only for loopback local development. Existing Apps Script, event, banter, setup, and gift-code behavior continues when it is disabled or misconfigured.
 
 The website owns bookings, approval transitions, notification decisions, persistence, retries, and reminder scheduling. The bot has no website database credentials. It polls signed internal HTTPS endpoints, discovers current Discord managers, sends or edits DMs, receives approval buttons, and reports delivery outcomes.

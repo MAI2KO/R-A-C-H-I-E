@@ -1,4 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require("discord.js")
+const { discordTimestamp, utcAppointmentInstant, validInstant } = require("./discordTimeFormatting")
 
 const BUTTON_PREFIX = "booking-approval:v1:"
 const permanentDiscordCodes = new Set([50001, 50007, 10013])
@@ -11,6 +12,13 @@ function dateText(value) {
 function requirementsText(requirements) {
   return (Array.isArray(requirements) ? requirements : []).map(item =>
     `${item.label}: ${item.value}${item.unit === "days" ? " days" : ""}`).join("\n")
+}
+function appointmentTimeLines(date, time, appointmentAt) {
+  const instant = validInstant(appointmentAt) || utcAppointmentInstant(date, time)
+  const utcDate = instant ? instant.toISOString().slice(0, 10) : date
+  const utcTime = instant ? instant.toISOString().slice(11, 16) : time
+  const local = discordTimestamp(instant, "F")
+  return [`UTC: ${dateText(utcDate)} at ${utcTime} UTC`, `Your time: ${local || "unavailable"}`]
 }
 function approvalComponents(requestId) {
   return [new ActionRowBuilder().addComponents(
@@ -52,9 +60,17 @@ function renderWork(work) {
     player_rescheduled: "Appointment rescheduled", player_cancelled: "Appointment cancelled",
     appointment_reminder: "Appointment reminder" }[work.type]
   const lines = [heading, "", work.serviceLabel]
-  if (work.type === "player_rescheduled") lines.push(`Previous: ${dateText(work.previousDate)} at ${work.previousTime} UTC`, `New: ${dateText(work.date)} at ${work.time} UTC`)
-  else if (work.type === "appointment_reminder") lines.push(`Your ${work.serviceLabel} appointment is in 30 minutes.`, "", place, `Today at ${work.time} UTC`, "", `Player: ${work.playerName}`, `Alliance: ${work.alliance}`)
-  else lines.push(place, `${dateText(work.date)} at ${work.time} UTC`)
+  if (work.type === "player_rescheduled") lines.push(
+    place, "", "Previous:",
+    ...appointmentTimeLines(work.previousDate, work.previousTime, work.previousAppointmentAt),
+    "", "New:", ...appointmentTimeLines(work.date, work.time, work.appointmentAt)
+  )
+  else if (work.type === "appointment_reminder") lines.push(
+    `Your ${work.serviceLabel} appointment is in 30 minutes.`, "", place, "",
+    ...appointmentTimeLines(work.date, work.time, work.appointmentAt), "",
+    `Player: ${work.playerName}`, `Alliance: ${work.alliance}`
+  )
+  else lines.push(place, "", ...appointmentTimeLines(work.date, work.time, work.appointmentAt))
   if (work.type === "player_approved" && work.decidedByDisplayName) lines.push("", `Approved by ${work.decidedByDisplayName}`)
   if (work.type === "player_rescheduled" && work.attributionDisplayName) lines.push("", `Rescheduled by ${work.attributionDisplayName}`)
   if (work.type === "player_cancelled" && work.attributionDisplayName) lines.push("", `Cancelled by ${work.attributionDisplayName}`)

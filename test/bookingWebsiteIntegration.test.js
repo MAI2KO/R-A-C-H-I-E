@@ -150,13 +150,38 @@ test("all manager message copies receive the same context-preserving final edit"
 test("player and reminder rendering uses profile terminology and bounded private content", () => {
   const confirmed = renderWork({ workId, type: "player_confirmed", profile: "wos",
     communityCode: "9999", communityName: "Test Server", serviceLabel: "Research",
-    date: "2030-08-21", time: "14:30" })
+    date: "2030-08-21", time: "14:30", appointmentAt: "2030-08-21T14:30:00.000Z" })
   assert.match(confirmed.content, /Appointment confirmed[\s\S]*State 9999/)
+  assert.match(confirmed.content, /UTC: 21 August at 14:30 UTC/)
+  assert.match(confirmed.content, /Your time: <t:\d+:F>/)
   assert.doesNotMatch(confirmed.content, /bookingId|booking-work|Player ID/)
   const reminder = renderWork({ workId, type: "appointment_reminder", profile: "kingshot",
     communityCode: "9999", communityName: "Test Server", serviceLabel: "Construction",
-    playerName: "mark", alliance: "ABC", time: "14:30" })
+    playerName: "mark", alliance: "ABC", date: "2030-08-21", time: "14:30",
+    appointmentAt: "2030-08-21T14:30:00.000Z" })
   assert.match(reminder.content, /in 30 minutes[\s\S]*Kingdom 9999[\s\S]*Alliance: ABC/)
+  assert.match(reminder.content, /UTC: 21 August at 14:30 UTC[\s\S]*Your time: <t:\d+:F>/)
+})
+
+test("manual approval, cancellation and malformed appointments use safe UTC/local presentation", () => {
+  const approved = renderWork({ workId, type: "player_approved", profile: "kingshot",
+    communityCode: "9999", communityName: "Test Server", serviceLabel: "Troop",
+    date: "2030-08-21", time: "05:30", appointmentAt: "2030-08-21T05:30:00.000Z",
+    decidedByDisplayName: "Jenn" })
+  assert.match(approved.content,
+    /Appointment approved[\s\S]*Kingdom 9999[\s\S]*UTC: 21 August at 05:30 UTC[\s\S]*Your time: <t:\d+:F>[\s\S]*Approved by Jenn$/)
+
+  const cancelled = renderWork({ workId, type: "player_cancelled", profile: "wos",
+    communityCode: "9999", communityName: "Test Server", serviceLabel: "Troop",
+    date: "2030-08-21", time: "05:30", appointmentAt: "2030-08-20T23:30:00.000Z" })
+  assert.match(cancelled.content, /UTC: 20 August at 23:30 UTC[\s\S]*Your time: <t:\d+:F>/)
+  assert.doesNotMatch(cancelled.content, /Cancelled by/)
+
+  const malformed = renderWork({ workId, type: "player_confirmed", profile: "wos",
+    communityCode: "9999", communityName: "Test Server", serviceLabel: "Troop",
+    date: "not-a-date", time: "99:99", appointmentAt: "invalid" })
+  assert.match(malformed.content, /Your time: unavailable/)
+  assert.doesNotMatch(malformed.content, /<t:(?:NaN|undefined|Invalid)/)
 })
 
 test("manager mutations add bounded attribution while self-service notifications remain unattributed", () => {
@@ -166,8 +191,9 @@ test("manager mutations add bounded attribution while self-service notifications
       previousDate: "2030-08-21", previousTime: "14:00", date: "2030-08-21", time: "14:30",
       attributionDisplayName: "MAI2KO" })
     assert.match(rescheduled.content, /Appointment rescheduled/)
-    assert.match(rescheduled.content, /Previous: 21 August at 14:00 UTC/)
-    assert.match(rescheduled.content, /New: 21 August at 14:30 UTC/)
+    assert.match(rescheduled.content, /Previous:\nUTC: 21 August at 14:00 UTC\nYour time: <t:\d+:F>/)
+    assert.match(rescheduled.content, /New:\nUTC: 21 August at 14:30 UTC\nYour time: <t:\d+:F>/)
+    assert.match(rescheduled.content, new RegExp(place))
     assert.match(rescheduled.content, /Rescheduled by MAI2KO$/)
 
     const cancelled = renderWork({ workId, type: "player_cancelled", profile,

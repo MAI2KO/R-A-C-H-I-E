@@ -3,6 +3,7 @@ const {
   getOccurrenceAtIndex,
   getNextOccurrence
 } = require("./occurrenceCalculation")
+const { discordTimestamp } = require("./discordTimeFormatting")
 
 function displayDate(value) {
   if (value instanceof Date) return value.toISOString().slice(0, 10)
@@ -60,10 +61,10 @@ function groupLines(groups, maximum = 12, parentFirstOccurrenceDate = null) {
 }
 
 function occurrenceLine(occurrence, { numbered = false, index = 0 } = {}) {
-  const timestamp = Math.floor(occurrence.occurrenceAt.getTime() / 1000)
   const utc = occurrence.occurrenceAt.toISOString().slice(0, 16).replace("T", " ")
   const group = occurrence.groupName ? ` - ${occurrence.groupName}` : ""
-  return `${numbered ? `${index + 1}. ` : ""}${utc} UTC${group}\nLocal time: <t:${timestamp}:F>`
+  const local = discordTimestamp(occurrence.occurrenceAt, "F") || "unavailable"
+  return `${numbered ? `${index + 1}. ` : ""}${utc} UTC${group}\nLocal time: ${local}`
 }
 
 function formatEventPreview(event, { now = new Date() } = {}) {
