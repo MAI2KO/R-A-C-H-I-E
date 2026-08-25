@@ -67,6 +67,7 @@ const client = new Client({
   ]
 })
 let allianceEventDeliveryRuntime = null
+let publicAllianceEventsBootstrap = null
 let giftCodeWorkflowRuntime = null
 let bookingWebsiteApi = null
 
@@ -3964,6 +3965,7 @@ channelMessageThresholds.set(channelId, getRandomBanterThreshold())
 
 const { initializeEventSchedulerSubsystem } = require("./src/eventSchedulerHealth")
 const { createAllianceEventDeliveryRuntime } = require("./src/allianceEventDeliveryRuntime")
+const { createPublicAllianceEventsBootstrap } = require("./src/publicAllianceEventsBootstrap")
 const { initializePlayerGiftCodesSubsystem } = require("./src/giftCodes/runtime")
 const { createGiftCodeWorkflowRuntime } = require("./src/giftCodes/workflowRuntime")
 
@@ -3992,6 +3994,10 @@ async function main() {
     initializationPromise: schedulerInitialization
   })
   allianceEventDeliveryRuntime.installShutdownHandlers()
+  publicAllianceEventsBootstrap = createPublicAllianceEventsBootstrap({
+    initializationPromise: schedulerInitialization
+  })
+  void publicAllianceEventsBootstrap.start()
 
   try {
     console.log("Registering slash commands...")
