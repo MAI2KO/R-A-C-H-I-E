@@ -54,6 +54,21 @@ test("repository query is profile/community scoped and selects active alliance e
   assert.doesNotMatch(calls[0].sql, /\bstate_events\b/)
 })
 
+test("guild repository query is profile/guild scoped and independent of State delivery tables", async () => {
+  const calls = []
+  const repository = createPublicAllianceEventRepository({ query: async (sql, values) => {
+    calls.push({ sql, values })
+    return { rows: [] }
+  } }, "wos")
+  await repository.listForGuild("123456789012345678")
+  assert.deepEqual(calls[0].values, ["wos", "123456789012345678", 1000])
+  assert.match(calls[0].sql, /e\.game_profile = \$1/)
+  assert.match(calls[0].sql, /e\.guild_id = \$2/)
+  assert.match(calls[0].sql, /e\.status = 'active'/)
+  assert.doesNotMatch(calls[0].sql, /event_state_destinations|event_state_links|state_events|publish_to_state|roundup/i)
+  await assert.rejects(repository.listForGuild("9999"), /Invalid Discord guild ID/)
+})
+
 test("signed internal reads authenticate profile and return only the public model", async () => {
   const path = "/internal/v1/public-alliance-events/9999"
   const headers = signedPublicAllianceEventsHeaders({ secret, profile: "wos", method: "GET", path,
@@ -71,6 +86,26 @@ test("signed internal reads authenticate profile and return only the public mode
     config: { secret, profile: "wos" }, repository: { listForCommunity: async () => [] }, now: () => now
   })
   assert.equal(wrongProfile.status, 401)
+})
+
+test("signed guild reads validate snowflakes and do not expose the requested guild ID", async () => {
+  const path = "/internal/v1/public-alliance-events/guild/123456789012345678"
+  const headers = signedPublicAllianceEventsHeaders({ secret, profile: "wos", method: "GET", path,
+    now: () => now.getTime(), createNonce: () => "abcdefghijklmnop" })
+  const result = await handlePublicAllianceEventsRead({ method: "GET", path, headers }, {
+    config: { secret, profile: "wos" }, repository: { listForGuild: async guildId => {
+      assert.equal(guildId, "123456789012345678")
+      return [event()]
+    } }, now: () => now
+  })
+  assert.equal(result.status, 200)
+  assert.deepEqual(Object.keys(result.body), ["ok", "profile", "alliances"])
+  assert.doesNotMatch(JSON.stringify(result.body), /123456789012345678/)
+
+  const invalidPath = "/internal/v1/public-alliance-events/guild/9999"
+  assert.equal((await handlePublicAllianceEventsRead({ method: "GET", path: invalidPath, headers }, {
+    config: { secret, profile: "wos" }, repository: {}, now: () => now
+  })).status, 404)
 })
 
 test("read endpoint fails closed and configuration is dormant by default", async () => {

@@ -7,7 +7,7 @@ const { createPublicAllianceEventRepository } = require("../src/publicAllianceEv
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 
-test("Postgres public schedule is alliance-only, active, profile isolated, and multi-alliance", {
+test("Postgres guild schedule is alliance-only, active, profile isolated, and needs no State destination", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   const pool = new Pool({ connectionString: databaseUrl, max: 4 })
@@ -29,15 +29,6 @@ test("Postgres public schedule is alliance-only, active, profile isolated, and m
       ($1, 'wos', 'Zulu', true, 'test-wos'), ($2, 'wos', 'Alpha', true, 'test-wos'),
       ($1, 'kingshot', 'Kings', true, 'test-kingshot') RETURNING id, guild_id, game_profile, alliance_name`,
     [guildA, guildB])).rows
-    await pool.query(`INSERT INTO event_state_destinations
-      (state_guild_id, game_profile, configured_by_bot_instance, state_roundup_channel_id, enabled, state_number) VALUES
-      ($1, 'wos', 'test-wos', $2, true, '9999'),
-      ($1, 'kingshot', 'test-kingshot', $2, true, '9999')`, [stateGuild, channel])
-    await pool.query(`INSERT INTO event_state_links
-      (alliance_guild_id, game_profile, configured_by_bot_instance, state_guild_id, state_event_channel_id, sharing_enabled) VALUES
-      ($1, 'wos', 'test-wos', $3, $4, true), ($2, 'wos', 'test-wos', $3, $4, true),
-      ($1, 'kingshot', 'test-kingshot', $3, $4, true)`, [guildA, guildB, stateGuild, channel])
-
     async function create(profile, guildId, name, status = "active") {
       const identity = alliances.find(row => row.game_profile === profile && row.guild_id === guildId)
       const created = await createEventSchedulerRepository(pool, profile).createEvent({
@@ -52,18 +43,22 @@ test("Postgres public schedule is alliance-only, active, profile isolated, and m
     }
     await create("wos", guildA, "Zulu Active")
     await create("wos", guildA, "Paused", "paused")
+    await create("wos", guildA, "Deleted", "deleted")
     await create("wos", guildB, "Alpha Active")
     await create("kingshot", guildA, "Kings Active")
-    await pool.query(`INSERT INTO state_events
-      (state_guild_id, game_profile, created_by_bot_instance, event_name, first_occurrence_date,
-       recurrence_days, created_by_user_id) VALUES ($1, 'wos', 'test-wos', 'Canonical State Event',
-       '2026-08-24', 2, $2)`, [stateGuild, user])
-
-    const wos = await createPublicAllianceEventRepository(pool, "wos").listForCommunity("9999")
-    const kingshot = await createPublicAllianceEventRepository(pool, "kingshot").listForCommunity("9999")
-    assert.deepEqual(wos.map(row => row.event_name), ["Alpha Active", "Zulu Active"])
+    const wosRepository = createPublicAllianceEventRepository(pool, "wos")
+    const wos = [
+      ...await wosRepository.listForGuild(guildA),
+      ...await wosRepository.listForGuild(guildB)
+    ]
+    const kingshot = await createPublicAllianceEventRepository(pool, "kingshot").listForGuild(guildA)
+    assert.deepEqual(wos.map(row => row.event_name).sort(), ["Alpha Active", "Zulu Active"])
     assert.deepEqual(kingshot.map(row => row.event_name), ["Kings Active"])
-    assert.equal(wos.some(row => row.event_name === "Canonical State Event" || row.event_name === "Paused"), false)
+    assert.equal(wos.some(row => ["Paused", "Deleted"].includes(row.event_name)), false)
+    assert.equal((await pool.query(
+      "SELECT count(*)::int AS count FROM event_state_destinations WHERE state_guild_id = $1",
+      [stateGuild]
+    )).rows[0].count, 0)
   } finally {
     await pool.query("DELETE FROM event_state_destinations WHERE state_guild_id = $1", [stateGuild]).catch(() => {})
     await pool.query("DELETE FROM event_guild_settings WHERE guild_id = ANY($1::varchar[])", [[guildA, guildB]]).catch(() => {})

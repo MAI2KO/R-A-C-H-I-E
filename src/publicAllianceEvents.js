@@ -53,7 +53,9 @@ function publicAllianceEventsReadModel({ profile, communityCode, events, now = n
         ) || compareText(left.name, right.name) || compareText(left.sortKey, right.sortKey))
         .map(({ sortKey, ...event }) => event)
     }))
-  return { profile, communityCode, alliances: publicAlliances }
+  return communityCode === undefined
+    ? { profile, alliances: publicAlliances }
+    : { profile, communityCode, alliances: publicAlliances }
 }
 
 module.exports = { publicAllianceEventsReadModel }

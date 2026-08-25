@@ -12,8 +12,9 @@ async function handlePublicAllianceEventsRead(input, {
   config, repository, now = () => new Date()
 }) {
   if (input.method !== "GET") return { status: 405, body: { ok: false, code: "method_not_allowed" } }
-  const match = /^\/internal\/v1\/public-alliance-events\/([A-Za-z0-9_-]{1,32})$/.exec(input.path)
-  if (!match) return { status: 404, body: { ok: false, code: "not_found" } }
+  const guildMatch = /^\/internal\/v1\/public-alliance-events\/guild\/(\d{15,22})$/.exec(input.path)
+  const communityMatch = /^\/internal\/v1\/public-alliance-events\/([A-Za-z0-9_-]{1,32})$/.exec(input.path)
+  if (!guildMatch && !communityMatch) return { status: 404, body: { ok: false, code: "not_found" } }
   const profile = header(input.headers, "x-alliance-events-profile")
   const authenticated = verifyPublicAllianceEventsRequest({
     secret: config.secret,
@@ -29,11 +30,14 @@ async function handlePublicAllianceEventsRead(input, {
     return { status: 401, body: { ok: false, code: "authentication_failed" } }
   }
   try {
-    const communityCode = decodeURIComponent(match[1])
+    const communityCode = communityMatch ? decodeURIComponent(communityMatch[1]) : undefined
+    const events = guildMatch
+      ? await repository.listForGuild(guildMatch[1])
+      : await repository.listForCommunity(communityCode)
     const model = publicAllianceEventsReadModel({
       profile,
       communityCode,
-      events: await repository.listForCommunity(communityCode),
+      events,
       now: now()
     })
     return { status: 200, body: { ok: true, ...model } }
