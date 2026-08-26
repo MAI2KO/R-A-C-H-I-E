@@ -15,6 +15,7 @@ function displayTime(value) {
 }
 
 function recurrenceLabel(days) {
+  if (Number(days) === 1) return "Every day"
   if (Number(days) === 7) return "Every week"
   if (Number(days) === 14) return "Every 2 weeks"
   if (Number(days) === 28) return "Every 4 weeks"

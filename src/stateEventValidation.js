@@ -7,7 +7,7 @@ const {
   normalizeCustomMessage
 } = require("./eventValidation")
 
-const ALLOWED_STATE_RECURRENCES = new Set([null, 2, 3, 7, 14, 21, 28, 35, 42])
+const ALLOWED_STATE_RECURRENCES = new Set([null, 1, 2, 3, 7, 14, 21, 28, 35, 42])
 
 function normalizeStateNumber(value) {
   const normalized = String(value || "").trim()
@@ -30,7 +30,7 @@ function normalizeRecurrenceDays(value) {
   const recurrenceDays = Number(value)
   if (!ALLOWED_STATE_RECURRENCES.has(recurrenceDays)) {
     throw new EventValidationError(
-      "Recurrence must be one-time, 2, 3, 7, 14, 21, 28, 35 or 42 days."
+      "Recurrence must be one-time, 1, 2, 3, 7, 14, 21, 28, 35 or 42 days."
     )
   }
   return recurrenceDays

@@ -33,7 +33,7 @@ Events support:
 
 - Custom event names and a required alliance selection.
 - A guided choice between one UTC time and named groups managed one at a time with separate UTC times; groups may share a time.
-- First occurrence dates and recurrence every 2, 3, 7, 14, 21, 28, 35, or 42 days.
+- First occurrence dates and recurrence every 1, 2, 3, 7, 14, 21, 28, 35, or 42 days; daily is labelled **Every day**.
 - One optional advance reminder: 5, 10, 15, 20, or 30 minutes before.
 - One optional final announcement one minute before, worded **About to start**.
 - Optional advance and final custom messages, each trimmed and limited to 500 characters.
@@ -109,7 +109,7 @@ When only the player/gift-code subsystem is enabled, the same portable command i
 PLAYER_GIFT_CODES_ENABLED=true npm run migrate
 ```
 
-Migration files are append-only. Migrations 001 through 010 own the scheduler and state-event history described above. Migration 011 adds canonical profile-scoped player accounts, transfer history, gift codes, submissions, sources, and durable redemption identities. Migration 012 adds controlled verification/redemption claims and per-call attempt history. Migrations 013 through 015 add and reconcile gift-code guild settings, account/guild enrolment, and idempotent community-engagement events. Migration 016 adds discovery-source channels, observations, health, and provenance. Existing channels, schedules, state links, sent history, booking sheets, and Apps Script records are preserved. Run migrations again to confirm that zero files reapply.
+Migration files are append-only. Migrations 001 through 010 own the scheduler and state-event history described above. Migration 011 adds canonical profile-scoped player accounts, transfer history, gift codes, submissions, sources, and durable redemption identities. Migration 012 adds controlled verification/redemption claims and per-call attempt history. Migrations 013 through 015 add and reconcile gift-code guild settings, account/guild enrolment, and idempotent community-engagement events. Migration 016 adds discovery-source channels, observations, health, and provenance. Migration 019 expands the existing alliance and State event recurrence constraints to allow daily schedules. Existing channels, schedules, state links, sent history, booking sheets, and Apps Script records are preserved. Run migrations again to confirm that zero files reapply.
 
 ## Testing
 

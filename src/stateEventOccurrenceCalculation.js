@@ -23,7 +23,7 @@ function normalizeStateEventDefinition(event) {
     : Number(recurrenceValue)
   if (recurrenceDays !== null && !ALLOWED_RECURRENCE_DAYS.has(recurrenceDays)) {
     throw new OccurrenceValidationError(
-      "Recurrence must be one-time, 2, 3, 7, 14, 21, 28, 35 or 42 days."
+      "Recurrence must be one-time, 1, 2, 3, 7, 14, 21, 28, 35 or 42 days."
     )
   }
   const phases = Array.isArray(event.phases) ? event.phases : []

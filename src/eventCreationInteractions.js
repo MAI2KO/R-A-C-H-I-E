@@ -25,7 +25,8 @@ const {
   EVENTS_PER_PAGE,
   formatEventPreview,
   formatEventListPage,
-  formatUpcomingOccurrencePreview
+  formatUpcomingOccurrencePreview,
+  recurrenceLabel
 } = require("./eventSchedulerFormatting")
 const { getNextOccurrences } = require("./occurrenceCalculation")
 
@@ -520,7 +521,7 @@ function buildTimingView(sessionId, data) {
   return {
     content:
       `Event options\n\n` +
-      `Recurrence: every ${data.recurrenceDays} days\n` +
+      `Recurrence: ${recurrenceLabel(data.recurrenceDays)}\n` +
       `Advance reminder: ${data.advanceReminderMinutes ?? "none"}\n` +
       `Advance custom message: ${data.advanceReminderMessage ? "Yes" : "No"}\n` +
       `Final announcement (1 minute before): ${data.reminderAtStart ? "Yes" : "No"}\n` +
@@ -533,6 +534,7 @@ function buildTimingView(sessionId, data) {
           .setCustomId(`${CREATION_IDS.recurrencePrefix}${sessionId}`)
           .setPlaceholder("Recurrence")
           .addOptions(
+            selectOption("Every day", "1", data.recurrenceDays),
             selectOption("Every 2 days", "2", data.recurrenceDays),
             selectOption("Every 3 days", "3", data.recurrenceDays),
             selectOption("Every 1 week", "7", data.recurrenceDays),

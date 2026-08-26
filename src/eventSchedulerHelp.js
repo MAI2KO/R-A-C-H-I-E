@@ -33,7 +33,7 @@ const HELP_SECTIONS = Object.freeze([
     content:
       "**Creating an event**\n\n" +
       "Choose **Create event**, select the main alliance or sub-alliance, then enter the event name and first occurrence date. Under **Event timing**, choose **Single time** for one UTC time or **Multiple groups** to add each group name and UTC time through a guided modal. Groups may share a time.\n\n" +
-      "Choose recurrence every 2, 3, 7, 14, 21, 28, 35 or 42 days; one optional advance reminder; the optional one-minute final announcement; and optional advance/final custom messages. Use **Manage image** to add, replace or remove one supported image.\n\n" +
+      "Choose recurrence every 1, 2, 3, 7, 14, 21, 28, 35 or 42 days; one optional advance reminder; the optional one-minute final announcement; and optional advance/final custom messages. Daily recurrence is shown as **Every day**. Use **Manage image** to add, replace or remove one supported image.\n\n" +
       "Publishing controls cover alliance reminders and weekly-roundup inclusion. When Weekly roundup is enabled, state inclusion is automatic while the alliance's state link is enabled. Review the clearly labelled UTC and local-time preview before final confirmation. Nothing is saved before confirmation."
   }),
   Object.freeze({
@@ -101,7 +101,7 @@ const HELP_SECTIONS = Object.freeze([
     content:
       "**State behaviour**\n\n" +
       "Only admins in an enabled state Discord can create state events. Linked alliance Discords cannot create or own them. Set the state number in **State destination** so state alerts display it clearly.\n\n" +
-      "Open **State events** from `/event-scheduler` to create an event, choose one-time or a 2, 3, 7, 14, 21, 28, 35 or 42-day recurrence, then add at least one phase before review and confirmation. Every 2 days is a true 48-hour interval. Phase times use the shared free-form UTC parser, including `1000`, `10:00`, `10am`, `1830`, `18:30` and `6:30pm`.\n\n" +
+      "Open **State events** from `/event-scheduler` to create an event, choose one-time or a 1, 2, 3, 7, 14, 21, 28, 35 or 42-day recurrence, then add at least one phase before review and confirmation. Daily and every-2-days schedules are true anchored 24-hour and 48-hour intervals. Phase times use the shared free-form UTC parser, including `1000`, `10:00`, `10am`, `1830`, `18:30` and `6:30pm`.\n\n" +
       "Each phase appears in weekly roundups under **STATE EVENTS**; pre-alerts do not appear as separate roundup entries. Pre-alert options are none, 5, 10, 15, 20 or 30 minutes. Exact-time announcements are optional per phase. Separate pre-alert and exact-time messages and PNG/JPEG/GIF/WebP media can be retained, replaced, or removed independently.\n\n" +
       "Use **View state events** to preview without sending, edit details/phases, pause, resume, soft-delete, or send one clearly marked TEST announcement to the state destination without changing production history.\n\n" +
       "State-event alerts publish to the state Discord and to linked alliance Discords for the same game profile. Each Discord receives only one copy, even if it has multiple alliance identities.\n\n" +

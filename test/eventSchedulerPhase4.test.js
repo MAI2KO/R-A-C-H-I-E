@@ -115,8 +115,8 @@ test("range generation consistently uses half-open [start, end) boundaries", () 
   )
 })
 
-test("3, 7, 14 and 28 day recurrences do not accumulate drift", () => {
-  for (const days of [3, 7, 14, 28]) {
+test("1, 3, 7, 14 and 28 day recurrences do not accumulate drift", () => {
+  for (const days of [1, 3, 7, 14, 28]) {
     const definition = event({ recurrence_days: days })
     const atIndex = getOccurrenceAtIndex(definition, 100)[0]
     assert.equal(

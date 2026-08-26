@@ -182,7 +182,7 @@ test("phase controls parse shared free-form times, order phases and reject dupli
   assert.deepEqual(phases.map(phase => phase.phaseTimeUtc), ["10:00", "18:30"])
   assert.deepEqual(PRE_ALERTS.map(([, value]) => value), ["none", "5", "10", "15", "20", "30"])
   assert.deepEqual(RECURRENCES.map(([, value]) => value), [
-    "none", "2", "3", "7", "14", "21", "28", "35", "42"
+    "none", "1", "2", "3", "7", "14", "21", "28", "35", "42"
   ])
   assert.throws(() => require("../src/stateEventValidation").validateStateEventDraft({
     eventName: "SvS", firstOccurrenceDate: "2026-08-10", recurrenceDays: 42,

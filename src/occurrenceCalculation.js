@@ -1,5 +1,5 @@
 const DAY_MS = 24 * 60 * 60 * 1000
-const ALLOWED_RECURRENCE_DAYS = new Set([2, 3, 7, 14, 21, 28, 35, 42])
+const ALLOWED_RECURRENCE_DAYS = new Set([1, 2, 3, 7, 14, 21, 28, 35, 42])
 const DEFAULT_MAXIMUM_RESULTS = 1000
 
 class OccurrenceValidationError extends Error {
@@ -62,7 +62,7 @@ function normalizeEventDefinition(event) {
   }
   const recurrenceDays = Number(readField(event, "recurrenceDays", "recurrence_days"))
   if (!ALLOWED_RECURRENCE_DAYS.has(recurrenceDays)) {
-    throw new OccurrenceValidationError("Recurrence must be 2, 3, 7, 14, 21, 28, 35 or 42 days.")
+    throw new OccurrenceValidationError("Recurrence must be 1, 2, 3, 7, 14, 21, 28, 35 or 42 days.")
   }
   const anchorDate = parseAnchorDate(
     readField(event, "firstOccurrenceDate", "first_occurrence_date")

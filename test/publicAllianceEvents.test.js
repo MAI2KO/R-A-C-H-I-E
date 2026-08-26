@@ -39,6 +39,17 @@ test("public read model reuses recurrence rules, groups by alliance, and has no 
   assert.equal(/guild|channel|message|_id|lock|claim/i.test(JSON.stringify(model)), false)
 })
 
+test("public read model returns consecutive daily occurrences", () => {
+  const model = publicAllianceEventsReadModel({
+    profile: "wos", communityCode: "9999", now,
+    events: [event({ recurrence_days: 1 })]
+  })
+  assert.equal(model.alliances[0].events[0].recurrence.summary, "Every day")
+  assert.deepEqual(model.alliances[0].events[0].upcoming.map(row => row.at), [
+    "2026-08-23T19:00:00.000Z", "2026-08-24T19:00:00.000Z", "2026-08-25T19:00:00.000Z"
+  ])
+})
+
 test("repository query is profile/community scoped and selects active alliance events only", async () => {
   const calls = []
   const repository = createPublicAllianceEventRepository({ query: async (sql, values) => {

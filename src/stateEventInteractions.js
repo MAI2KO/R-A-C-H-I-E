@@ -69,6 +69,7 @@ const STATE_EVENT_IDS = Object.freeze({
 
 const RECURRENCES = Object.freeze([
   ["One-time", "none"],
+  ["Every day", "1"],
   ["Every 2 days", "2"],
   ["Every 3 days", "3"],
   ["Every 1 week", "7"],

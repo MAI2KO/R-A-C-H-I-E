@@ -20,7 +20,7 @@ async function dropSchema(pool, schema) {
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
 }
 
-test("migrations 001-018 apply cleanly, reapply to zero, and serialize concurrent startup", {
+test("migrations 001-019 apply cleanly, reapply to zero, and serialize concurrent startup", {
   skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   const admin = new Pool({ connectionString: databaseUrl, max: 1 })
@@ -34,8 +34,8 @@ test("migrations 001-018 apply cleanly, reapply to zero, and serialize concurren
     clean = scopedPool(cleanSchema)
     const first = await runMigrations({ pool: clean, logger })
     const second = await runMigrations({ pool: clean, logger })
-    assert.equal(first.applied.length, 18)
-    assert.equal(first.applied.at(-1), "018_player_account_ownership_release.sql")
+    assert.equal(first.applied.length, 19)
+    assert.equal(first.applied.at(-1), "019_daily_event_recurrence.sql")
     assert.deepEqual(second.applied, [])
 
     await admin.query(`CREATE SCHEMA "${concurrentSchema}"`)
@@ -44,7 +44,7 @@ test("migrations 001-018 apply cleanly, reapply to zero, and serialize concurren
       runMigrations({ pool: concurrent, logger }),
       runMigrations({ pool: concurrent, logger })
     ])
-    assert.deepEqual(results.map(result => result.applied.length).sort((a, b) => a - b), [0, 18])
+    assert.deepEqual(results.map(result => result.applied.length).sort((a, b) => a - b), [0, 19])
     const versions = await concurrent.query(
       "SELECT version, COUNT(*)::integer AS count FROM schema_migrations GROUP BY version ORDER BY version"
     )
@@ -138,6 +138,22 @@ test("migrations 009-010 preserve recurrence and legacy group schedules", {
       path.join(migrationsDirectory, "010_cross_midnight_event_groups.sql"),
       "utf8"
     ))
+    await pool.query(await fs.readFile(
+      path.join(migrationsDirectory, "019_daily_event_recurrence.sql"),
+      "utf8"
+    ))
+    await pool.query("UPDATE scheduled_events SET recurrence_days = 1 WHERE event_name = 'Three Day'")
+    assert.equal((await pool.query(
+      "SELECT recurrence_days FROM scheduled_events WHERE event_name = 'Three Day'"
+    )).rows[0].recurrence_days, 1)
+    const recurrenceConstraints = await pool.query(
+      `SELECT conname,pg_get_constraintdef(oid) AS definition
+         FROM pg_constraint
+        WHERE conname IN ('scheduled_events_recurrence_check','state_events_recurrence_check')
+        ORDER BY conname`
+    )
+    assert.equal(recurrenceConstraints.rows.length, 2)
+    assert.equal(recurrenceConstraints.rows.every(row => /\b1\b/.test(row.definition)), true)
     const legacyGroup = (await pool.query(
       `SELECT first_occurrence_date::text AS first_occurrence_date
          FROM scheduled_event_groups WHERE group_name = 'Legacy Group'`

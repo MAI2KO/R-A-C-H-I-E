@@ -30,7 +30,7 @@ The private flow is:
 1. Select an alliance or sub-alliance.
 2. Enter the event name and first date.
 3. Choose **Single time** and enter one UTC time, or choose **Multiple groups** and add each group through separate name/time fields. Groups may share a time; names must be unique without regard to case.
-4. Choose recurrence: 2, 3, 7, 14, 21, 28, 35, or 42 days.
+4. Choose recurrence: 1, 2, 3, 7, 14, 21, 28, 35, or 42 days. The 1-day option is labelled **Every day**.
 5. Choose one advance reminder: none, 5, 10, 15, 20, or 30 minutes.
 6. Optionally enter separate advance and final custom messages, each up to 500 characters.
 7. Enable or disable the one-minute final announcement.
@@ -48,7 +48,7 @@ Accepted time forms include `18:30`, `1830`, `1800`, `6:30pm`, and `6.30 PM`. Ti
 
 **State events** appears on `/event-scheduler` only when the current guild is the enabled state destination for the current game profile. Configure or change the displayed state number/name under **State destination** first. Administration is ephemeral and session controls are scoped to the requesting user, guild, and profile.
 
-Choose **Create state event**, enter its name and first occurrence date, then select one-time or recurrence every 2, 3, 7, 14, 21, 28, 35, or 42 days. Every 2 days is a true anchored 48-hour interval. Add at least one structured phase before review and confirmation; nothing is stored before confirmation.
+Choose **Create state event**, enter its name and first occurrence date, then select one-time or recurrence every 1, 2, 3, 7, 14, 21, 28, 35, or 42 days. Daily and every-2-days schedules are true anchored 24-hour and 48-hour intervals. Add at least one structured phase before review and confirmation; nothing is stored before confirmation.
 
 Each phase has a name and free-form UTC time parsed by the same parser as alliance events. Supported examples include `1000`, `10:00`, `10am`, `10:00am`, `1830`, `18:30`, and `6:30pm`. The editor shows the normalized UTC time and a Discord-local timestamp. Configure a pre-alert of none, 5, 10, 15, 20, or 30 minutes and independently turn the exact-time announcement on or off. Exact-time alerts may cover the game screen, so consider disabling them for critical battle or red-zone phases.
 

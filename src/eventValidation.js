@@ -1,6 +1,6 @@
 const { parseIsoDate } = require("./timeParsing")
 
-const ALLOWED_RECURRENCES = new Set([2, 3, 7, 14, 21, 28, 35, 42])
+const ALLOWED_RECURRENCES = new Set([1, 2, 3, 7, 14, 21, 28, 35, 42])
 const ALLOWED_ADVANCE_REMINDERS = new Set([null, 5, 10, 15, 20, 30])
 const CUSTOM_MESSAGE_MAX_LENGTH = 500
 
@@ -49,7 +49,7 @@ function validateEventDraft(draft) {
 
   const firstOccurrenceDate = parseIsoDate(draft.firstOccurrenceDate).value
   if (!ALLOWED_RECURRENCES.has(recurrenceDays)) {
-    throw new EventValidationError("Recurrence must be 2, 3, 7, 14, 21, 28, 35 or 42 days.")
+    throw new EventValidationError("Recurrence must be 1, 2, 3, 7, 14, 21, 28, 35 or 42 days.")
   }
   if (!ALLOWED_ADVANCE_REMINDERS.has(advanceReminderMinutes)) {
     throw new EventValidationError("Advance reminder must be none, 5, 10, 15, 20 or 30 minutes.")
