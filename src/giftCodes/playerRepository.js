@@ -15,7 +15,8 @@ function createPlayerRepository(pool, gameProfile) {
   return {
     gameProfile,
 
-    async registerAccount({ discordUserId, playerId, locationNumber, guildId = null }) {
+    async registerAccount({ discordUserId, playerId, inGameName, locationNumber,
+      allianceAbbreviation, guildId = null }) {
       const client = await pool.connect()
       try {
         await client.query("BEGIN")
@@ -35,15 +36,18 @@ function createPlayerRepository(pool, gameProfile) {
             LIMIT 1`,
           [gameProfile, discordUserId]
         )).rowCount > 0
-        const canReactivate = existing && !existing.is_active &&
-          existing.discord_user_id === discordUserId
+        const sameOwner = existing && existing.discord_user_id === discordUserId
+        const canReactivate = sameOwner && !existing.is_active
         const canClaim = existing && existing.discord_user_id === null
-        const id = canReactivate || canClaim ? existing.id : crypto.randomUUID()
-        const account = canReactivate || canClaim
+        const canUpdate = sameOwner || canClaim
+        const id = canUpdate ? existing.id : crypto.randomUUID()
+        const account = canUpdate
           ? (await client.query(
             `UPDATE player_accounts
-                SET discord_user_id = $3, state_or_kingdom_number = $4, is_active = true,
-                    is_primary = $5, gift_redemption_enabled = false,
+                SET discord_user_id = $3, state_or_kingdom_number = $4,
+                    in_game_name = $5, alliance_abbreviation = $6, is_active = true,
+                    is_primary = $7,
+                    gift_redemption_enabled = CASE WHEN is_active THEN gift_redemption_enabled ELSE false END,
                     account_metadata = CASE WHEN discord_user_id IS NULL
                       THEN account_metadata - 'autoRedeemPreference'
                       ELSE account_metadata
@@ -52,15 +56,17 @@ function createPlayerRepository(pool, gameProfile) {
               WHERE id = $1 AND game_profile = $2
                 AND (discord_user_id = $3 OR discord_user_id IS NULL)
               RETURNING *`,
-            [id, gameProfile, discordUserId, locationNumber, !hasActive]
+            [id, gameProfile, discordUserId, locationNumber, inGameName,
+              allianceAbbreviation, existing.is_active ? existing.is_primary : !hasActive]
           )).rows[0]
           : (await client.query(
             `INSERT INTO player_accounts (
                id, game_profile, discord_user_id, player_id,
-               state_or_kingdom_number, is_primary
-             ) VALUES ($1, $2, $3, $4, $5, $6)
+               state_or_kingdom_number, in_game_name, alliance_abbreviation, is_primary
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING *`,
-            [id, gameProfile, discordUserId, playerId, locationNumber, !hasActive]
+            [id, gameProfile, discordUserId, playerId, locationNumber,
+              inGameName, allianceAbbreviation, !hasActive]
           )).rows[0]
         if (canClaim) {
           await client.query(
@@ -72,7 +78,7 @@ function createPlayerRepository(pool, gameProfile) {
             [crypto.randomUUID(), gameProfile, id, discordUserId, { source: "player_register" }]
           )
         }
-        if (!canReactivate || existing.state_or_kingdom_number !== locationNumber) {
+        if (!canUpdate || existing.state_or_kingdom_number !== locationNumber) {
           await client.query(
             `INSERT INTO player_location_history (
                id, player_account_id, game_profile, previous_number, new_number,
@@ -80,7 +86,7 @@ function createPlayerRepository(pool, gameProfile) {
              ) VALUES ($1, $2, $3, $4, $5, $6, 'user_command')`,
             [
               crypto.randomUUID(), id, gameProfile,
-              canReactivate || canClaim ? existing.state_or_kingdom_number : null,
+              canUpdate ? existing.state_or_kingdom_number : null,
               locationNumber, discordUserId
             ]
           )
@@ -99,7 +105,8 @@ function createPlayerRepository(pool, gameProfile) {
         await client.query("COMMIT")
         return {
           ...account,
-          registration_status: canReactivate ? "reactivated" : canClaim ? "claimed" : "new"
+          registration_status: canReactivate ? "reactivated"
+            : canClaim ? "claimed" : sameOwner ? "updated" : "new"
         }
       } catch (error) {
         await client.query("ROLLBACK")

@@ -73,7 +73,9 @@ function giftCard(terms) {
       "",
       "You need:",
       "- Player ID",
+      "- In-game name",
       `- ${terms.locationLabel}`,
+      "- Alliance abbreviation",
       "",
       "Auto-Redeem is enabled automatically for new registrations and can be disabled at any time.",
       "The bot never requires your game password."
@@ -92,15 +94,11 @@ function ministerCard(terms) {
     content: [
       "**Minister Sign-Up**",
       "",
-      `Register your ${terms.gameName} player details for this server's existing minister booking system.`,
-      "You will need your alliance tag, in-game name, and Player ID."
+      `Minister registration and bookings for ${terms.gameName} now use the authenticated community website.`,
+      "Choose your community on the website, then use its Booking tab to register and book.",
+      "Use `/register` in Discord to manage the same character identity used for booking prefill and gift-code features."
     ].join("\n"),
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(BOT_SETUP_IDS.registerMinisters)
-        .setLabel("REGISTER FOR MINISTERS")
-        .setStyle(ButtonStyle.Primary)
-    )]
+    components: []
   }
 }
 
@@ -119,25 +117,56 @@ function eventCard(terms) {
   }
 }
 
-function setupStatus(profile, channels) {
+function validateCommunitySetup(input, profile) {
+  const terms = profileTerminology(profile)
+  const communityNumber = String(input?.communityNumber || "").trim()
+  const allianceAbbreviation = String(input?.allianceAbbreviation || "").trim().toUpperCase()
+  if (!/^\d{1,10}$/.test(communityNumber)) {
+    throw new BotSetupError("INVALID_COMMUNITY", `${terms.locationLabel} number must contain 1 to 10 digits.`)
+  }
+  if (!/^[A-Z0-9]{3}$/.test(allianceAbbreviation)) {
+    throw new BotSetupError("INVALID_ALLIANCE", "Alliance abbreviation must contain exactly three letters or digits.")
+  }
+  return Object.freeze({ communityNumber, allianceAbbreviation })
+}
+
+function setupStatus(profile, result) {
   const names = PROFILE_NAMES[profile]
-  const labels = [
-    ["Category", names.categoryName],
-    ["Gift Auto-Redeem", channels.gift_auto_redeem.name],
-    ["Gift Announcements", channels.gift_announcements.name],
-    ["Minister Sign-Up", channels.minister_sign_up.name],
-    ["Event Scheduler", channels.event_scheduler.name],
-    ["Event Announcements", channels.event_announcements.name]
-  ]
+  const terms = profileTerminology(profile)
   return [
-    `**${names.botName} Setup**`,
+    `**${names.botName} Setup complete**`,
     "",
-    ...labels.map(([label, value]) => `${label}: Configured (${value})`),
-    "Permissions: Ready"
+    `${terms.locationLabel}: ${result.community.communityNumber}`,
+    `Discord server: ${result.community.guildName}`,
+    `Alliance: ${result.community.allianceAbbreviation}`,
+    "",
+    "**Created:**",
+    ...(result.created.length ? result.created.map(name => `• ${name}`) : ["• Nothing"]),
+    "",
+    "**Reused:**",
+    ...result.reused.map(name => `• ${name}`),
+    "",
+    `Native booking: ${result.bookingStatus}`,
+    "Event Scheduler: available via `/event-scheduler`"
   ].join("\n")
 }
 
-function createBotSetupService({ repository, client, gameProfile, logger = console }) {
+function setupPreview(profile, guildName, community, inspection, bookingStatus) {
+  const terms = profileTerminology(profile)
+  return [
+    "**Community setup**", "",
+    `${terms.locationLabel}: ${community.communityNumber}`,
+    `Discord server: ${guildName}`,
+    `Alliance: ${community.allianceAbbreviation}`, "",
+    "**Existing:**",
+    ...(inspection.existing.length ? inspection.existing.map(name => `✓ ${name}`) : ["None"]),
+    "", "**Missing:**",
+    ...(inspection.missing.length ? inspection.missing.map(name => `• ${name}`) : ["None"]),
+    "", `Native booking: ${bookingStatus}`,
+  ].join("\n")
+}
+
+function createBotSetupService({ repository, client, gameProfile, botInstanceName, logger = console }) {
   const terms = profileTerminology(gameProfile)
   const profile = PROFILE_NAMES[gameProfile]
   if (!profile) throw new Error("Unsupported game profile")
@@ -170,18 +199,65 @@ function createBotSetupService({ repository, client, gameProfile, logger = conso
     return (await channel.send(payload)).id
   }
 
+  async function listedChannels(guild) {
+    const fetched = await guild.channels.fetch()
+    if (!fetched?.values) throw new Error("Discord channel inventory is unavailable")
+    return [...fetched.values()].filter(Boolean)
+  }
+
+  async function inspect(guildId) {
+    const guild = await client.guilds.fetch(guildId)
+    const stored = await repository.get(guildId) || {}
+    const listed = await listedChannels(guild)
+    let category = await fetchChannel(guild, stored.category_id, ChannelType.GuildCategory)
+    if (!category) category = listed.find(channel =>
+      channel.type === ChannelType.GuildCategory && channel.name === profile.categoryName) || null
+    const channels = {}
+    for (const definition of CHANNELS) {
+      const idKey = `${definition.key}_channel_id`
+      let channel = await fetchChannel(guild, stored[idKey], ChannelType.GuildText)
+      if (!channel) channel = listed.find(candidate =>
+        candidate.type === ChannelType.GuildText && candidate.name === definition.name) || null
+      channels[definition.key] = channel
+    }
+    const existing = []
+    const missing = []
+    ;(category ? existing : missing).push(`Category: ${profile.categoryName}`)
+    for (const definition of CHANNELS) {
+      ;(channels[definition.key] ? existing : missing).push(`#${definition.name}`)
+    }
+    return { guild, stored, category, channels, existing, missing }
+  }
+
+  async function validDestination(guild, channelId) {
+    return Boolean(await fetchChannel(guild, channelId, ChannelType.GuildText))
+  }
+
   return Object.freeze({
-    async reconcile(guildId) {
-      const guild = await client.guilds.fetch(guildId)
+    async preview(guildId, rawCommunity, bookingStatus = "ready to link") {
+      const community = validateCommunitySetup(rawCommunity, gameProfile)
+      const inspection = await inspect(guildId)
+      return {
+        content: setupPreview(gameProfile, inspection.guild.name, community, inspection, bookingStatus),
+        community,
+        guildName: inspection.guild.name,
+        existing: inspection.existing,
+        missing: inspection.missing,
+      }
+    },
+
+    async reconcile(guildId, rawCommunity, bookingStatus = "linked") {
+      const community = validateCommunitySetup(rawCommunity, gameProfile)
+      const inspection = await inspect(guildId)
+      const { guild, stored } = inspection
       const botMember = guild.members.me || await guild.members.fetchMe()
       if (!botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
         throw new BotSetupError(
           "MANAGE_CHANNELS_REQUIRED",
-          "I need Manage Channels before setup can begin. Grant it to the existing bot role, then run /bot-setup again. A reinvite is not required."
+          "I need Manage Channels before setup can begin. Grant it to the existing bot role, then run /setup again. A reinvite is not required."
         )
       }
 
-      const stored = await repository.get(guildId) || {}
       const values = {
         category_id: stored.category_id || null,
         ...Object.fromEntries(CHANNELS.map(definition => [
@@ -189,34 +265,42 @@ function createBotSetupService({ repository, client, gameProfile, logger = conso
         ])),
         gift_auto_redeem_message_id: stored.gift_auto_redeem_message_id || null,
         minister_sign_up_message_id: stored.minister_sign_up_message_id || null,
-        event_scheduler_message_id: stored.event_scheduler_message_id || null
+        event_scheduler_message_id: stored.event_scheduler_message_id || null,
+        community_number: community.communityNumber,
+        discord_guild_name: guild.name,
+        alliance_abbreviation: community.allianceAbbreviation
       }
       const persist = async () => repository.save(guildId, values)
-      let category = await fetchChannel(guild, stored.category_id, ChannelType.GuildCategory)
+      const created = []
+      const reused = []
+      let category = inspection.category
       if (!category) {
         category = await guild.channels.create({
           name: profile.categoryName,
           type: ChannelType.GuildCategory
         })
-      }
+        created.push(`Category: ${profile.categoryName}`)
+      } else reused.push(`Category: ${profile.categoryName}`)
       values.category_id = category.id
       await persist()
 
       const channels = {}
       for (const definition of CHANNELS) {
         const idKey = `${definition.key}_channel_id`
-        let channel = await fetchChannel(guild, stored[idKey], ChannelType.GuildText)
-        if (!channel || channel.parentId !== category.id) {
+        let channel = inspection.channels[definition.key]
+        if (!channel) {
           channel = await guild.channels.create({
             name: definition.name,
             type: ChannelType.GuildText,
             parent: category.id,
             permissionOverwrites: permissionOverwrites(guild, definition.threads, botMember)
           })
+          created.push(`#${definition.name}`)
         } else {
           await channel.permissionOverwrites.set(
             permissionOverwrites(guild, definition.threads, botMember)
           )
+          reused.push(`#${definition.name}`)
         }
         channels[definition.key] = channel
         values[idKey] = channel.id
@@ -241,17 +325,32 @@ function createBotSetupService({ repository, client, gameProfile, logger = conso
         eventCard(terms)
       )
       await persist()
-      await repository.reconcileDestinations(
-        guildId,
-        channels.gift_announcements.id,
-        channels.event_announcements.id
-      )
+      const destinations = await repository.getDestinations(guildId)
+      const giftDestination = destinations.gift?.gift_code_channel_id
+        && await validDestination(guild, destinations.gift.gift_code_channel_id)
+        ? destinations.gift.gift_code_channel_id : channels.gift_announcements.id
+      const eventDestination = destinations.event?.event_channel_id
+        && await validDestination(guild, destinations.event.event_channel_id)
+        ? destinations.event.event_channel_id : channels.event_announcements.id
+      const roundupDestination = destinations.event?.weekly_roundup_channel_id
+        && await validDestination(guild, destinations.event.weekly_roundup_channel_id)
+        ? destinations.event.weekly_roundup_channel_id : channels.event_announcements.id
+      await repository.reconcileDestinations({
+        guildId, giftChannelId: giftDestination, eventChannelId: eventDestination,
+        roundupChannelId: roundupDestination, botInstanceName,
+        allianceAbbreviation: community.allianceAbbreviation
+      })
       logger.log(JSON.stringify({
         event: "bot_setup_reconciled",
         game_profile: gameProfile,
         guild_id: guildId
       }))
-      return { content: setupStatus(gameProfile, channels), values }
+      const result = {
+        community: { ...community, guildName: guild.name }, created, reused,
+        bookingStatus, channels, values,
+        destinations: { giftDestination, eventDestination, roundupDestination }
+      }
+      return { ...result, content: setupStatus(gameProfile, result) }
     }
   })
 }
@@ -265,6 +364,8 @@ module.exports = {
   giftCard,
   ministerCard,
   eventCard,
+  validateCommunitySetup,
+  setupPreview,
   setupStatus,
   createBotSetupService
 }

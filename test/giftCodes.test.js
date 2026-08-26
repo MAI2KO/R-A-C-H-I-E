@@ -32,10 +32,11 @@ test("profile terminology consistently distinguishes State and Kingdom", () => {
 test("player registration panel command is profile aware and feature gated", () => {
   const wos = buildPlayerRegisterCommand("wos").toJSON()
   const kingshot = buildPlayerRegisterCommand("kingshot").toJSON()
-  assert.equal(wos.name, "player-register")
+  assert.equal(wos.name, "register")
   assert.match(wos.description, /Whiteout Survival/)
   assert.match(kingshot.description, /Kingshot/)
-  assert.equal(getPlayerCommandData({ PLAYER_GIFT_CODES_ENABLED: "false" }), null)
+  assert.equal(getPlayerCommandData({ PLAYER_GIFT_CODES_ENABLED: "false", GAME_PROFILE: "wos" }).name,
+    "register")
   assert.equal(getPlayerCommandData({
     PLAYER_GIFT_CODES_ENABLED: "true",
     GAME_PROFILE: "invalid"
@@ -65,18 +66,22 @@ test("player service validates ownership inputs and does not roll back after mir
     mirror: { async mirrorRegistration() { throw Object.assign(new Error("offline"), { code: "OFFLINE" }) } },
     logger: { warn: message => calls.push(message) }
   })
-  assert.equal((await service.register({
+  await assert.rejects(service.register({
     discordUserId: "999",
     playerId: " 12345 ",
-    locationNumber: " 689 "
-  })).id, "account")
+    inGameName: " Test Player ",
+    locationNumber: " 689 ",
+    allianceAbbreviation: " hwc "
+  }), error => error.code === "BOOKING_REGISTRATION_SYNC_FAILED")
   assert.deepEqual(calls[0], {
     discordUserId: "999",
     playerId: "12345",
+    inGameName: "Test Player",
     locationNumber: "689",
+    allianceAbbreviation: "HWC",
     guildId: null
   })
-  assert.match(calls[1], /Optional mirror failed/)
+  assert.match(calls[1], /Native booking sync failed/)
   assert.equal((await service.view({ discordUserId: "999", playerId: "12345" })).length, 1)
   await assert.rejects(
     service.changeLocation({ discordUserId: "999", playerId: "12345", locationNumber: "700" }),

@@ -5,7 +5,7 @@ const { profileTerminology } = require("../terminology")
 function buildPlayerRegisterCommand(gameProfile) {
   const terms = profileTerminology(gameProfile)
   return new SlashCommandBuilder()
-    .setName("player-register")
+    .setName("register")
     .setDescription(`Register and manage your ${terms.gameName} player accounts`)
 }
 
@@ -51,7 +51,6 @@ function profileFromEnvironment(env) {
 }
 
 function getPlayerCommandData(env = process.env) {
-  if (!playerGiftCodesIsEnabled(env)) return null
   const gameProfile = profileFromEnvironment(env)
   return gameProfile ? buildPlayerRegisterCommand(gameProfile).toJSON() : null
 }

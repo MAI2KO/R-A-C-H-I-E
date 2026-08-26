@@ -78,7 +78,9 @@ function createBookingWebsiteClient({ config, fetchImplementation = fetch, now =
     claim: limit => post("/api/internal/v1/discord/work/claim", { limit }),
     recipients: (work, recipients) => post(`/api/internal/v1/discord/work/${work.workId}/recipients`, { claimToken: work.claimToken, recipients }),
     outcome: (work, outcome) => post(`/api/internal/v1/discord/work/${work.workId}/outcome`, { claimToken: work.claimToken, ...outcome }),
-    approval: (requestId, action, actor) => post(`/api/internal/v1/discord/approval/${requestId}/${action}`, actor)
+    approval: (requestId, action, actor) => post(`/api/internal/v1/discord/approval/${requestId}/${action}`, actor),
+    communitySetup: input => post("/api/internal/v1/discord/setup/community", input),
+    registration: input => post("/api/internal/v1/discord/registration", input)
   })
 }
 

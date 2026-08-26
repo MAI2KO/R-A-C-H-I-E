@@ -17,7 +17,7 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     await admin.query(`CREATE SCHEMA "${schema}"`)
     pool = new Pool({ connectionString: databaseUrl, max: 8, options: `-c search_path=${schema}` })
     const migrated = await runMigrations({ pool, logger: { log() {}, error() {} } })
-    assert.equal(migrated.applied.at(-1), "019_daily_event_recurrence.sql")
+    assert.equal(migrated.applied.at(-1), "020_canonical_setup_and_player_identity.sql")
     assert.deepEqual((await runMigrations({ pool, logger: { log() {}, error() {} } })).applied, [])
 
     const guildId = "700000000000000001"
@@ -30,7 +30,10 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
       event_announcements_channel_id: "700000000000000007",
       gift_auto_redeem_message_id: "700000000000000008",
       minister_sign_up_message_id: "700000000000000009",
-      event_scheduler_message_id: "700000000000000010"
+      event_scheduler_message_id: "700000000000000010",
+      community_number: "9999",
+      discord_guild_name: "HoboswithCandy",
+      alliance_abbreviation: "HWC"
     }
     const wos = createBotSetupRepository(pool, "wos")
     const kingshot = createBotSetupRepository(pool, "kingshot")
@@ -61,9 +64,12 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
        ) VALUES ($1, 'wos', 'rachie-wos', 'HwC', '700000000000000099')`,
       [guildId]
     )
-    await wos.reconcileDestinations(
-      guildId, values.gift_announcements_channel_id, values.event_announcements_channel_id
-    )
+    await wos.reconcileDestinations({
+      guildId, giftChannelId: values.gift_announcements_channel_id,
+      eventChannelId: values.event_announcements_channel_id,
+      roundupChannelId: values.event_announcements_channel_id,
+      botInstanceName: "rachie-wos", allianceAbbreviation: "HWC"
+    })
     assert.equal((await pool.query(
       `SELECT gift_code_channel_id FROM gift_code_guild_settings
         WHERE game_profile = 'wos' AND guild_id = $1`, [guildId]
@@ -81,7 +87,7 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     assert.deepEqual(untouchedStatusCard, {
       channel_id: "700000000000000098",
       message_id: "700000000000000097"
-    }, "/bot-setup must not bulk-migrate existing status cards")
+    }, "/setup must not bulk-migrate existing status cards")
 
     values.gift_auto_redeem_message_id = "700000000000000011"
     await wos.save(guildId, values)

@@ -8,7 +8,7 @@ The website supplies the exact PostgreSQL appointment instant from the booked sl
 
 This optional subsystem connects one bot deployment to the matching native booking website profile. It is disabled unless `BOOKING_WEBSITE_INTEGRATION_ENABLED=true` and a valid profile, HTTPS base URL, and 32-character-or-longer secret are all present. Plain HTTP is accepted only for loopback local development. Existing Apps Script, event, banter, setup, and gift-code behavior continues when it is disabled or misconfigured.
 
-The website owns bookings, approval transitions, notification decisions, persistence, retries, and reminder scheduling. The bot has no website database credentials. It polls signed internal HTTPS endpoints, discovers current Discord managers, sends or edits DMs, receives approval buttons, and reports delivery outcomes.
+The website owns bookings, approval transitions, notification decisions, persistence, retries, and reminder scheduling. The bot has no website database credentials. It polls signed internal HTTPS endpoints, discovers current Discord managers, sends or edits DMs, receives approval buttons, and reports delivery outcomes. The same signed client also previews/applies `/setup` community linkage and projects `/register` identity into native booking prefill. The signed host and `GAME_PROFILE` determine WOS or Kingshot; neither command exposes a profile selector.
 
 Configure independently per deployment:
 
@@ -24,6 +24,14 @@ BOOKING_WEBSITE_POLL_INTERVAL_MS=10000
 Never share the WOS and Kingshot secrets. The HMAC covers method, path, timestamp, nonce, and exact body. The website validates its hostname profile, clock tolerance, and one-use nonce before doing work.
 
 ## Discord setup
+
+`/setup` requires this integration because it reconciles an existing native
+community link. The preview is read-only; Apply links the current Discord guild
+only when the matching State/Kingdom community already exists and is active.
+Conflicting guild links fail closed. `/register` stores the complete canonical
+identity in the bot database, then upserts the matching website participant by
+the signed guild/profile scope. If the website is temporarily unavailable the
+player is told to retry; no legacy Sheet registration is attempted.
 
 Manager discovery must enumerate current guild members so it can include guild owners, current Administrators, and current holders of `bot_manager_role_id`, including uncached members. In each Discord Developer Portal application, enable **Bot → Privileged Gateway Intents → Server Members Intent** before turning on the integration. When enabled, this code conditionally requests `GuildMembers`; when disabled it does not alter existing intents.
 

@@ -64,8 +64,8 @@ const accounts = [
   }
 ]
 
-test("visible command surface is consolidated while legacy booking register remains", () => {
-  assert.equal(buildPlayerRegisterCommand("wos").toJSON().name, "player-register")
+test("visible command surface uses the canonical native registration command", () => {
+  assert.equal(buildPlayerRegisterCommand("wos").toJSON().name, "register")
   assert.equal(buildPlayerAdminCommand("wos").toJSON().name, "player-admin")
   assert.equal(buildGiftCodesCommand("wos").toJSON().name, "gift-codes")
   assert.equal(buildGiftCodeAddCommand("wos").toJSON().name, "gift-code-add")
@@ -75,14 +75,14 @@ test("visible command surface is consolidated while legacy booking register rema
     ...getGiftCommandData({ PLAYER_GIFT_CODES_ENABLED: "true", GAME_PROFILE: "wos" })
   ].map(command => command.name)
   assert.deepEqual(registered, [
-    "player-register", "player-admin", "gift-code-add", "gift-codes", "gift-codes-admin"
+    "register", "player-admin", "gift-code-add", "gift-codes", "gift-codes-admin"
   ])
   assert.ok(!registered.includes("player"))
   assert.ok(!registered.includes("gift"))
   assert.ok(!registered.includes("gift-admin"))
   const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8")
-  assert.match(indexSource, /\.setName\("register"\)/)
-  assert.match(indexSource, /register_player_for_server/)
+  assert.match(indexSource, /RETIRED_LEGACY_BOOKING_COMMANDS/)
+  assert.match(indexSource, /handleRetiredLegacyBookingInteraction/)
 })
 
 test("player panel supports empty registration and multiple-account selection", () => {
@@ -98,7 +98,7 @@ test("player panel supports empty registration and multiple-account selection", 
   assert.equal(menu.options.length, 2)
   assert.equal(menu.options[1].default, true)
   assert.deepEqual(panel.components[1].components.map(button => button.data.label), [
-    "Add Character", "Change State", "Enable Auto-Redeem", "Remove Character", "Release Character"
+    "Update Registration", "Update State", "Enable Auto-Redeem", "Remove Character", "Release Character"
   ])
 })
 
@@ -125,8 +125,10 @@ test("inactive historical accounts are excluded from player selectors and empty 
 test("registration modal and player panels use State or Kingdom correctly", () => {
   const wosModal = registrationModal("s", wos).toJSON()
   const kingshotModal = registrationModal("s", kingshot).toJSON()
-  assert.equal(wosModal.components[1].components[0].label, "State")
-  assert.equal(kingshotModal.components[1].components[0].label, "Kingdom")
+  assert.equal(wosModal.components[2].components[0].label, "State")
+  assert.equal(kingshotModal.components[2].components[0].label, "Kingdom")
+  assert.equal(wosModal.components[1].components[0].label, "In-game name")
+  assert.equal(wosModal.components[3].components[0].label, "Alliance abbreviation")
   assert.match(playerPanel({ sessionId: "s", accounts, selected: accounts[0], terms: kingshot }).content, /Kingdom: 689/)
 })
 
@@ -1192,6 +1194,10 @@ function panelDependencies({
     healthProvider: () => ({ available: true, gameProfile: "wos" }),
     poolProvider: () => ({}),
     playerRepositoryFactory: () => ({
+      async listOwnedAccounts(discordUserId) {
+        return accounts.filter(account => account.is_active
+          && (!account.discord_user_id || account.discord_user_id === discordUserId))
+      },
       async getOwnedAccount(discordUserId, playerId) {
         return accounts.find(account => account.player_id === playerId
           && account.is_active
@@ -1200,11 +1206,23 @@ function panelDependencies({
     }),
     playerServiceFactory: () => ({
       terms,
-      async register({ playerId, locationNumber }) {
+      async register({ playerId, inGameName, locationNumber, allianceAbbreviation }) {
+        const existing = accounts.find(value => value.player_id === playerId && value.is_active)
+        if (existing) {
+          Object.assign(existing, {
+            in_game_name: inGameName,
+            state_or_kingdom_number: locationNumber,
+            alliance_abbreviation: allianceAbbreviation,
+            registration_status: "updated"
+          })
+          return existing
+        }
         const account = {
           id: `account-${playerId}`,
           player_id: playerId,
+          in_game_name: inGameName,
           state_or_kingdom_number: locationNumber,
+          alliance_abbreviation: allianceAbbreviation,
           is_primary: accounts.length === 0,
           is_active: true,
           gift_redemption_enabled: false,
@@ -1305,7 +1323,7 @@ function panelDependencies({
   }
 }
 
-test("new player panel performs registration and State updates through private modals", async () => {
+test("new player panel performs registration and complete identity updates through private modals", async () => {
   const accounts = []
   const refreshes = []
   const dependencies = panelDependencies({
@@ -1317,7 +1335,7 @@ test("new player panel performs registration and State updates through private m
       }
     }
   })
-  const command = panelInteraction({ commandName: "player-register" })
+  const command = panelInteraction({ commandName: "register" })
   await handleGiftCodePanelInteraction(command, dependencies)
   assert.match(command.edited.content, /Register your game account/)
 
@@ -1325,12 +1343,12 @@ test("new player panel performs registration and State updates through private m
     customId: command.edited.components[0].components[0].data.custom_id
   })
   await handleGiftCodePanelInteraction(registerButton, dependencies)
-  assert.equal(registerButton.modal.components[1].components[0].label, "State")
+  assert.equal(registerButton.modal.components[2].components[0].label, "State")
 
   const registration = panelInteraction({
     customId: registerButton.modal.custom_id,
     modal: true,
-    fields: { player_id: "12345", location: "689" }
+    fields: { player_id: "12345", in_game_name: "Test Player", location: "689", alliance: "HWC" }
   })
   await handleGiftCodePanelInteraction(registration, dependencies)
   assert.match(registration.edited.content, /State: 689/)
@@ -1339,13 +1357,18 @@ test("new player panel performs registration and State updates through private m
     customId: registration.edited.components.at(-1).components[1].data.custom_id
   })
   await handleGiftCodePanelInteraction(locationButton, dependencies)
+  assert.equal(locationButton.modal.title, "Update Whiteout Survival player")
+  assert.equal(locationButton.modal.components[0].components[0].value, "12345")
+  assert.equal(locationButton.modal.components[2].components[0].value, "689")
   const locationUpdate = panelInteraction({
     customId: locationButton.modal.custom_id,
     modal: true,
-    fields: { location: "700" }
+    fields: { player_id: "12345", in_game_name: "Updated Player", location: "700", alliance: "NEW" }
   })
   await handleGiftCodePanelInteraction(locationUpdate, dependencies)
   assert.match(locationUpdate.edited.content, /State: 700/)
+  assert.match(locationUpdate.edited.content, /In-game name: Updated Player/)
+  assert.match(locationUpdate.edited.content, /Alliance: NEW/)
   assert.deepEqual(refreshes, [
     ["777777777777777777", "999999999999999999"],
     ["777777777777777777", "999999999999999999"]
@@ -1358,17 +1381,23 @@ test("persistent Register Character button launches the canonical player registr
   const button = panelInteraction({ customId: IDS.publicRegister })
   await handleGiftCodePanelInteraction(button, dependencies)
   assert.match(button.modal.title, /Register/)
-  assert.equal(button.modal.components[1].components[0].label, "State")
+  assert.equal(button.modal.components[2].components[0].label, "State")
 
   const registration = panelInteraction({
     customId: button.modal.custom_id,
     modal: true,
-    fields: { player_id: "12345", location: "689" }
+    fields: { player_id: "12345", in_game_name: "Test Player", location: "689", alliance: "HWC" }
   })
   await handleGiftCodePanelInteraction(registration, dependencies)
   assert.match(registration.edited.content, /Character registered\. Auto-Redeem Enabled\./)
   assert.match(registration.edited.content, /Automatic gift-code redemption: Enabled/)
   assert.equal(localAccounts[0].gift_redemption_enabled, true)
+
+  const updateButton = panelInteraction({ customId: IDS.publicRegister })
+  await handleGiftCodePanelInteraction(updateButton, dependencies)
+  assert.match(updateButton.modal.title, /Update/)
+  assert.equal(updateButton.modal.components[0].components[0].value, "12345")
+  assert.equal(updateButton.modal.components[1].components[0].value, "Test Player")
 })
 
 test("registration default, historical opt-out and account limit remain distinct", async () => {
@@ -1454,7 +1483,7 @@ test("removing the only active account immediately renders the empty state witho
     accounts: [sole],
     logger: { error(value) { logs.push(value) } }
   })
-  const command = panelInteraction({ commandName: "player-register" })
+  const command = panelInteraction({ commandName: "register" })
   await handleGiftCodePanelInteraction(command, dependencies)
   const remove = panelInteraction({
     customId: command.edited.components.at(-1).components[3].data.custom_id
@@ -1485,7 +1514,7 @@ test("self release requires confirmation, rechecks ownership and refreshes only 
       }
     }
   })
-  const command = panelInteraction({ commandName: "player-register" })
+  const command = panelInteraction({ commandName: "register" })
   await handleGiftCodePanelInteraction(command, dependencies)
 
   const release = panelInteraction({
@@ -1511,7 +1540,7 @@ test("self release rechecks ownership at destructive confirmation", async () => 
     discord_user_id: "999999999999999999"
   }
   const dependencies = panelDependencies({ accounts: [account] })
-  const command = panelInteraction({ commandName: "player-register" })
+  const command = panelInteraction({ commandName: "register" })
   await handleGiftCodePanelInteraction(command, dependencies)
   const release = panelInteraction({
     customId: command.edited.components.at(-1).components[4].data.custom_id
@@ -1588,7 +1617,7 @@ test("removing one account selects the remaining active account in both profile 
       terms,
       async status() { return localAccounts.filter(account => account.is_active) }
     })
-    const command = panelInteraction({ commandName: "player-register" })
+    const command = panelInteraction({ commandName: "register" })
     await handleGiftCodePanelInteraction(command, dependencies)
     const remove = panelInteraction({
       customId: command.edited.components.at(-1).components[3].data.custom_id

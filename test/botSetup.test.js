@@ -2,6 +2,7 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 const {
   ChannelType,
+  MessageFlags,
   PermissionFlagsBits
 } = require("discord.js")
 
@@ -11,6 +12,8 @@ const {
   CHANNELS,
   permissionOverwrites,
   giftCard,
+  ministerCard,
+  setupStatus,
   createBotSetupService
 } = require("../src/botSetupService")
 const {
@@ -19,15 +22,17 @@ const {
   handlePersistentOnboardingInteraction
 } = require("../src/botSetupInteractions")
 const { profileTerminology } = require("../src/giftCodes/terminology")
+const community = { communityNumber: "9999", allianceAbbreviation: "HWC" }
 
-function memoryRepository() {
+function memoryRepository(initialDestinations = { gift: null, event: null }) {
   let stored = null
   const destinations = []
   return {
     async get() { return stored ? { ...stored } : null },
     async save(_guildId, values) { stored = { ...values }; return stored },
-    async reconcileDestinations(_guildId, giftChannelId, eventChannelId) {
-      destinations.push({ giftChannelId, eventChannelId })
+    async getDestinations() { return initialDestinations },
+    async reconcileDestinations(input) {
+      destinations.push(input)
     },
     state: () => stored,
     destinations
@@ -40,7 +45,7 @@ function discordSetupFixture({ manageChannels = true } = {}) {
   const created = []
   const unrelated = {
     id: "999999999999999999",
-    name: "gift-code-announcements",
+    name: "unrelated-chat",
     type: ChannelType.GuildText,
     parentId: null
   }
@@ -86,6 +91,7 @@ function discordSetupFixture({ manageChannels = true } = {}) {
 
   const guild = {
     id: "777777777777777777",
+    name: "HoboswithCandy",
     roles: { everyone: { id: "777777777777777777" } },
     members: {
       me: {
@@ -94,7 +100,7 @@ function discordSetupFixture({ manageChannels = true } = {}) {
       }
     },
     channels: {
-      async fetch(id) { return channels.get(id) || null },
+      async fetch(id) { return id === undefined ? channels : channels.get(id) || null },
       async create(input) { return makeChannel(input) }
     }
   }
@@ -114,10 +120,10 @@ test("bot setup creates one managed category, five channels and persistent cards
     const service = createBotSetupService({
       repository,
       client: discord.client,
-      gameProfile: profile,
+      gameProfile: profile, botInstanceName: `test-${profile}`,
       logger: { log() {} }
     })
-    const first = await service.reconcile(discord.guild.id)
+    const first = await service.reconcile(discord.guild.id, community)
     assert.match(first.content, new RegExp(PROFILE_NAMES[profile].botName.replaceAll(".", "\\.")))
     assert.equal(discord.created.filter(channel => channel.type === ChannelType.GuildCategory).length, 1)
     assert.equal(discord.created.filter(channel => channel.type === ChannelType.GuildText).length, 5)
@@ -129,7 +135,7 @@ test("bot setup creates one managed category, five channels and persistent cards
     assert.equal(discord.channels.has(discord.unrelated.id), true)
 
     const before = discord.created.length
-    await service.reconcile(discord.guild.id)
+    await service.reconcile(discord.guild.id, community)
     assert.equal(discord.created.length, before, "repeated setup created duplicate channels")
     const managed = repository.state()
     assert.equal(discord.channels.get(managed.gift_auto_redeem_channel_id).sent.length, 1)
@@ -166,7 +172,7 @@ test("missing Manage Channels stops setup before partial creation with clear gui
     gameProfile: "wos"
   })
   await assert.rejects(
-    service.reconcile(discord.guild.id),
+    service.reconcile(discord.guild.id, community),
     error => error.code === "MANAGE_CHANNELS_REQUIRED"
       && /Grant it to the existing bot role/.test(error.message)
   )
@@ -182,11 +188,11 @@ test("deleted setup messages are recreated while stored live messages are edited
     gameProfile: "wos",
     logger: { log() {} }
   })
-  await service.reconcile(discord.guild.id)
+  await service.reconcile(discord.guild.id, community)
   const first = repository.state()
   const giftChannel = discord.channels.get(first.gift_auto_redeem_channel_id)
   giftChannel.messagesMap.delete(first.gift_auto_redeem_message_id)
-  await service.reconcile(discord.guild.id)
+  await service.reconcile(discord.guild.id, community)
   assert.equal(giftChannel.sent.length, 2)
   assert.notEqual(repository.state().gift_auto_redeem_message_id, first.gift_auto_redeem_message_id)
   assert.equal(discord.channels.get(first.minister_sign_up_channel_id).edits.length, 1)
@@ -208,13 +214,62 @@ test("partial setup checkpoints make a restart safe without duplicate resources"
     if (calls === 3) throw new Error("temporary Discord failure")
     return create(input)
   }
-  await assert.rejects(service.reconcile(discord.guild.id), /temporary Discord failure/)
+  await assert.rejects(service.reconcile(discord.guild.id, community), /temporary Discord failure/)
   assert.equal(discord.created.length, 2)
 
   discord.guild.channels.create = create
-  await service.reconcile(discord.guild.id)
+  await service.reconcile(discord.guild.id, community)
   assert.equal(discord.created.filter(channel => channel.type === ChannelType.GuildCategory).length, 1)
   assert.equal(discord.created.filter(channel => channel.type === ChannelType.GuildText).length, 5)
+})
+
+test("setup preview is read-only and a deleted expected channel alone is recreated", async () => {
+  const discord = discordSetupFixture()
+  const repository = memoryRepository()
+  const service = createBotSetupService({
+    repository, client: discord.client, gameProfile: "wos", logger: { log() {} }
+  })
+  const preview = await service.preview(discord.guild.id, community)
+  assert.equal(discord.created.length, 0)
+  assert.equal(repository.state(), null)
+  assert.match(preview.content, /Missing:[\s\S]*#gift-code-announcements/)
+
+  await service.reconcile(discord.guild.id, community)
+  const managed = repository.state()
+  discord.channels.delete(managed.event_announcements_channel_id)
+  const before = discord.created.length
+  const result = await service.reconcile(discord.guild.id, community)
+  assert.equal(discord.created.length, before + 1)
+  assert.deepEqual(result.created, ["#event-announcements"])
+  assert.ok(result.reused.includes("#event-scheduler"))
+  assert.notEqual(repository.state().event_announcements_channel_id,
+    managed.event_announcements_channel_id)
+})
+
+test("setup preserves valid custom announcement destinations", async () => {
+  const discord = discordSetupFixture()
+  const gift = await discord.guild.channels.create({ name: "custom-gifts", type: ChannelType.GuildText })
+  const events = await discord.guild.channels.create({ name: "custom-events", type: ChannelType.GuildText })
+  const roundups = await discord.guild.channels.create({ name: "custom-roundups", type: ChannelType.GuildText })
+  const repository = memoryRepository({
+    gift: { gift_code_channel_id: gift.id },
+    event: { event_channel_id: events.id, weekly_roundup_channel_id: roundups.id }
+  })
+  const service = createBotSetupService({
+    repository, client: discord.client, gameProfile: "kingshot",
+    botInstanceName: "test-kingshot", logger: { log() {} }
+  })
+  const result = await service.reconcile(discord.guild.id, community)
+  assert.deepEqual(result.destinations, {
+    giftDestination: gift.id,
+    eventDestination: events.id,
+    roundupDestination: roundups.id
+  })
+  assert.deepEqual(repository.destinations[0], {
+    guildId: discord.guild.id, giftChannelId: gift.id, eventChannelId: events.id,
+    roundupChannelId: roundups.id, botInstanceName: "test-kingshot",
+    allianceAbbreviation: "HWC"
+  })
 })
 
 test("transient Discord fetch errors do not create replacement channels", async () => {
@@ -226,16 +281,16 @@ test("transient Discord fetch errors do not create replacement channels", async 
     gameProfile: "wos",
     logger: { log() {} }
   })
-  await service.reconcile(discord.guild.id)
+  await service.reconcile(discord.guild.id, community)
   const count = discord.created.length
   discord.guild.channels.fetch = async () => {
     throw Object.assign(new Error("temporary fetch failure"), { code: "ECONNRESET" })
   }
-  await assert.rejects(service.reconcile(discord.guild.id), /temporary fetch failure/)
+  await assert.rejects(service.reconcile(discord.guild.id, community), /temporary fetch failure/)
   assert.equal(discord.created.length, count)
 })
 
-test("persistent cards expose only canonical player-facing registration buttons", async () => {
+test("persistent cards expose only canonical player-facing registration controls", async () => {
   for (const profile of ["wos", "kingshot"]) {
     const card = giftCard(profileTerminology(profile))
     assert.equal(card.components[0].components.length, 1)
@@ -244,34 +299,47 @@ test("persistent cards expose only canonical player-facing registration buttons"
     assert.doesNotMatch(card.content, /diagnostic|queue|source|verifier/i)
   }
 
-  const modal = { id: "canonical-minister-modal" }
+  const minister = ministerCard(profileTerminology("wos"))
+  assert.equal(minister.components.length, 0)
+  assert.match(minister.content, /authenticated community website/)
+
   const interaction = {
     customId: BOT_SETUP_IDS.registerMinisters,
     isButton: () => true,
-    async showModal(value) { this.modal = value }
+    async reply(value) { this.replied = value }
   }
-  assert.equal(await handlePersistentOnboardingInteraction(interaction, {
-    ministerModalBuilder: () => modal
-  }), true)
-  assert.equal(interaction.modal, modal)
+  assert.equal(await handlePersistentOnboardingInteraction(interaction), true)
+  assert.match(interaction.replied.content, /moved to the authenticated community website/)
+  assert.equal(interaction.replied.flags, MessageFlags.Ephemeral)
 })
 
 test("bot setup command remains admin-scoped and reports service errors privately", async () => {
-  assert.equal(buildBotSetupCommand().toJSON().name, "bot-setup")
+  assert.equal(buildBotSetupCommand().toJSON().name, "setup")
   const interaction = {
-    commandName: "bot-setup",
+    commandName: "setup",
     guildId: "777777777777777777",
     client: {},
     isChatInputCommand: () => true,
-    async deferReply(value) { this.deferred = value },
-    async editReply(value) { this.edited = value }
+    async showModal(value) { this.modal = value }
   }
   assert.equal(await handleBotSetupInteraction(interaction, {
     userCanManageServer: async () => true,
     healthProvider: () => ({ available: true, gameProfile: "wos" }),
-    poolProvider: () => ({}),
-    repositoryFactory: () => ({}),
-    serviceFactory: () => ({ async reconcile() { return { content: "Configured" } } })
+    bookingApi: { communitySetup: async () => ({ status: "ready" }) }
   }), true)
-  assert.equal(interaction.edited, "Configured")
+  assert.equal(interaction.modal.data.custom_id, "botsetup:community")
+  assert.equal(interaction.modal.components[0].components[0].data.label, "State number")
+  assert.equal(interaction.modal.components[1].components[0].data.label, "Alliance abbreviation")
+})
+
+test("canonical setup status reports reconciliation without pulling specialised configuration in", () => {
+  for (const profile of ["wos", "kingshot"]) {
+    const status = setupStatus(profile, {
+      community: { communityNumber: "9999", guildName: "HoboswithCandy", allianceAbbreviation: "HWC" },
+      created: ["#gift-code-announcements"], reused: ["#event-scheduler"], bookingStatus: "linked"
+    })
+    assert.match(status, profile === "wos" ? /State: 9999/ : /Kingdom: 9999/)
+    assert.match(status, /`\/event-scheduler`/)
+    assert.doesNotMatch(status, /bot-admin|banter/i)
+  }
 })

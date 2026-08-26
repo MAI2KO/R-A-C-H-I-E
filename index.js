@@ -46,6 +46,10 @@ const {
   handleBookingApprovalInteraction
 } = require("./src/bookingDiscordIntegration")
 const { createBookingWebsiteBootstrap } = require("./src/bookingWebsiteBootstrap")
+const {
+  RETIRED_LEGACY_BOOKING_COMMANDS,
+  handleRetiredLegacyBookingInteraction
+} = require("./src/legacyBookingRetirement")
 
 console.log("Starting bot...")
 console.log("CLIENT_ID present:", !!process.env.CLIENT_ID)
@@ -1542,7 +1546,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("sheet-link")
-    .setDescription("Get the booking sheet link for this server"),
+    .setDescription("Open this server's read-only legacy booking sheet"),
     
 
   new SlashCommandBuilder()
@@ -1721,7 +1725,8 @@ const commands = [
           { name: "Troop", value: "Troop" }
         )
     ),
-].map(command => command.toJSON())
+].filter(command => !RETIRED_LEGACY_BOOKING_COMMANDS.has(command.toJSON().name))
+  .map(command => command.toJSON())
 
 const eventSchedulerCommand = getEventSchedulerCommandData()
 if (eventSchedulerCommand) commands.push(eventSchedulerCommand)
@@ -1758,17 +1763,21 @@ client.once("clientReady", () => {
 client.on("interactionCreate", async interaction => {
   try {
     if (bookingWebsiteApi && await handleBookingApprovalInteraction(interaction, bookingWebsiteApi)) return
-    if (await handlePersistentOnboardingInteraction(interaction, {
-      ministerModalBuilder: buildRegisterModal
+    if (await handlePersistentOnboardingInteraction(interaction)) return
+    if (await handleBotSetupInteraction(interaction, {
+      userCanManageServer, bookingApi: bookingWebsiteApi
     })) return
-    if (await handleBotSetupInteraction(interaction, { userCanManageServer })) return
-    if (await handleGiftCodePanelInteraction(interaction, { userCanManageServer })) return
+    if (await handleGiftCodePanelInteraction(interaction, {
+      userCanManageServer, bookingApi: bookingWebsiteApi
+    })) return
 
     if (await schedulerInteractionWasHandled(
       interaction,
       handleEventSchedulerInteraction,
       { userCanManageServer }
     )) return
+
+    if (await handleRetiredLegacyBookingInteraction(interaction)) return
 
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "settings_max_bookings_select") {
@@ -3379,9 +3388,10 @@ Recommended order
       }
 
       await interaction.editReply(
-        `State ${result.state_code}\n` +
-        `Sheet:\n${result.sheet_url}\n\n` +
-        `Booking page:\n${result.booking_url}`
+        `**Legacy booking records — read-only**\n\n` +
+        `Community: ${result.state_code}\n` +
+        `Existing historical Google Sheet:\n${result.sheet_url}\n\n` +
+        "New bookings and changes remain available only through the authenticated community website."
       )
       return
     }

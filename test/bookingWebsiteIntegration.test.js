@@ -40,6 +40,27 @@ test("website client signs the exact profile-specific canonical request", async 
     nonce: "nonce-value-123456789", body: "{\"limit\":3}" }), /^v1\nPOST/)
 })
 
+test("setup and canonical registration use the signed profile-specific website integration", async () => {
+  const requests = []
+  const config = bookingWebsiteConfig({ GAME_PROFILE: "kingshot", BOOKING_WEBSITE_INTEGRATION_ENABLED: "true",
+    BOOKING_WEBSITE_BASE_URL: "https://ks.example.test", BOOKING_WEBSITE_INTEGRATION_SECRET: secret })
+  const api = createBookingWebsiteClient({ config, now: () => 1_800_000_000_000,
+    createNonce: () => `nonce-value-${requests.length}-123456789`,
+    fetchImplementation: async (url, options) => {
+      requests.push({ url, options })
+      return { ok: true, async json() { return { ok: true, status: "linked" } } }
+    } })
+  await api.communitySetup({ guildId: "777", communityCode: "9999", dryRun: true })
+  await api.registration({ guildId: "777", discordUserId: "888", playerId: "123" })
+  assert.deepEqual(requests.map(request => new URL(request.url).pathname), [
+    "/api/internal/v1/discord/setup/community", "/api/internal/v1/discord/registration"
+  ])
+  assert.equal(requests.every(request => request.options.headers["x-booking-profile"] === "kingshot"), true)
+  assert.equal(requests.every(request => /^v1=[0-9a-f]{64}$/.test(
+    request.options.headers["x-booking-signature"]
+  )), true)
+})
+
 test("integration is disabled unless complete configuration is explicitly enabled", () => {
   const off = bookingWebsiteConfig({ GAME_PROFILE: "wos" })
   assert.equal(off.enabled, false)

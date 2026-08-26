@@ -4,7 +4,9 @@ const {
   normalizeDiscordUserId,
   normalizeGuildId,
   normalizePlayerId,
-  normalizeLocationNumber
+  normalizeLocationNumber,
+  normalizeInGameName,
+  normalizeAllianceAbbreviation
 } = require("./validation")
 const { createNoopPlayerMirror } = require("./playerMirror")
 
@@ -28,17 +30,22 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
   return {
     terms,
 
-    async register({ discordUserId, playerId, locationNumber, guildId = null }) {
+    async register({ discordUserId, playerId, inGameName, locationNumber,
+      allianceAbbreviation, guildId = null }) {
       const owner = normalizeDiscordUserId(discordUserId)
       const player = normalizePlayerId(playerId, terms.playerLabel)
       const location = normalizeLocationNumber(locationNumber, terms.locationLabel)
+      const name = normalizeInGameName(inGameName)
+      const alliance = normalizeAllianceAbbreviation(allianceAbbreviation)
       const guild = guildId ? normalizeGuildId(guildId) : null
       let account
       try {
         account = await repository.registerAccount({
           discordUserId: owner,
           playerId: player,
+          inGameName: name,
           locationNumber: location,
+          allianceAbbreviation: alliance,
           guildId: guild
         })
       } catch (error) {
@@ -55,7 +62,11 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
       try {
         await mirror.mirrorRegistration(account)
       } catch (error) {
-        logger.warn(`[Player accounts] Optional mirror failed for ${gameProfile}: ${error?.code || "error"}`)
+        logger.warn(`[Player accounts] Native booking sync failed for ${gameProfile}: ${error?.code || "error"}`)
+        throw new PlayerAccountError(
+          "BOOKING_REGISTRATION_SYNC_FAILED",
+          "Your canonical identity was saved, but native booking prefill could not be synchronized. Run `/register` again before booking."
+        )
       }
       return account
     },

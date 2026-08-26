@@ -33,6 +33,28 @@ function normalizeLocationNumber(value, locationLabel) {
   return normalizeNumericIdentifier(value, `${locationLabel} number`, 10)
 }
 
+function normalizeInGameName(value) {
+  const normalized = String(value || "").trim().normalize("NFC")
+  if (!normalized || normalized.length > 30 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new PlayerValidationError(
+      "In-game name must contain 1 to 30 characters without control characters.",
+      "INVALID_IN_GAME_NAME"
+    )
+  }
+  return normalized
+}
+
+function normalizeAllianceAbbreviation(value) {
+  const normalized = String(value || "").trim().toUpperCase()
+  if (!/^[A-Z0-9]{3}$/.test(normalized)) {
+    throw new PlayerValidationError(
+      "Alliance abbreviation must contain exactly three letters or digits.",
+      "INVALID_ALLIANCE"
+    )
+  }
+  return normalized
+}
+
 function normalizeGiftCode(value) {
   const code = String(value || "").trim()
   if (!code || code.length > 128 || /[\u0000-\u001f\u007f]/.test(code)) {
@@ -51,5 +73,7 @@ module.exports = {
   normalizeGuildId,
   normalizePlayerId,
   normalizeLocationNumber,
+  normalizeInGameName,
+  normalizeAllianceAbbreviation,
   normalizeGiftCode
 }

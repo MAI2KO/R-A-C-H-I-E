@@ -66,7 +66,7 @@ const IDS = Object.freeze({
   publicRegister: `${PREFIX}public-register`
 })
 const COMMANDS = new Set([
-  "player-register", "player-admin", "gift-code-add", "gift-codes", "gift-codes-admin"
+  "register", "player-admin", "gift-code-add", "gift-codes", "gift-codes-admin"
 ])
 const sessionStore = new InteractionSessionStore({ maximumSessions: 250 })
 
@@ -121,9 +121,9 @@ function playerPanel({ sessionId, accounts, selected, terms, notice = null }) {
   if (menu) components.push(menu)
   components.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`${IDS.playerAdd}${sessionId}`)
-      .setLabel("Add Character").setStyle(ButtonStyle.Primary),
+      .setLabel("Update Registration").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`${IDS.playerLocation}${sessionId}`)
-      .setLabel(`Change ${terms.locationLabel}`).setStyle(ButtonStyle.Secondary),
+      .setLabel(`Update ${terms.locationLabel}`).setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`${IDS.giftToggle}${sessionId}`)
       .setLabel(selected.gift_redemption_enabled && selected.guild_gift_code_enrolled
         ? "Disable Auto-Redeem"
@@ -141,7 +141,9 @@ function playerPanel({ sessionId, accounts, selected, terms, notice = null }) {
       notice,
       `**${terms.gameName} Characters**`,
       `Selected: Player ID ${selected.player_id}`,
+      `In-game name: ${selected.in_game_name || "Update required"}`,
       `${terms.locationLabel}: ${selected.state_or_kingdom_number}`,
+      `Alliance: ${selected.alliance_abbreviation || "Update required"}`,
       `Primary: ${selected.is_primary ? "Yes" : "No"}`,
       `Active: ${selected.is_active ? "Yes" : "No"}`,
       `Automatic gift-code redemption: ${selected.gift_redemption_enabled ? "Enabled" : "Disabled"}`
@@ -256,18 +258,20 @@ function activeCodesPanel({ sessionId, visibility }) {
   }
 }
 
-function registrationModal(sessionId, terms) {
+function registrationModal(sessionId, terms, account = null) {
+  const input = (id, label, maximumLength, value = null) => {
+    const field = new TextInputBuilder().setCustomId(id).setLabel(label)
+      .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(maximumLength)
+    if (value) field.setValue(String(value))
+    return new ActionRowBuilder().addComponents(field)
+  }
   return new ModalBuilder().setCustomId(`${IDS.registerModal}${sessionId}`)
-    .setTitle(`Register ${terms.gameName} player`)
+    .setTitle(account ? `Update ${terms.gameName} player` : `Register ${terms.gameName} player`)
     .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("player_id").setLabel("Player ID")
-          .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(32)
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("location").setLabel(terms.locationLabel)
-          .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
-      )
+      input("player_id", "Player ID", 32, account?.player_id),
+      input("in_game_name", "In-game name", 30, account?.in_game_name),
+      input("location", terms.locationLabel, 10, account?.state_or_kingdom_number),
+      input("alliance", "Alliance abbreviation", 3, account?.alliance_abbreviation)
     )
 }
 
@@ -281,7 +285,7 @@ async function completeCharacterRegistration({
   const isFreshOwnership = ["new", "claimed"].includes(account.registration_status)
   let notice = account.registration_status === "reactivated"
     ? "Character reactivated. Your previous Auto-Redeem preference was preserved."
-    : "Character registered."
+    : account.registration_status === "updated" ? "Registration updated." : "Character registered."
   const priorAutoPreference = account.account_metadata?.autoRedeemPreference
   const shouldEnable = isFreshOwnership
     || (account.registration_status === "reactivated" && priorAutoPreference?.enabled === true)
@@ -461,6 +465,7 @@ function giftCodePanelFailureDiagnostics(interaction, health, error) {
 
 async function handleGiftCodePanelInteraction(interaction, {
   userCanManageServer,
+  bookingApi = null,
   healthProvider = getPlayerGiftCodesHealth,
   runtimeProvider = getGiftCodeRuntime,
   poolProvider = () => getPool(),
@@ -490,30 +495,27 @@ async function handleGiftCodePanelInteraction(interaction, {
         return true
       }
       const context = interactionContext(interaction, health)
-      const sessionId = sessions.create(context, { panel: "player", selectedPlayerId: null })
+      const repository = playerRepositoryFactory(poolProvider(), health.gameProfile)
+      const selected = selectedAccount(await repository.listOwnedAccounts(interaction.user.id), null)
+      const sessionId = sessions.create(context, {
+        panel: "player", selectedPlayerId: selected?.player_id || null
+      })
       await interaction.showModal(registrationModal(
-        sessionId,
-        require("../terminology").profileTerminology(health.gameProfile)
+        sessionId, require("../terminology").profileTerminology(health.gameProfile), selected
       ))
       return true
     }
-    const modalPrefix = [IDS.playerAdd, IDS.giftRegister].find(prefix => customId.startsWith(prefix))
+    const modalPrefix = [IDS.playerAdd, IDS.giftRegister, IDS.playerLocation]
+      .find(prefix => customId.startsWith(prefix))
     if (modalPrefix) {
       const sessionId = suffix(customId, modalPrefix)
-      sessions.get(sessionId, interactionContext(interaction, health))
-      await interaction.showModal(registrationModal(sessionId, require("../terminology").profileTerminology(health.gameProfile)))
-      return true
-    }
-    if (customId.startsWith(IDS.playerLocation)) {
-      const sessionId = suffix(customId, IDS.playerLocation)
-      sessions.get(sessionId, interactionContext(interaction, health))
-      const terms = require("../terminology").profileTerminology(health.gameProfile)
-      await interaction.showModal(oneFieldModal(
-        `${IDS.locationModal}${sessionId}`,
-        `Change ${terms.locationLabel}`,
-        "location",
-        `${terms.locationLabel} number`,
-        10
+      const session = sessions.get(sessionId, interactionContext(interaction, health))
+      const repository = playerRepositoryFactory(poolProvider(), health.gameProfile)
+      const account = session.data.selectedPlayerId
+        ? await repository.getOwnedAccount(interaction.user.id, session.data.selectedPlayerId)
+        : null
+      await interaction.showModal(registrationModal(
+        sessionId, require("../terminology").profileTerminology(health.gameProfile), account
       ))
       return true
     }
@@ -557,7 +559,26 @@ async function handleGiftCodePanelInteraction(interaction, {
 
     const pool = poolProvider()
     const playerRepository = playerRepositoryFactory(pool, health.gameProfile)
-    const players = playerServiceFactory({ repository: playerRepository, gameProfile: health.gameProfile, logger })
+    const players = playerServiceFactory({
+      repository: playerRepository, gameProfile: health.gameProfile, logger,
+      mirror: {
+        async mirrorRegistration(account) {
+          if (!bookingApi?.registration) {
+            const error = new Error("native booking registration integration unavailable")
+            error.code = "BOOKING_REGISTRATION_UNAVAILABLE"
+            throw error
+          }
+          return bookingApi.registration({
+            guildId: interaction.guildId,
+            discordUserId: interaction.user.id,
+            playerId: account.player_id,
+            inGameName: account.in_game_name,
+            communityCode: account.state_or_kingdom_number,
+            allianceAbbreviation: account.alliance_abbreviation
+          })
+        }
+      }
+    })
     const giftRepository = giftRepositoryFactory(pool, health.gameProfile)
     const sourceRepository = sourceRepositoryFactory(pool, health.gameProfile)
     const ingestion = sourceIngestionFactory({
@@ -692,7 +713,7 @@ async function handleGiftCodePanelInteraction(interaction, {
         })
         return true
       }
-      const panel = interaction.commandName === "player-register"
+      const panel = interaction.commandName === "register"
         ? "player"
         : interaction.commandName === "gift-codes" ? "gift" : "admin"
       const sessionId = sessions.create(context, { panel, selectedPlayerId: null })
@@ -717,7 +738,9 @@ async function handleGiftCodePanelInteraction(interaction, {
         discordUserId: interaction.user.id,
         guildId: interaction.guildId,
         playerId: interaction.fields.getTextInputValue("player_id"),
-        locationNumber: interaction.fields.getTextInputValue("location")
+        inGameName: interaction.fields.getTextInputValue("in_game_name"),
+        locationNumber: interaction.fields.getTextInputValue("location"),
+        allianceAbbreviation: interaction.fields.getTextInputValue("alliance")
       })
       const registration = await completeCharacterRegistration({
         account,
@@ -731,13 +754,10 @@ async function handleGiftCodePanelInteraction(interaction, {
       return true
     }
     if (customId.startsWith(IDS.locationModal)) {
-      await players.changeLocation({
-        discordUserId: interaction.user.id,
-        playerId: session.data.selectedPlayerId,
-        locationNumber: interaction.fields.getTextInputValue("location")
+      await interaction.editReply({
+        content: "This location-only control has been replaced. Run `/register` and use Update Registration so the complete booking and gift-code identity stays synchronized.",
+        components: []
       })
-      await community.refreshStatusCard?.(interaction.guildId, interaction.user.id)
-      await renderPlayer(sessionId, session.data.selectedPlayerId)
       return true
     }
     if (customId.startsWith(IDS.playerRemove)) {
