@@ -3,6 +3,8 @@ const {
   createBookingWebsiteClient
 } = require("./bookingWebsiteClient")
 const { createBookingWebsiteRuntime } = require("./bookingDiscordIntegration")
+const { getPool } = require("./db")
+const { createBotSetupRepository } = require("./botSetupRepository")
 
 function createBookingWebsiteBootstrap({
   client,
@@ -37,9 +39,15 @@ function createBookingWebsiteBootstrap({
   let runtime
   try {
     api = createApi({ config: configuration })
+    let setupRepository = null
+    try {
+      const pool = getPool()
+      if (pool) setupRepository = createBotSetupRepository(pool, configuration.profile)
+    } catch {}
     runtime = createRuntime({
       client,
       api,
+      setupRepository,
       intervalMs: configuration.pollIntervalMs,
       logger
     })

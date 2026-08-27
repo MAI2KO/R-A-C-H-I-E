@@ -29,8 +29,8 @@ test("community configuration, auto-redemption cap and engagement state are dura
       options: `-c search_path=${schema}`
     })
     const first = await runMigrations({ pool, logger })
-    assert.equal(first.applied.length, 19)
-    assert.equal(first.applied.at(-1), "019_daily_event_recurrence.sql")
+    assert.equal(first.applied.length, 21)
+    assert.equal(first.applied.at(-1), "021_native_bot_manager_role.sql")
     assert.deepEqual((await runMigrations({ pool, logger })).applied, [])
 
     const wosCommunity = createGiftCodeCommunityRepository(pool, "wos")
@@ -69,7 +69,9 @@ test("community configuration, auto-redemption cap and engagement state are dura
         discordUserId: owner,
         guildId: guild,
         playerId: `1000${index}`,
-        locationNumber: `${688 + index}`
+        locationNumber: `${688 + index}`,
+        inGameName: `Player ${index}`,
+        allianceAbbreviation: "TST"
       }))
     }
     const giftRepository = createGiftCodeRepository(pool, "wos")
@@ -144,7 +146,9 @@ test("community configuration, auto-redemption cap and engagement state are dura
       discordUserId: owner,
       guildId: guild,
       playerId: "10001",
-      locationNumber: "521"
+      locationNumber: "521",
+      inGameName: "King Player",
+      allianceAbbreviation: "TST"
     })
     const ksGifts = createGiftCodeService({
       repository: createGiftCodeRepository(pool, "kingshot"),

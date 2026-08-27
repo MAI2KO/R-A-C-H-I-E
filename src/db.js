@@ -23,6 +23,8 @@ function playerGiftCodesIsEnabled(env = process.env) {
 
 function postgresIsEnabled(env = process.env) {
   return schedulerIsEnabled(env) || playerGiftCodesIsEnabled(env)
+    || env.BOOKING_WEBSITE_INTEGRATION_ENABLED === "true"
+    || env.BOT_MANAGER_POSTGRES_ENABLED === "true"
 }
 
 function validateDatabaseUrl(databaseUrl) {

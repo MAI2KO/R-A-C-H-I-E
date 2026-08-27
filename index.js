@@ -34,6 +34,14 @@ const {
 const { getPlayerCommandData, getGiftCommandData } = require("./src/giftCodes/discord/commands")
 const { handleGiftCodePanelInteraction } = require("./src/giftCodes/discord/panelInteractions")
 const { createBanterConfigLookup } = require("./src/banterConfig")
+const { getPool } = require("./src/db")
+const { createBotSetupRepository } = require("./src/botSetupRepository")
+const {
+  createBotManagerAuthorizer,
+  interactionIsGuildOwner,
+  interactionIsDiscordAdministrator
+} = require("./src/botManagerAuthorization")
+const { initializeBotManagerSubsystem } = require("./src/botManagerRuntime")
 const {
   buildBotSetupCommand,
   handleBotSetupInteraction,
@@ -43,7 +51,8 @@ const {
   bookingWebsiteConfig
 } = require("./src/bookingWebsiteClient")
 const {
-  handleBookingApprovalInteraction
+  handleBookingApprovalInteraction,
+  handleBookingMemberSignupInteraction
 } = require("./src/bookingDiscordIntegration")
 const { createBookingWebsiteBootstrap } = require("./src/bookingWebsiteBootstrap")
 const {
@@ -86,6 +95,10 @@ const channelCooldowns = new Map()
 
 const channelMessageThresholds = new Map()
 const recentBanterReplies = new Map()
+const BANTER_ENABLED = false
+const DORMANT_BANTER_COMMANDS = new Set([
+  "set-banter-channel", "clear-banter-channel", "set-banter-spice", "banter-test"
+])
 
 const MIN_BANTER_MESSAGES = 5
 const MAX_BANTER_MESSAGES = 10
@@ -114,6 +127,15 @@ const banterConfigLookup = createBanterConfigLookup({
     adminKey: process.env.ADMIN_API_KEY,
     discordServerId: guildId
   })
+})
+
+function botManagerRepository() {
+  const pool = getPool()
+  return pool ? createBotSetupRepository(pool, GAME_PROFILE) : null
+}
+
+const botManagerAuthorizer = createBotManagerAuthorizer({
+  repositoryProvider: botManagerRepository
 })
 
 
@@ -861,25 +883,7 @@ async function submitBookingFromEntry(entry, overrides = {}) {
 }
 
 async function userCanManageServer(interaction) {
-  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-    return true
-  }
-
-  try {
-    const result = await configAppsScriptClient.post({
-      action: "get_bot_admin_role_for_server",
-      adminKey: process.env.ADMIN_API_KEY,
-      discordServerId: interaction.guildId
-    })
-
-    const roleId = String(result.bot_admin_role_id || "").trim()
-    if (!roleId) return false
-
-    return interaction.member?.roles?.cache?.has(roleId) || false
-  } catch (error) {
-    console.error("Permission check failed:", error)
-    return false
-  }
+  return botManagerAuthorizer.canManage(interaction)
 }
 
 function yesNo(value) {
@@ -1464,12 +1468,12 @@ const commands = [
        .setDescription("Role to allow")
        .setRequired(true)
       )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName("clear-bot-admin-role")
     .setDescription(`Clear the custom ${game.botName} admin role`)
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName("banter-test")
@@ -1725,7 +1729,8 @@ const commands = [
           { name: "Troop", value: "Troop" }
         )
     ),
-].filter(command => !RETIRED_LEGACY_BOOKING_COMMANDS.has(command.toJSON().name))
+].filter(command => !RETIRED_LEGACY_BOOKING_COMMANDS.has(command.toJSON().name)
+    && !DORMANT_BANTER_COMMANDS.has(command.toJSON().name))
   .map(command => command.toJSON())
 
 const eventSchedulerCommand = getEventSchedulerCommandData()
@@ -1763,6 +1768,11 @@ client.once("clientReady", () => {
 client.on("interactionCreate", async interaction => {
   try {
     if (bookingWebsiteApi && await handleBookingApprovalInteraction(interaction, bookingWebsiteApi)) return
+    if (bookingWebsiteApi && await handleBookingMemberSignupInteraction(interaction, {
+      baseUrl: bookingWebsiteConfiguration.baseUrl,
+      pool: getPool(),
+      profile: GAME_PROFILE
+    })) return
     if (await handlePersistentOnboardingInteraction(interaction)) return
     if (await handleBotSetupInteraction(interaction, {
       userCanManageServer, bookingApi: bookingWebsiteApi
@@ -2847,22 +2857,19 @@ if (interaction.commandName === "set-banter-spice") {
   if (interaction.commandName === "set-bot-admin-role") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+  if (!interactionIsGuildOwner(interaction)
+      && !interactionIsDiscordAdministrator(interaction)) {
     await interaction.editReply("❌ Only a server admin can set the bot admin role.")
     return
   }
 
   const role = interaction.options.getRole("role")
-
-  const result = await configAppsScriptClient.post({
-    action: "set_bot_admin_role_for_server",
-    adminKey: process.env.ADMIN_API_KEY,
-    discordServerId: interaction.guildId,
-    roleId: role.id
-  })
-
-  if (!result.ok) {
-    await interaction.editReply(`❌ ${result.error || "Could not save bot admin role."}`)
+  try {
+    const repository = botManagerRepository()
+    if (!repository) throw new Error("database_unavailable")
+    await repository.setManagerRole(interaction.guildId, role.id)
+  } catch {
+    await interaction.editReply("❌ Could not save bot admin role in PostgreSQL.")
     return
   }
 
@@ -2873,19 +2880,18 @@ if (interaction.commandName === "set-banter-spice") {
 if (interaction.commandName === "clear-bot-admin-role") {
   await interaction.deferReply({ flags: 64 })
 
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+  if (!interactionIsGuildOwner(interaction)
+      && !interactionIsDiscordAdministrator(interaction)) {
     await interaction.editReply("❌ Only a server admin can clear the bot admin role.")
     return
   }
 
-  const result = await configAppsScriptClient.post({
-    action: "clear_bot_admin_role_for_server",
-    adminKey: process.env.ADMIN_API_KEY,
-    discordServerId: interaction.guildId
-  })
-
-  if (!result.ok) {
-    await interaction.editReply(`❌ ${result.error || "Could not clear bot admin role."}`)
+  try {
+    const repository = botManagerRepository()
+    if (!repository) throw new Error("database_unavailable")
+    await repository.clearManagerRole(interaction.guildId)
+  } catch {
+    await interaction.editReply("❌ Could not clear bot admin role in PostgreSQL.")
     return
   }
 
@@ -3872,6 +3878,7 @@ if (interaction.commandName === "admin-remove-reserved") {
 client.on("messageCreate", async message => {
   try {
     await giftCodeWorkflowRuntime?.ingestSourceMessage(message)
+    if (!BANTER_ENABLED) return
     if (message.author.bot) return
     if (!message.guild) return
     if (!message.content || message.content.trim().length < 4) return
@@ -3982,6 +3989,7 @@ const { createGiftCodeWorkflowRuntime } = require("./src/giftCodes/workflowRunti
 /* -------------------- START BOT -------------------- */
 
 async function main() {
+  await initializeBotManagerSubsystem()
   const bookingWebsiteBootstrap = createBookingWebsiteBootstrap({
     client,
     configuration: bookingWebsiteConfiguration

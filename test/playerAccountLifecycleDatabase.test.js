@@ -47,7 +47,8 @@ test("soft-deactivated accounts leave current UX and safely reactivate without l
         discordUserId: owner,
         guildId,
         playerId,
-        locationNumber: initialLocation
+        locationNumber: initialLocation,
+        inGameName: `${profile} Player`, allianceAbbreviation: "TST"
       })
       assert.equal(players.terms.locationLabel, expectedLabel)
 
@@ -111,7 +112,8 @@ test("soft-deactivated accounts leave current UX and safely reactivate without l
           discordUserId: `${owner}9`,
           guildId,
           playerId,
-          locationNumber: nextLocation
+          locationNumber: nextLocation,
+          inGameName: "Other Player", allianceAbbreviation: "TST"
         }),
         error => error.code === "PLAYER_ALREADY_REGISTERED"
           && /current owner needs to release it first/.test(error.message)
@@ -121,7 +123,8 @@ test("soft-deactivated accounts leave current UX and safely reactivate without l
         discordUserId: owner,
         guildId,
         playerId,
-        locationNumber: nextLocation
+        locationNumber: nextLocation,
+        inGameName: `${profile} Player`, allianceAbbreviation: "TST"
       })
       assert.equal(reactivated.id, account.id)
       assert.equal(reactivated.is_active, true)
@@ -186,10 +189,12 @@ test("explicit release preserves canonical history and safely establishes a new 
     const gifts = createGiftCodeRepository(pool, "wos")
 
     const wosAccount = await wosPlayers.register({
-      discordUserId: oldOwner, guildId: wosGuild, playerId, locationNumber: "689"
+      discordUserId: oldOwner, guildId: wosGuild, playerId, locationNumber: "689",
+      inGameName: "WOS Owner", allianceAbbreviation: "TST"
     })
     const kingshotAccount = await kingshotPlayers.register({
-      discordUserId: oldOwner, guildId: kingshotGuild, playerId, locationNumber: "521"
+      discordUserId: oldOwner, guildId: kingshotGuild, playerId, locationNumber: "521",
+      inGameName: "King Owner", allianceAbbreviation: "TST"
     })
     assert.notEqual(wosAccount.id, kingshotAccount.id)
 
@@ -295,7 +300,8 @@ test("explicit release preserves canonical history and safely establishes a new 
     )).rows[0].count, 1)
 
     const claimed = await wosPlayers.register({
-      discordUserId: newOwner, guildId: wosGuild, playerId, locationNumber: "700"
+      discordUserId: newOwner, guildId: wosGuild, playerId, locationNumber: "700",
+      inGameName: "New Owner", allianceAbbreviation: "TST"
     })
     assert.equal(claimed.id, wosAccount.id)
     assert.equal(claimed.registration_status, "claimed")

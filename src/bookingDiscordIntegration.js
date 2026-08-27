@@ -1,7 +1,9 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require("discord.js")
+const { createHash } = require("node:crypto")
 const { discordTimestamp, utcAppointmentInstant, validInstant } = require("./discordTimeFormatting")
 
 const BUTTON_PREFIX = "booking-approval:v1:"
+const MEMBER_SIGNUP_PREFIX = "booking-member:v1:"
 const permanentDiscordCodes = new Set([50001, 50007, 10013])
 
 function locationLabel(profile) { return profile === "kingshot" ? "Kingdom" : "State" }
@@ -77,6 +79,29 @@ function renderWork(work) {
   return { content: lines.join("\n"), components: [] }
 }
 
+function bookingWindowOpenMessages(work) {
+  return Object.freeze({
+    public: {
+      content: "Minister sign-up is now open\n\nSign-up closes Sunday at 12:00 UTC.",
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel("Guest sign up").setStyle(ButtonStyle.Link)
+          .setURL(work.guestUrl),
+        new ButtonBuilder().setLabel("Member sign up").setStyle(ButtonStyle.Primary)
+          .setCustomId(`${MEMBER_SIGNUP_PREFIX}${work.communityCode}`)
+      )]
+    },
+    manager: {
+      content: [
+        `Booking links — ${locationLabel(work.profile)} ${work.communityCode}`,
+        "", "Member sign-up:", work.memberUrl,
+        "", "Guest sign-up:", work.guestUrl,
+        "", "Closes:", "Sunday 12:00 UTC"
+      ].join("\n"),
+      components: []
+    }
+  })
+}
+
 async function discoverManagers(client, work) {
   const recipients = new Map()
   for (const link of work.guilds || []) {
@@ -101,7 +126,67 @@ async function sendIdempotently(client, work, message) {
   return { discordChannelId: channel.id, discordMessageId: sent.id }
 }
 
-async function deliverWork(client, api, work) {
+async function sendChannelIdempotently(channel, nonceSeed, message) {
+  const nonce = createHash("sha256").update(String(nonceSeed), "utf8")
+    .digest("base64url").slice(0, 25)
+  return channel.send({ ...message, nonce, enforceNonce: true })
+}
+
+async function deliverBookingWindowOpen(client, api, work, setupRepository) {
+  if (new Date(work.closesAt).getTime() <= Date.now()) {
+    return api.outcome(work, { status: "permanent_failure", errorCode: "booking_window_closed" })
+  }
+  if (!setupRepository) {
+    return api.outcome(work, { status: "retry", errorCode: "bot_setup_database_unavailable" })
+  }
+  const messages = bookingWindowOpenMessages(work)
+  let firstPublic = null
+  let publicDestinations = 0
+  const managers = new Map()
+  try {
+    for (const guildId of work.guilds || []) {
+      const setup = await setupRepository.get(guildId)
+      if (!setup?.minister_sign_up_channel_id) continue
+      const guild = await client.guilds.fetch(guildId)
+      const channel = await guild.channels.fetch(setup.minister_sign_up_channel_id)
+      const sent = await sendChannelIdempotently(
+        channel, `${work.workId}${guildId}public`, messages.public,
+      )
+      publicDestinations++
+      if (!firstPublic) firstPublic = { discordChannelId: channel.id, discordMessageId: sent.id }
+      const members = await guild.members.fetch()
+      for (const member of members.values()) {
+        if (member.user?.bot) continue
+        const qualified = member.id === guild.ownerId
+          || member.permissions?.has(PermissionFlagsBits.Administrator)
+          || (setup.bot_manager_role_id && member.roles?.cache?.has(setup.bot_manager_role_id))
+        if (qualified && !managers.has(member.id)) managers.set(member.id, member)
+      }
+    }
+    if (publicDestinations === 0) {
+      return api.outcome(work, { status: "retry", errorCode: "minister_signup_channel_unavailable" })
+    }
+    for (const manager of managers.values()) {
+      try {
+        const dm = await manager.user.createDM()
+        await sendChannelIdempotently(dm, `${work.workId}${manager.id}manager`, messages.manager)
+      } catch (error) {
+        if (!permanentDiscordCodes.has(error?.code)) throw error
+      }
+    }
+    return api.outcome(work, { status: "sent", ...firstPublic })
+  } catch (error) {
+    return api.outcome(work, {
+      status: permanentDiscordCodes.has(error?.code) ? "permanent_failure" : "retry",
+      errorCode: String(error?.code || "booking_window_delivery_failed").slice(0, 80)
+    })
+  }
+}
+
+async function deliverWork(client, api, work, { setupRepository = null } = {}) {
+  if (work.type === "booking_window_open") {
+    return deliverBookingWindowOpen(client, api, work, setupRepository)
+  }
   if (work.type === "manager_discovery") return api.recipients(work, await discoverManagers(client, work))
   if (work.type === "manager_request" && new Date(work.holdExpiresAt).getTime() <= Date.now()) {
     return api.outcome(work, { status: "permanent_failure", errorCode: "hold_expired_before_delivery" })
@@ -130,6 +215,41 @@ function parseApprovalButton(customId) {
   const match = /^booking-approval:v1:([0-9a-f-]{36}):(approve|deny)$/i.exec(String(customId || ""))
   return match ? { requestId: match[1], action: match[2] } : null
 }
+
+async function handleBookingMemberSignupInteraction(interaction, {
+  baseUrl, pool, profile
+} = {}) {
+  if (!interaction.isButton?.()
+      || !String(interaction.customId || "").startsWith(MEMBER_SIGNUP_PREFIX)) return false
+  const communityCode = String(interaction.customId).slice(MEMBER_SIGNUP_PREFIX.length)
+  await interaction.deferReply({ flags: 64 })
+  if (!/^\d{1,10}$/.test(communityCode) || !baseUrl || !pool) {
+    await interaction.editReply("Member sign-up is temporarily unavailable. Please try again shortly.")
+    return true
+  }
+  const registered = (await pool.query(
+    `SELECT 1 FROM player_accounts
+      WHERE game_profile=$1 AND discord_user_id=$2
+        AND state_or_kingdom_number=$3 AND is_active=true
+        AND in_game_name IS NOT NULL AND alliance_abbreviation IS NOT NULL
+      LIMIT 1`,
+    [profile, interaction.user.id, communityCode]
+  )).rowCount === 1
+  if (!registered) {
+    await interaction.editReply(
+      `Use \`/register\` to register your player for ${locationLabel(profile)} ${communityCode}, then press **Member sign up** again.`
+    )
+    return true
+  }
+  await interaction.editReply({
+    content: `Your registered player is ready for ${locationLabel(profile)} ${communityCode}.`,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setLabel("Open native booking").setStyle(ButtonStyle.Link)
+        .setURL(`${String(baseUrl).replace(/\/$/, "")}/booking`)
+    )]
+  })
+  return true
+}
 async function handleBookingApprovalInteraction(interaction, api) {
   if (!interaction.isButton?.()) return false
   const parsed = parseApprovalButton(interaction.customId)
@@ -156,7 +276,8 @@ async function handleBookingApprovalInteraction(interaction, api) {
   return true
 }
 
-function createBookingWebsiteRuntime({ client, api, intervalMs = 10000, logger = console,
+function createBookingWebsiteRuntime({ client, api, setupRepository = null,
+  intervalMs = 10000, logger = console,
   setIntervalFn = setInterval, clearIntervalFn = clearInterval }) {
   let timer = null
   let active = null
@@ -185,7 +306,7 @@ function createBookingWebsiteRuntime({ client, api, intervalMs = 10000, logger =
         }
         for (const work of response.work || []) {
           if (work.profile !== api.profile) continue
-          try { await deliverWork(client, api, work) }
+          try { await deliverWork(client, api, work, { setupRepository }) }
           catch (error) {
             logger.error(JSON.stringify({ event: "booking_discord_work_failed", game_profile: api.profile,
               work_type: work.type, error_code: String(error?.code || "integration_failure").slice(0, 80) }))
@@ -220,5 +341,6 @@ function createBookingWebsiteRuntime({ client, api, intervalMs = 10000, logger =
   return Object.freeze({ start, stop, tick })
 }
 
-module.exports = { BUTTON_PREFIX, renderWork, discoverManagers, deliverWork, parseApprovalButton,
-  handleBookingApprovalInteraction, createBookingWebsiteRuntime }
+module.exports = { BUTTON_PREFIX, MEMBER_SIGNUP_PREFIX, renderWork, bookingWindowOpenMessages,
+  discoverManagers, deliverWork, parseApprovalButton, handleBookingApprovalInteraction,
+  handleBookingMemberSignupInteraction, createBookingWebsiteRuntime }

@@ -10,6 +10,7 @@ const {
 const {
   deliverWork,
   discoverManagers,
+  bookingWindowOpenMessages,
   handleBookingApprovalInteraction,
   parseApprovalButton,
   renderWork
@@ -86,6 +87,58 @@ test("manager rendering is profile-correct and includes only supplied requiremen
   assert.match(rendered.content, /Truegold: 100/)
   assert.doesNotMatch(rendered.content, /Speed-ups|Fire Crystals/)
   assert.equal(rendered.components[0].components.length, 2)
+})
+
+test("booking-open rendering has exact public buttons and copy-friendly manager links", () => {
+  const rendered = bookingWindowOpenMessages({
+    profile: "wos", communityCode: "9999",
+    memberUrl: "https://wos.example/booking",
+    guestUrl: "https://wos.example/book/opaque"
+  })
+  assert.equal(rendered.public.content,
+    "Minister sign-up is now open\n\nSign-up closes Sunday at 12:00 UTC.")
+  assert.deepEqual(rendered.public.components[0].components.map(button => button.data.label), [
+    "Guest sign up", "Member sign up"
+  ])
+  assert.equal(rendered.public.components[0].components[0].data.url,
+    "https://wos.example/book/opaque")
+  assert.match(rendered.public.components[0].components[1].data.custom_id,
+    /^booking-member:v1:9999$/)
+  assert.equal(rendered.manager.content,
+    "Booking links — State 9999\n\nMember sign-up:\nhttps://wos.example/booking\n\nGuest sign-up:\nhttps://wos.example/book/opaque\n\nCloses:\nSunday 12:00 UTC")
+})
+
+test("booking-open delivery posts once with stable nonces and DMs every native manager", async () => {
+  const sends = []
+  const channel = { id: "700", async send(payload) {
+    sends.push(["public", payload])
+    return { id: "701" }
+  } }
+  const dm = id => ({ async send(payload) { sends.push([id, payload]); return { id } } })
+  const member = (id, { admin = false, role = false } = {}) => ({
+    id, user: { bot: false, createDM: async () => dm(id) },
+    permissions: { has: () => admin }, roles: { cache: { has: () => role } }
+  })
+  const guild = {
+    ownerId: "1", channels: { fetch: async () => channel },
+    members: { fetch: async () => new Map([
+      ["1", member("1")], ["2", member("2", { admin: true })],
+      ["3", member("3", { role: true })], ["4", member("4")]
+    ]) }
+  }
+  const outcomes = []
+  await deliverWork({ guilds: { fetch: async () => guild } }, {
+    async outcome(_work, outcome) { outcomes.push(outcome) }
+  }, {
+    workId, type: "booking_window_open", profile: "wos", communityCode: "9999",
+    guilds: ["777"], closesAt: "2999-09-06T12:00:00Z",
+    memberUrl: "https://wos.example/booking", guestUrl: "https://wos.example/book/token"
+  }, { setupRepository: { async get() {
+    return { minister_sign_up_channel_id: "700", bot_manager_role_id: "42" }
+  } } })
+  assert.deepEqual(sends.map(([kind]) => kind), ["public", "1", "2", "3"])
+  assert.equal(sends.every(([, payload]) => payload.enforceNonce === true), true)
+  assert.deepEqual(outcomes, [{ status: "sent", discordChannelId: "700", discordMessageId: "701" }])
 })
 
 test("manager final updates preserve request context and remove approval buttons", () => {

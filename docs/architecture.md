@@ -11,9 +11,15 @@ The repository serves two independent Discord applications:
 
 The bot services may share standard Postgres. `game_profile` is included in scheduler, player, gift-code, and redemption ownership. A process handles only its own profile. `BOT_INSTANCE_NAME` records worker ownership; it is not a secret.
 
-## Existing Apps Script Boundary
+## Remaining Apps Script Boundary
 
-`index.js` routes the unchanged Apps Script action payloads through four internal clients that share one Axios transport:
+The only registered live Apps Script dependency is `/sheet-link`, which reads
+the legacy Sheet URL. Legacy handler source and responsibility clients remain
+for audit/rollback reference but booking, `/register`, bot-manager
+authorization, and booking-open announcements do not call them. Banter command
+registration and passive message handling are dormant.
+
+Historically, `index.js` routed Apps Script payloads through four internal clients:
 
 - booking: registration, availability, booking dates and links, open/close, user/admin bookings, cancellation, clearing, and reservations;
 - state/registry: setup, linking/unlinking, linked-server lookup, join-password reset, announcement configuration, and Sheet links/access;

@@ -17,7 +17,7 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     await admin.query(`CREATE SCHEMA "${schema}"`)
     pool = new Pool({ connectionString: databaseUrl, max: 8, options: `-c search_path=${schema}` })
     const migrated = await runMigrations({ pool, logger: { log() {}, error() {} } })
-    assert.equal(migrated.applied.at(-1), "020_canonical_setup_and_player_identity.sql")
+    assert.equal(migrated.applied.at(-1), "021_native_bot_manager_role.sql")
     assert.deepEqual((await runMigrations({ pool, logger: { log() {}, error() {} } })).applied, [])
 
     const guildId = "700000000000000001"
@@ -57,6 +57,11 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     await wos.save(guildId, values)
     assert.equal(await kingshot.get(guildId), null)
     assert.equal((await wos.get(guildId)).gift_announcements_channel_id, values.gift_announcements_channel_id)
+    await wos.setManagerRole(guildId, "700000000000000099")
+    assert.equal(await wos.getManagerRole(guildId), "700000000000000099")
+    assert.equal(await kingshot.getManagerRole(guildId), null)
+    await wos.clearManagerRole(guildId)
+    assert.equal(await wos.getManagerRole(guildId), null)
 
     await pool.query(
       `INSERT INTO event_guild_settings (

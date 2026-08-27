@@ -83,6 +83,11 @@ test("visible command surface uses the canonical native registration command", (
   const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8")
   assert.match(indexSource, /RETIRED_LEGACY_BOOKING_COMMANDS/)
   assert.match(indexSource, /handleRetiredLegacyBookingInteraction/)
+  assert.ok(
+    indexSource.indexOf("giftCodeWorkflowRuntime?.ingestSourceMessage(message)")
+      < indexSource.indexOf("if (!BANTER_ENABLED) return"),
+    "dormant banter must not suppress gift-code source ingestion"
+  )
 })
 
 test("player panel supports empty registration and multiple-account selection", () => {

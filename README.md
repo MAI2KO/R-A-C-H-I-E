@@ -5,11 +5,17 @@ This repository runs two Discord bots from the same codebase:
 - **R.A.C.H.I.E** uses the `wos` game profile and normally `BANTER_PROFILE=rachie`.
 - **P.E.G.G.I.E** uses the `kingshot` game profile and normally `BANTER_PROFILE=peggie`.
 
-They are separate Discord applications and separate Railway services. Each has its own `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, Apps Script deployment, and booking sheet. Those Apps Script systems remain independent. The optional Postgres event scheduler may share one `DATABASE_URL`; every scheduler query and claim remains isolated by `game_profile`.
+They are separate Discord applications and separate Railway services. Each has
+its own `BOT_TOKEN` and `CLIENT_ID`. PostgreSQL-backed bot setup, identity,
+booking integration, and scheduler data may share one `DATABASE_URL`; every
+query and claim remains isolated by `game_profile`.
 
 ## Existing And Scheduler Boundaries
 
-Apps Script continues to own existing booking, state-linking, booking announcements, administration, and related sheet-backed behavior. The scheduler does not change those actions, URLs, sheets, or announcement channels.
+Native PostgreSQL and the booking website own booking, registration projection,
+automatic booking-open announcements, and bot-manager authorization. Apps
+Script remains live only for `/sheet-link` read-only legacy navigation. Banter
+is deferred and dormant.
 
 Postgres owns scheduler data and, when enabled, canonical player accounts and gift-code records. If Postgres is disabled or unavailable, the Discord bot still starts and existing Apps Script-backed features continue to operate. Database-backed commands report temporary unavailability without taking down booking or banter.
 
@@ -59,7 +65,7 @@ Set `PLAYER_GIFT_CODES_ENABLED=true` to register the profile-specific `/player-r
 
 Migration 011 establishes case-sensitive gift codes, source/submission provenance, and restart-safe redemption identities with initial Player ID and State/Kingdom snapshots. Migration 016 adds profile-scoped Discord mirror configuration, durable source observations, source-reported expiry, catalogue health, and disappearance tracking. Discovery never activates a code; the existing Century verifier remains authoritative. See [Player Accounts And Gift Codes](docs/player-gift-codes.md).
 
-Migration 012 adds durable verification claims, immutable API-attempt history, notification state, and concurrency-safe redemption workers. Migration 013 adds profile-scoped guild settings, account/guild links, and restart-safe engagement delivery state. Migration 014 reconciles earlier applied 013 schemas with the final contributor-role and engagement-retry contract. Migration 017 stores profile-scoped bot-managed Discord channels and setup-card references. Migration 020 stores canonical setup community details plus in-game name/alliance on player identities. `/register` manages the shared booking-prefill and gift-code identity. `/gift-codes` provides candidate submission, active-code visibility, redemption history, and community status. `/gift-codes-admin` provides authorized diagnostics, native channel configuration, contributor-role health, community statistics, and controlled one-code verification. Both live Century workers default to disabled.
+Migration 012 adds durable verification claims, immutable API-attempt history, notification state, and concurrency-safe redemption workers. Migration 013 adds profile-scoped guild settings, account/guild links, and restart-safe engagement delivery state. Migration 014 reconciles earlier applied 013 schemas with the final contributor-role and engagement-retry contract. Migration 017 stores profile-scoped bot-managed Discord channels and setup-card references. Migration 020 stores canonical setup community details plus in-game name/alliance on player identities. Migration 021 adds the optional native bot-manager role to that exact profile/guild setup row. `/register` manages the shared booking-prefill and gift-code identity. `/gift-codes` provides candidate submission, active-code visibility, redemption history, and community status. `/gift-codes-admin` provides authorized diagnostics, native channel configuration, contributor-role health, community statistics, and controlled one-code verification. Both live Century workers default to disabled.
 
 ## Installation
 
@@ -88,6 +94,7 @@ All variables read by the code are represented in [.env.example](.env.example):
 - Required existing bot variables: `BOT_TOKEN`, `CLIENT_ID`, `APPS_SCRIPT_URL`, `ADMIN_API_KEY`, and `OPENAI_API_KEY` where those existing features are used. Optional `BOOKING_APPS_SCRIPT_URL`, `STATE_APPS_SCRIPT_URL`, `CONFIG_APPS_SCRIPT_URL`, and `BANTER_APPS_SCRIPT_URL` overrides each fall back to `APPS_SCRIPT_URL` when unset, so existing deployments require no changes.
 - Profile variables: `GAME_PROFILE` (`wos` default or `kingshot`) and `BANTER_PROFILE` (`rachie` default).
 - Native booking website variables: `BOOKING_WEBSITE_INTEGRATION_ENABLED`, the matching profile's `BOOKING_WEBSITE_BASE_URL` and `BOOKING_WEBSITE_INTEGRATION_SECRET`, and optional polling interval. The integration is disabled unless the complete opt-in configuration is valid.
+- Bot-manager storage: `BOT_MANAGER_POSTGRES_ENABLED=true` and the shared `DATABASE_URL`.
 - Scheduler variables: `EVENT_SCHEDULER_ENABLED`, `DATABASE_URL`, and `BOT_INSTANCE_NAME`.
 - Player/gift-code variables: `PLAYER_GIFT_CODES_ENABLED`, `GIFT_CODE_MAX_AUTO_REDEEM_ACCOUNTS_PER_USER` (default `2` per user/profile), separately gated verification/redemption workers, profile-specific optional verifier characters, the shared standard `DATABASE_URL`, optional signing-suffix overrides, conservative Century delay/backoff controls, and independently gated source polling variables.
 - Optional scheduler tuning: `EVENT_SCHEDULER_LOOKAHEAD_MINUTES`, `EVENT_SCHEDULER_GRACE_MINUTES`, `EVENT_SCHEDULER_POLL_INTERVAL_MS`, `EVENT_SCHEDULER_BATCH_SIZE`, `EVENT_SCHEDULER_CLAIM_LEASE_SECONDS`, and `EVENT_SCHEDULER_HANDLER_TIMEOUT_MS`.
@@ -109,7 +116,7 @@ When only the player/gift-code subsystem is enabled, the same portable command i
 PLAYER_GIFT_CODES_ENABLED=true npm run migrate
 ```
 
-Migration files are append-only. Migrations 001 through 010 own the scheduler and state-event history described above. Migration 011 adds canonical profile-scoped player accounts, transfer history, gift codes, submissions, sources, and durable redemption identities. Migration 012 adds controlled verification/redemption claims and per-call attempt history. Migrations 013 through 015 add and reconcile gift-code guild settings, account/guild enrolment, and idempotent community-engagement events. Migration 016 adds discovery-source channels, observations, health, and provenance. Migration 019 expands the existing alliance and State event recurrence constraints to allow daily schedules. Migration 020 adds community setup metadata and the canonical in-game-name/alliance identity fields. Existing channels, schedules, state links, sent history, booking sheets, and Apps Script records are preserved. Run migrations again to confirm that zero files reapply.
+Migration files are append-only. Migrations 001 through 010 own the scheduler and state-event history described above. Migration 011 adds canonical profile-scoped player accounts, transfer history, gift codes, submissions, sources, and durable redemption identities. Migration 012 adds controlled verification/redemption claims and per-call attempt history. Migrations 013 through 015 add and reconcile gift-code guild settings, account/guild enrolment, and idempotent community-engagement events. Migration 016 adds discovery-source channels, observations, health, and provenance. Migration 019 expands the existing alliance and State event recurrence constraints to allow daily schedules. Migration 020 adds community setup metadata and the canonical in-game-name/alliance identity fields. Migration 021 adds the optional profile/guild-scoped bot-manager role. Existing channels, schedules, state links, sent history, booking sheets, and Apps Script records are preserved. Run migrations again to confirm that zero files reapply.
 
 ## Testing
 

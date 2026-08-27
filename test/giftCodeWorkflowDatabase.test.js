@@ -42,8 +42,8 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     })
     const first = await runMigrations({ pool, logger: silentLogger })
     const second = await runMigrations({ pool, logger: silentLogger })
-    assert.equal(first.applied.length, 19)
-    assert.equal(first.applied.at(-1), "019_daily_event_recurrence.sql")
+    assert.equal(first.applied.length, 21)
+    assert.equal(first.applied.at(-1), "021_native_bot_manager_role.sql")
     assert.deepEqual(second.applied, [])
 
     const attemptColumns = (await pool.query(
@@ -96,32 +96,32 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     const opted = await wosPlayers.register({
       discordUserId: owner,
       playerId: "10001",
-      locationNumber: "689"
+      locationNumber: "689", inGameName: "WOS One", allianceAbbreviation: "TST"
     })
     const optedOut = await wosPlayers.register({
       discordUserId: owner,
       playerId: "10002",
-      locationNumber: "690"
+      locationNumber: "690", inGameName: "WOS Two", allianceAbbreviation: "TST"
     })
     const inactive = await wosPlayers.register({
       discordUserId: otherOwner,
       playerId: "10003",
-      locationNumber: "691"
+      locationNumber: "691", inGameName: "WOS Three", allianceAbbreviation: "TST"
     })
     const kingshot = await kingshotPlayers.register({
       discordUserId: owner,
       playerId: "10001",
-      locationNumber: "521"
+      locationNumber: "521", inGameName: "King One", allianceAbbreviation: "TST"
     })
     const kingshotB = await kingshotPlayers.register({
       discordUserId: "333333333333333333",
       playerId: "20002",
-      locationNumber: "522"
+      locationNumber: "522", inGameName: "King Two", allianceAbbreviation: "TST"
     })
     const kingshotC = await kingshotPlayers.register({
       discordUserId: "444444444444444444",
       playerId: "30003",
-      locationNumber: "523"
+      locationNumber: "523", inGameName: "King Three", allianceAbbreviation: "TST"
     })
     const wos = createGiftCodeRepository(pool, "wos")
     const ks = createGiftCodeRepository(pool, "kingshot")

@@ -42,11 +42,11 @@ or component receives a migration response before any legacy handler can run.
 | `/event-scheduler` | Configure alliance/community events | Scheduler PostgreSQL | Separate discoverable command | KEEP |
 | `/event-scheduler-help` | Read scheduler help | Static Discord response | Same command | KEEP |
 | `/set-bot-admin-role` | Set custom bot-manager role | Apps Script bot config | Future PostgreSQL config | KEEP |
-| `/clear-bot-admin-role` | Clear custom bot-manager role | Apps Script bot config | Future PostgreSQL config | KEEP |
-| `/set-banter-channel` | Set banter channel | Apps Script banter config | Future PostgreSQL config | KEEP |
-| `/clear-banter-channel` | Clear banter channel | Apps Script banter config | Future PostgreSQL config | KEEP |
-| `/set-banter-spice` | Set banter tone | Apps Script banter config | Future PostgreSQL config | KEEP |
-| `/banter-test` | Run banter diagnostic | Apps Script config plus Discord/OpenAI | Same command | KEEP |
+| `/clear-bot-admin-role` | Clear custom bot-manager role | Native PostgreSQL setup row | Same command | KEEP |
+| `/set-banter-channel` | Set banter channel | Deferred | Deferred | DORMANT |
+| `/clear-banter-channel` | Clear banter channel | Deferred | Deferred | DORMANT |
+| `/set-banter-spice` | Set banter tone | Deferred | Deferred | DORMANT |
+| `/banter-test` | Run banter diagnostic | Deferred | Deferred | DORMANT |
 
 Gift-code administration commands (`/gift-codes`, `/gift-codes-admin`,
 `/gift-code-add`, and `/player-admin`) are native PostgreSQL specialised
@@ -83,25 +83,18 @@ requirements are resolved.
 
 ## Exact Apps Script action classification
 
-Still required by currently registered, non-booking bot behavior:
-
-- bot manager authorization/configuration:
-  `get_bot_admin_role_for_server`, `set_bot_admin_role_for_server`, and
-  `clear_bot_admin_role_for_server`;
-- banter configuration:
-  `get_banter_channel_for_server`, `set_banter_channel_for_server`,
-  `clear_banter_channel_for_server`, `get_banter_spice_for_server`, and
-  `set_banter_spice_for_server`.
-
 Still required solely by the registered legacy read-only navigation command:
 
 - `/sheet-link`: `get_sheet_link_for_server`. It resolves the current Discord
   guild through the legacy registry and returns the existing Google Sheet URL;
   the command does not expose the returned write-capable booking-page URL.
 
-No other Apps Script action is required by a registered non-booking command.
-These dependencies are why the deployments and their configuration data must
-remain available.
+No other Apps Script action is required by a registered or passive live path.
+Bot-manager authorization and its set/clear commands use
+`bot_managed_discord_setups.bot_manager_role_id`, isolated by
+`(game_profile, guild_id)`. Banter command registration and passive message
+handling are dormant; their retained source is deferred and makes no Apps
+Script call.
 
 Booking/setup/registration legacy-only actions, no longer reachable from a
 registered or stale bot interaction, are:

@@ -47,6 +47,36 @@ function createBotSetupRepository(pool, gameProfile) {
       )).rows[0]
     },
 
+    async getManagerRole(guildId) {
+      return (await pool.query(
+        `SELECT bot_manager_role_id FROM bot_managed_discord_setups
+          WHERE game_profile = $1 AND guild_id = $2`,
+        [gameProfile, guildId]
+      )).rows[0]?.bot_manager_role_id || null
+    },
+
+    async setManagerRole(guildId, roleId) {
+      return (await pool.query(
+        `INSERT INTO bot_managed_discord_setups (
+           game_profile, guild_id, bot_manager_role_id
+         ) VALUES ($1, $2, $3)
+         ON CONFLICT (game_profile, guild_id) DO UPDATE SET
+           bot_manager_role_id = EXCLUDED.bot_manager_role_id,
+           updated_at_utc = now()
+         RETURNING bot_manager_role_id`,
+        [gameProfile, guildId, roleId]
+      )).rows[0]?.bot_manager_role_id || null
+    },
+
+    async clearManagerRole(guildId) {
+      await pool.query(
+        `UPDATE bot_managed_discord_setups
+            SET bot_manager_role_id = NULL, updated_at_utc = now()
+          WHERE game_profile = $1 AND guild_id = $2`,
+        [gameProfile, guildId]
+      )
+    },
+
     async getDestinations(guildId) {
       const [gift, event] = await Promise.all([
         pool.query(

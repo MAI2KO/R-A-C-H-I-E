@@ -41,7 +41,7 @@ test("gift-code community activity is explicitly guild scoped while redemption s
       options: `-c search_path=${schema}`
     })
     const migrations = await runMigrations({ pool, logger })
-    assert.equal(migrations.applied.at(-1), "019_daily_event_recurrence.sql")
+    assert.equal(migrations.applied.at(-1), "021_native_bot_manager_role.sql")
 
     const guildA = "700000000000000001"
     const guildB = "700000000000000002"
@@ -61,7 +61,9 @@ test("gift-code community activity is explicitly guild scoped while redemption s
     const account = await wosPlayers.register({
       discordUserId: owner,
       playerId: "200000001",
-      locationNumber: "689"
+      locationNumber: "689",
+      inGameName: "Guild Player",
+      allianceAbbreviation: "TST"
     })
     const wosRepository = createGiftCodeRepository(pool, "wos")
     const wosGifts = createGiftCodeService({ repository: wosRepository, gameProfile: "wos" })
@@ -249,7 +251,9 @@ test("gift-code community activity is explicitly guild scoped while redemption s
     const ksAccount = await ksPlayers.register({
       discordUserId: owner,
       playerId: "300000001",
-      locationNumber: "521"
+      locationNumber: "521",
+      inGameName: "King Player",
+      allianceAbbreviation: "TST"
     })
     const ksGifts = createGiftCodeService({
       repository: createGiftCodeRepository(pool, "kingshot"),

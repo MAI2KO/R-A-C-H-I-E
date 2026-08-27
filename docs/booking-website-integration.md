@@ -6,7 +6,7 @@ All player-facing booking messages—automatic confirmations, manually approved 
 
 The website supplies the exact PostgreSQL appointment instant from the booked slot. Reschedules supply separate old and new instants. This is presentation-only: UTC storage, reminder timing, reminder deduplication, reschedule supersession, and cancellation suppression are unchanged. The formatting uses the same safe Discord timestamp helper as the event scheduler. Missing or malformed instants never produce invalid Discord markup.
 
-This optional subsystem connects one bot deployment to the matching native booking website profile. It is disabled unless `BOOKING_WEBSITE_INTEGRATION_ENABLED=true` and a valid profile, HTTPS base URL, and 32-character-or-longer secret are all present. Plain HTTP is accepted only for loopback local development. Existing Apps Script, event, banter, setup, and gift-code behavior continues when it is disabled or misconfigured.
+This subsystem connects one bot deployment to the matching native booking website profile. It is disabled unless `BOOKING_WEBSITE_INTEGRATION_ENABLED=true` and a valid profile, HTTPS base URL, and 32-character-or-longer secret are all present. Plain HTTP is accepted only for loopback local development.
 
 The website owns bookings, approval transitions, notification decisions, persistence, retries, and reminder scheduling. The bot has no website database credentials. It polls signed internal HTTPS endpoints, discovers current Discord managers, sends or edits DMs, receives approval buttons, and reports delivery outcomes. The same signed client also previews/applies `/setup` community linkage and projects `/register` identity into native booking prefill. The signed host and `GAME_PROFILE` determine WOS or Kingshot; neither command exposes a profile selector.
 
@@ -34,6 +34,32 @@ the signed guild/profile scope. If the website is temporarily unavailable the
 player is told to retry; no legacy Sheet registration is attempted.
 
 Manager discovery must enumerate current guild members so it can include guild owners, current Administrators, and current holders of `bot_manager_role_id`, including uncached members. In each Discord Developer Portal application, enable **Bot → Privileged Gateway Intents → Server Members Intent** before turning on the integration. When enabled, this code conditionally requests `GuildMembers`; when disabled it does not alter existing intents.
+
+`bot_manager_role_id` is stored only in the profile-scoped
+`bot_managed_discord_setups` PostgreSQL row. Migration 021 is additive. There is
+no automatic Apps Script import because the legacy deployments are separate
+external authorities and bulk import cannot be made transactional or safely
+profile-scoped. After migration, an owner or Discord Administrator must run
+`/set-bot-admin-role` once in each guild that used a custom role.
+
+## Automatic booking-open delivery
+
+For every open WOS window, the website transaction creates at most one
+`booking_window_open` work row and one window-bound guest link. The token is a
+profile/community/window-specific HMAC derived from the integration secret, so
+retries reproduce the same opaque URL while PostgreSQL stores only its SHA-256
+hash and six-character hint. Opening a later window revokes the previous link;
+Sunday 12:00 UTC reconciliation revokes the current link and copied URLs stop
+authorising guest booking.
+
+The bot posts the public message to each linked guild's native managed
+`minister-sign-up` channel using stable Discord nonces. It sends the
+copy-friendly link block by DM to the deduplicated guild owner,
+Administrators, and configured native manager-role holders. This is the
+existing safe manager-only delivery path; no new public admin channel is
+invented. The member button checks the canonical PostgreSQL `/register`
+identity: registered members receive the native booking URL, while others are
+directed through `/register` first. The guest button is the fresh window URL.
 
 The bot must remain a member of every guild linked to the profile's State/Kingdom. It needs ordinary permission to access those guilds and send DMs; no broad website or PostgreSQL permission is added.
 

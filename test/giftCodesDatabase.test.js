@@ -24,8 +24,8 @@ test("player and gift-code PostgreSQL foundation is profile scoped, transactiona
     })
     const first = await runMigrations({ pool, logger: { log() {}, error() {} } })
     const second = await runMigrations({ pool, logger: { log() {}, error() {} } })
-    assert.equal(first.applied.length, 19)
-    assert.equal(first.applied.at(-1), "019_daily_event_recurrence.sql")
+    assert.equal(first.applied.length, 21)
+    assert.equal(first.applied.at(-1), "021_native_bot_manager_role.sql")
     assert.deepEqual(second.applied, [])
 
     const column = (await pool.query(
@@ -52,17 +52,17 @@ test("player and gift-code PostgreSQL foundation is profile scoped, transactiona
     const wosPrimary = await wos.register({
       discordUserId: owner,
       playerId: "12345",
-      locationNumber: "689"
+      locationNumber: "689", inGameName: "WOS Primary", allianceAbbreviation: "TST"
     })
     const wosSecondary = await wos.register({
       discordUserId: owner,
       playerId: "23456",
-      locationNumber: "700"
+      locationNumber: "700", inGameName: "WOS Secondary", allianceAbbreviation: "TST"
     })
     const kingshotPrimary = await kingshot.register({
       discordUserId: owner,
       playerId: "12345",
-      locationNumber: "521"
+      locationNumber: "521", inGameName: "King Primary", allianceAbbreviation: "TST"
     })
     assert.equal(wosPrimary.is_primary, true)
     assert.equal(wosSecondary.is_primary, false)
@@ -70,7 +70,8 @@ test("player and gift-code PostgreSQL foundation is profile scoped, transactiona
     assert.equal((await wos.view({ discordUserId: owner })).length, 2)
     assert.equal((await kingshot.view({ discordUserId: owner })).length, 1)
     await assert.rejects(
-      wos.register({ discordUserId: owner, playerId: "12345", locationNumber: "999" }),
+      wos.register({ discordUserId: "222222222222222222", playerId: "12345", locationNumber: "999",
+        inGameName: "Duplicate", allianceAbbreviation: "TST" }),
       error => error instanceof PlayerAccountError && error.code === "PLAYER_ALREADY_REGISTERED"
     )
 

@@ -224,11 +224,8 @@ test("index assigns every Apps Script action to its responsibility client", () =
     "unlink_state_server_by_id"
   ])
   assert.deepEqual(actionsFor("configAppsScriptClient"), [
-    "clear_bot_admin_role_for_server",
     "get_booking_config_for_server",
-    "get_bot_admin_role_for_server",
     "get_settings_for_server",
-    "set_bot_admin_role_for_server",
     "update_setting_for_server",
     "update_setting_for_server",
     "update_setting_for_server"
@@ -239,5 +236,7 @@ test("index assigns every Apps Script action to its responsibility client", () =
     "set_banter_spice_for_server"
   ])
   assert.match(source, /fetchAction: \(action, guildId\) => banterAppsScriptClient\.post\(\{\s*action,/)
+  assert.doesNotMatch(source,
+    /action: "(?:get|set|clear)_bot_admin_role_for_server"/)
   assert.doesNotMatch(source, /postToAppsScript/)
 })
