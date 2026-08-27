@@ -1,6 +1,8 @@
 const { getPool } = require("./db")
 const { createPublicAllianceEventRepository } = require("./publicAllianceEventRepository")
 const { createPublicAllianceEventsServer } = require("./publicAllianceEventsServer")
+const { createBotSetupRepository } = require("./botSetupRepository")
+const { createLiveBotManagerVerifier } = require("./botManagerAuthorization")
 
 const PROFILES = new Set(["wos", "kingshot"])
 
@@ -22,6 +24,7 @@ function publicAllianceEventsConfig(env = process.env) {
 }
 
 function createPublicAllianceEventsBootstrap({ initializationPromise, env = process.env,
+  managerInitializationPromise = Promise.resolve({ available: false }), client = null,
   logger = console, processRef = process, config = publicAllianceEventsConfig(env),
   getPoolFn = getPool, createRepository = createPublicAllianceEventRepository,
   createServer = createPublicAllianceEventsServer }) {
@@ -35,13 +38,23 @@ function createPublicAllianceEventsBootstrap({ initializationPromise, env = proc
     if (startPromise) return startPromise
     startPromise = (async () => {
       if (!config.enabled) return { started: false, reason: config.disabledReason }
-      const health = await initializationPromise
-      if (!health?.available || health.gameProfile !== config.profile) {
-        return { started: false, reason: "scheduler unavailable" }
+      const [health, managerHealth] = await Promise.all([
+        initializationPromise, managerInitializationPromise
+      ])
+      const schedulerAvailable = health?.available && health.gameProfile === config.profile
+      const managerAvailable = managerHealth?.available && client
+      if (!schedulerAvailable && !managerAvailable) {
+        return { started: false, reason: "internal data services unavailable" }
       }
+      const pool = getPoolFn({ env, logger })
       runtime = createServer({
         config,
-        repository: createRepository(getPoolFn({ env, logger }), config.profile),
+        repository: schedulerAvailable ? createRepository(pool, config.profile) : null,
+        verifyManager: managerAvailable ? createLiveBotManagerVerifier({
+          client,
+          repositoryProvider: () => createBotSetupRepository(pool, config.profile),
+          logger
+        }) : null,
         logger
       })
       return runtime.start()

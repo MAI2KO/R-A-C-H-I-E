@@ -8,7 +8,11 @@ const {
   verifyPublicAllianceEventsRequest
 } = require("../src/publicAllianceEventsAuth")
 const { handlePublicAllianceEventsRead } = require("../src/publicAllianceEventsServer")
-const { publicAllianceEventsConfig } = require("../src/publicAllianceEventsBootstrap")
+const { handleNativeManagerAuthorization } = require("../src/nativeManagerAuthorizationServer")
+const {
+  publicAllianceEventsConfig,
+  createPublicAllianceEventsBootstrap
+} = require("../src/publicAllianceEventsBootstrap")
 
 const secret = "local-test-secret-with-at-least-32-characters"
 const now = new Date("2026-08-23T12:00:00.000Z")
@@ -130,4 +134,70 @@ test("read endpoint fails closed and configuration is dormant by default", async
     config: { secret, profile: "wos" }, repository: { listForCommunity: async () => { throw new Error("db") } }, now: () => now
   })
   assert.equal(unavailable.status, 503)
+})
+
+test("signed native manager endpoint returns only a live scoped decision", async () => {
+  const path = "/internal/v1/manager-authorization/guild/300000000000000003/user/200000000000000002"
+  const headers = signedPublicAllianceEventsHeaders({ secret, profile: "wos", method: "GET", path,
+    now: () => now.getTime(), createNonce: () => "abcdefghijklmnop" })
+  let allowed = true
+  const verifyManager = async input => {
+    assert.deepEqual(input, {
+      guildId: "300000000000000003", discordUserId: "200000000000000002"
+    })
+    return allowed
+      ? { status: "authorized", via: "bot_manager_role" }
+      : { status: "denied", reason: "insufficient_permissions" }
+  }
+  let result = await handleNativeManagerAuthorization({ method: "GET", path, headers }, {
+    config: { secret, profile: "wos" }, verifyManager, now: () => now
+  })
+  assert.deepEqual(result, { status: 200,
+    body: { ok: true, canManage: true, via: "bot_manager_role" } })
+  allowed = false
+  result = await handleNativeManagerAuthorization({ method: "GET", path, headers }, {
+    config: { secret, profile: "wos" }, verifyManager, now: () => now
+  })
+  assert.deepEqual(result, { status: 200, body: { ok: true, canManage: false } })
+  assert.doesNotMatch(JSON.stringify(result), /role|guild|user/i)
+})
+
+test("native manager endpoint rejects cross-profile signatures and controls failures", async () => {
+  const path = "/internal/v1/manager-authorization/guild/300000000000000003/user/200000000000000002"
+  const headers = signedPublicAllianceEventsHeaders({ secret, profile: "kingshot", method: "GET", path,
+    now: () => now.getTime(), createNonce: () => "abcdefghijklmnop" })
+  assert.equal((await handleNativeManagerAuthorization({ method: "GET", path, headers }, {
+    config: { secret, profile: "wos" }, verifyManager: async () => ({ status: "authorized" }),
+    now: () => now
+  })).status, 401)
+  const wosHeaders = signedPublicAllianceEventsHeaders({ secret, profile: "wos", method: "GET", path,
+    now: () => now.getTime(), createNonce: () => "abcdefghijklmnop" })
+  const failed = await handleNativeManagerAuthorization({ method: "GET", path, headers: wosHeaders }, {
+    config: { secret, profile: "wos" },
+    verifyManager: async () => ({ status: "unavailable", reason: "database_unavailable" }),
+    now: () => now
+  })
+  assert.deepEqual(failed, { status: 503,
+    body: { ok: false, code: "manager_verification_unavailable" } })
+})
+
+test("private listener can serve manager authorization without scheduler availability", async () => {
+  let serverInput
+  const bootstrap = createPublicAllianceEventsBootstrap({
+    initializationPromise: Promise.resolve({ available: false, gameProfile: null }),
+    managerInitializationPromise: Promise.resolve({ available: true }),
+    client: { guilds: { cache: new Map(), fetch: async () => null } },
+    config: { enabled: true, requested: true, profile: "wos", secret,
+      port: 3001, secretConfigured: true, disabledReason: null },
+    getPoolFn: () => ({ query: async () => ({ rows: [] }) }),
+    createServer: input => {
+      serverInput = input
+      return { start: async () => ({ started: true }), stop: async () => {} }
+    },
+    processRef: { once() {} },
+    logger: { log() {}, error() {} }
+  })
+  assert.deepEqual(await bootstrap.start(), { started: true })
+  assert.equal(serverInput.repository, null)
+  assert.equal(typeof serverInput.verifyManager, "function")
 })

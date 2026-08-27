@@ -10,33 +10,75 @@ function interactionIsDiscordAdministrator(interaction) {
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator))
 }
 
-function createBotManagerAuthorizer({ repositoryProvider, logger = console }) {
+function createBotManagerDecision({ repositoryProvider, logger = console }) {
   if (typeof repositoryProvider !== "function") throw new Error("repositoryProvider is required")
+  return async function decide({ guildId, isOwner, isAdministrator, hasRole }) {
+    if (isOwner || isAdministrator) {
+      return Object.freeze({ status: "authorized", via: "administrator", guildId })
+    }
+    if (!guildId) return Object.freeze({ status: "denied", reason: "missing_guild" })
+    try {
+      const repository = repositoryProvider()
+      if (!repository) return Object.freeze({ status: "unavailable", reason: "database_unavailable" })
+      const roleId = await repository.getManagerRole(guildId)
+      return roleId && hasRole(roleId)
+        ? Object.freeze({ status: "authorized", via: "bot_manager_role", guildId })
+        : Object.freeze({ status: "denied", reason: "insufficient_permissions" })
+    } catch (error) {
+      logger.error(JSON.stringify({
+        event: "bot_manager_authorization_failed",
+        error_code: String(error?.code || "database_unavailable").slice(0, 80)
+      }))
+      return Object.freeze({ status: "unavailable", reason: "database_unavailable" })
+    }
+  }
+}
+
+function createBotManagerAuthorizer({ repositoryProvider, logger = console }) {
+  const decide = createBotManagerDecision({ repositoryProvider, logger })
   return Object.freeze({
     async canManage(interaction) {
-      if (interactionIsGuildOwner(interaction) || interactionIsDiscordAdministrator(interaction)) {
-        return true
-      }
-      if (!interaction.guildId) return false
-      try {
-        const repository = repositoryProvider()
-        if (!repository) return false
-        const roleId = await repository.getManagerRole(interaction.guildId)
-        return Boolean(roleId && interaction.member?.roles?.cache?.has(roleId))
-      } catch (error) {
-        logger.error(JSON.stringify({
-          event: "bot_manager_authorization_failed",
-          game_profile: String(repositoryProvider.gameProfile || "unknown").slice(0, 32),
-          error_code: String(error?.code || "database_unavailable").slice(0, 80)
-        }))
-        return false
-      }
+      const result = await decide({
+        guildId: interaction.guildId,
+        isOwner: interactionIsGuildOwner(interaction),
+        isAdministrator: interactionIsDiscordAdministrator(interaction),
+        hasRole: roleId => Boolean(interaction.member?.roles?.cache?.has(roleId))
+      })
+      return result.status === "authorized"
     }
   })
+}
+
+function createLiveBotManagerVerifier({ client, repositoryProvider, logger = console }) {
+  if (!client?.guilds) throw new Error("Discord client is required")
+  const decide = createBotManagerDecision({ repositoryProvider, logger })
+  return async function verify({ guildId, discordUserId }) {
+    try {
+      const guild = client.guilds.cache?.get(guildId) || await client.guilds.fetch(guildId)
+      const member = await guild.members.fetch(discordUserId)
+      return decide({
+        guildId,
+        isOwner: guild.ownerId === discordUserId,
+        isAdministrator: Boolean(member.permissions?.has(PermissionFlagsBits.Administrator)),
+        hasRole: roleId => Boolean(member.roles?.cache?.has(roleId))
+      })
+    } catch (error) {
+      if (String(error?.code) === "10007") {
+        return Object.freeze({ status: "denied", reason: "not_member" })
+      }
+      logger.error(JSON.stringify({
+        event: "native_manager_member_verification_failed",
+        error_code: String(error?.code || "discord_unavailable").slice(0, 80)
+      }))
+      return Object.freeze({ status: "unavailable", reason: "discord_unavailable" })
+    }
+  }
 }
 
 module.exports = {
   interactionIsGuildOwner,
   interactionIsDiscordAdministrator,
-  createBotManagerAuthorizer
+  createBotManagerDecision,
+  createBotManagerAuthorizer,
+  createLiveBotManagerVerifier
 }

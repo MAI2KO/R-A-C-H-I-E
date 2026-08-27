@@ -3989,7 +3989,8 @@ const { createGiftCodeWorkflowRuntime } = require("./src/giftCodes/workflowRunti
 /* -------------------- START BOT -------------------- */
 
 async function main() {
-  await initializeBotManagerSubsystem()
+  const botManagerInitialization = initializeBotManagerSubsystem()
+  await botManagerInitialization
   const bookingWebsiteBootstrap = createBookingWebsiteBootstrap({
     client,
     configuration: bookingWebsiteConfiguration
@@ -4013,7 +4014,9 @@ async function main() {
   })
   allianceEventDeliveryRuntime.installShutdownHandlers()
   publicAllianceEventsBootstrap = createPublicAllianceEventsBootstrap({
-    initializationPromise: schedulerInitialization
+    initializationPromise: schedulerInitialization,
+    managerInitializationPromise: botManagerInitialization,
+    client
   })
   void publicAllianceEventsBootstrap.start()
 

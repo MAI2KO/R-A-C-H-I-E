@@ -8,11 +8,18 @@ Set all of the following on each bot service to enable it:
 - `ALLIANCE_EVENTS_READ_SECRET` to a random value of at least 32 characters (different per profile)
 - `ALLIANCE_EVENTS_READ_PORT` to the private listener port
 
-When configuration is absent or invalid the listener is dormant and existing bot behavior is unchanged. It starts only after the scheduler database health check succeeds. Requests are signed with HMAC-SHA256 over method, path, profile, timestamp, and nonce; timestamps have a five-minute tolerance. Put the listener behind private service networking/TLS and do not expose its secret in browser code.
+When configuration is absent or invalid the listener is dormant and existing bot behavior is unchanged. It starts when either its scheduler read model or native bot-manager service is available. Requests are signed with HMAC-SHA256 over method, path, profile, timestamp, and nonce; timestamps have a five-minute tolerance. Put the listener behind private service networking/TLS and do not expose its secret in browser code.
 
 `GET /internal/v1/public-alliance-events/guild/{guildId}` reads active `scheduled_events` and their `event_alliances` and `scheduled_event_groups` for that Discord guild and the process `GAME_PROFILE`. Discord guild IDs must be 15-22 digits. It does not read `event_state_destinations`, `event_state_links`, or `state_events`: those tables describe Discord State delivery, not website community membership. Paused/deleted events are filtered by `scheduled_events.status = 'active'`; publish and roundup settings are unrelated.
 
 The older `GET /internal/v1/public-alliance-events/{stateNumber}` route remains available for compatibility with existing internal consumers, but the website does not use it.
+
+The same signed private listener exposes
+`GET /internal/v1/manager-authorization/guild/{guildId}/user/{discordUserId}`.
+It checks live guild owner and Administrator state before reading the exact
+profile/guild `bot_managed_discord_setups.bot_manager_role_id`. Its response is
+limited to `canManage` and the bounded authorization kind. It never returns the
+configured role ID, member roles, database details, or integration secret.
 
 The guild response contains only profile, alliance name/optional abbreviation, event name, recurrence summary, group name, and the next three UTC instants. Alliance abbreviations are currently not stored by the scheduler, so the field is `null`. Discord/database IDs, delivery history, claims, images, settings, and secrets never cross this boundary. Occurrences come directly from `occurrenceCalculation.js`; the website does not implement recurrence arithmetic.
 

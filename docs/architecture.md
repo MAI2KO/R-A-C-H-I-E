@@ -19,6 +19,11 @@ for audit/rollback reference but booking, `/register`, bot-manager
 authorization, and booking-open announcements do not call them. Banter command
 registration and passive message handling are dormant.
 
+Website manager authorization uses the existing signed internal listener. The
+website sends the exact linked guild and authenticated Discord user to the
+matching profile bot; the bot evaluates current owner/Administrator state and
+the native PostgreSQL bot-manager role. Role decisions are live and uncached.
+
 Historically, `index.js` routed Apps Script payloads through four internal clients:
 
 - booking: registration, availability, booking dates and links, open/close, user/admin bookings, cancellation, clearing, and reservations;

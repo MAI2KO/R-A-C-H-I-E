@@ -2,7 +2,10 @@ const assert = require("node:assert/strict")
 const test = require("node:test")
 const { PermissionFlagsBits } = require("discord.js")
 
-const { createBotManagerAuthorizer } = require("../src/botManagerAuthorization")
+const {
+  createBotManagerAuthorizer,
+  createLiveBotManagerVerifier
+} = require("../src/botManagerAuthorization")
 
 function interaction({ userId = "10", ownerId = "1", administrator = false, roles = [] } = {}) {
   return {
@@ -39,4 +42,58 @@ test("missing or failed PostgreSQL manager configuration fails closed", async ()
     logger: { error() {} }
   })
   assert.equal(await failed.canManage(interaction()), false)
+})
+
+function liveClient({ ownerId = "100000000000000001", administrator = false, roles = [] } = {}) {
+  const member = {
+    permissions: { has: permission => permission === PermissionFlagsBits.Administrator && administrator },
+    roles: { cache: { has: roleId => roles.includes(roleId) } }
+  }
+  const guild = {
+    ownerId,
+    members: { fetch: async userId => {
+      assert.equal(userId, "200000000000000002")
+      return member
+    } }
+  }
+  return { guilds: { cache: new Map([["300000000000000003", guild]]), fetch: async () => guild } }
+}
+
+test("live website decisions share native owner, Administrator, and PostgreSQL role authority", async () => {
+  const failedRepository = () => ({ async getManagerRole() { throw new Error("down") } })
+  for (const client of [
+    liveClient({ ownerId: "200000000000000002" }),
+    liveClient({ administrator: true })
+  ]) {
+    const result = await createLiveBotManagerVerifier({
+      client, repositoryProvider: failedRepository, logger: { error() {} }
+    })({ guildId: "300000000000000003", discordUserId: "200000000000000002" })
+    assert.equal(result.status, "authorized")
+    assert.equal(result.via, "administrator")
+  }
+
+  let configuredRole = "400000000000000004"
+  const verify = createLiveBotManagerVerifier({
+    client: liveClient({ roles: ["400000000000000004"] }),
+    repositoryProvider: () => ({ async getManagerRole(guildId) {
+      assert.equal(guildId, "300000000000000003")
+      return configuredRole
+    } }),
+    logger: { error() {} }
+  })
+  assert.equal((await verify({ guildId: "300000000000000003",
+    discordUserId: "200000000000000002" })).via, "bot_manager_role")
+  configuredRole = null
+  assert.equal((await verify({ guildId: "300000000000000003",
+    discordUserId: "200000000000000002" })).status, "denied")
+})
+
+test("live role-only authorization fails closed when native storage is unavailable", async () => {
+  const verify = createLiveBotManagerVerifier({
+    client: liveClient({ roles: ["400000000000000004"] }),
+    repositoryProvider: () => ({ async getManagerRole() { throw new Error("down") } }),
+    logger: { error() {} }
+  })
+  assert.equal((await verify({ guildId: "300000000000000003",
+    discordUserId: "200000000000000002" })).status, "unavailable")
 })
