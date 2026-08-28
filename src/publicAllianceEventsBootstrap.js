@@ -2,7 +2,10 @@ const { getPool } = require("./db")
 const { createPublicAllianceEventRepository } = require("./publicAllianceEventRepository")
 const { createPublicAllianceEventsServer } = require("./publicAllianceEventsServer")
 const { createBotSetupRepository } = require("./botSetupRepository")
-const { createLiveBotManagerVerifier } = require("./botManagerAuthorization")
+const {
+  createLiveBotManagerVerifier,
+  createLiveGuildOwnerVerifier
+} = require("./botManagerAuthorization")
 
 const PROFILES = new Set(["wos", "kingshot"])
 
@@ -55,6 +58,7 @@ function createPublicAllianceEventsBootstrap({ initializationPromise, env = proc
           repositoryProvider: () => createBotSetupRepository(pool, config.profile),
           logger
         }) : null,
+        verifyOwner: managerAvailable ? createLiveGuildOwnerVerifier({ client, logger }) : null,
         logger
       })
       return runtime.start()

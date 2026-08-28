@@ -4,7 +4,8 @@ const { PermissionFlagsBits } = require("discord.js")
 
 const {
   createBotManagerAuthorizer,
-  createLiveBotManagerVerifier
+  createLiveBotManagerVerifier,
+  createLiveGuildOwnerVerifier
 } = require("../src/botManagerAuthorization")
 
 function interaction({ userId = "10", ownerId = "1", administrator = false, roles = [] } = {}) {
@@ -96,4 +97,25 @@ test("live role-only authorization fails closed when native storage is unavailab
   })
   assert.equal((await verify({ guildId: "300000000000000003",
     discordUserId: "200000000000000002" })).status, "unavailable")
+})
+
+test("guild ownership verification accepts only the exact owner and fails closed", async () => {
+  const owner = createLiveGuildOwnerVerifier({
+    client: liveClient({ ownerId: "200000000000000002", administrator: true,
+      roles: ["400000000000000004"] }), logger: { error() {} }
+  })
+  assert.deepEqual(await owner({ guildId: "300000000000000003",
+    discordUserId: "200000000000000002" }), { status: "owner" })
+  const nonOwner = createLiveGuildOwnerVerifier({
+    client: liveClient({ ownerId: "100000000000000001", administrator: true,
+      roles: ["400000000000000004"] }), logger: { error() {} }
+  })
+  assert.deepEqual(await nonOwner({ guildId: "300000000000000003",
+    discordUserId: "200000000000000002" }), { status: "not_owner" })
+  const unavailable = createLiveGuildOwnerVerifier({
+    client: { guilds: { cache: new Map(), fetch: async () => { throw new Error("down") } } },
+    logger: { error() {} }
+  })
+  assert.deepEqual(await unavailable({ guildId: "300000000000000003",
+    discordUserId: "200000000000000002" }), { status: "unavailable" })
 })

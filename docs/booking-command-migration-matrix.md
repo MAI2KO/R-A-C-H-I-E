@@ -11,22 +11,22 @@ or component receives a migration response before any legacy handler can run.
 | `/bot-setup` | Reconcile bot category, channels, cards, and destinations | PostgreSQL `bot_managed_discord_setups`, gift/event settings; Discord channels | Canonical `/setup` using the same service | MERGE INTO /setup |
 | `/setup-help` | Advertise legacy Sheet setup/write commands | Static Discord response | `/setup` status and deployment docs | MERGE INTO /setup |
 | `/link-state` | Link a Discord guild to a legacy community | Apps Script `link_state` and registry Sheet | Signed native linkage in `/setup` | MERGE INTO /setup |
-| `/unlink-state` | Remove a legacy guild/community link | Apps Script registry read and `unlink_state_server_by_id` | Future native community-link administration | REMOVE AFTER MIGRATION |
-| `/linked-servers` | List legacy guild links | Apps Script `get_linked_servers_for_current_state` | Native authorized community membership | LEGACY READ-ONLY |
+| `/unlink-state` | Remove a legacy guild/community link | Apps Script registry read and `unlink_state_server_by_id` | Booking Admin **Discord access** owner-only alliance unlink | REPLACED; old State/password meaning obsolete |
+| `/linked-servers` | List legacy guild links | Apps Script `get_linked_servers_for_current_state` | Booking Admin **Discord access** linked-alliance list | REPLACED |
 | `/reset-state-password` | Rotate legacy Sheet join password | Apps Script `reset_state_password` | Opaque website guest-link rotation | DEPRECATE |
 | `/grant-access` | Grant email access to a community Sheet | Apps Script/Google Sheet permissions | Discord-authenticated Booking Admin | DEPRECATE |
-| `/sheet-link` | Open the correctly guild-scoped existing historical Sheet | Apps Script read action `get_sheet_link_for_server` | Same explicitly read-only legacy navigation command | KEEP |
+| `/sheet-link` | Open the correctly guild-scoped existing historical Sheet | Apps Script read action `get_sheet_link_for_server` | Temporary emergency read-only navigation only | REMOVE AFTER ONE SUCCESSFUL NATIVE LIVE CYCLE |
 | `/set-announcements` | Set legacy booking announcement destination | Apps Script `set_announcement_channel` | Native booking/scheduler destinations | REMOVE AFTER MIGRATION |
 | `/settings` | Read/write booking limits and requirements | Apps Script community Sheet config | Website Booking Admin | DEPRECATE |
 | `/open-bookings` | Open legacy bookings | Apps Script `open_bookings_for_server` | Booking Admin booking switch | DEPRECATE |
 | `/close-bookings` | Close legacy bookings | Apps Script `close_bookings_for_server` | Booking Admin booking switch | DEPRECATE |
 | `/clear-bookings` | Clear appointment-grid cells | Apps Script `clear_bookings_for_server` | No destructive native equivalent | DEPRECATE |
-| `/set-booking-date` | Change a legacy service date | Apps Script `set_booking_date_for_server` | Native windows/automatic WOS cycle | DEPRECATE |
+| `/set-booking-date` | Change a legacy service date | Apps Script `set_booking_date_for_server` | Fixed native service dates plus per-cycle open/close override | DEPRECATE |
 | `/times` | Read legacy availability/date | Apps Script `get_times_for_server`, `get_booking_date_for_server` | Website appointment availability | LEGACY READ-ONLY |
 | `/booking-link` | Return write-capable legacy public booking page | Apps Script booking deployment | Authenticated website or opaque guest link | DEPRECATE |
 | `/book` | Create a legacy Sheet booking | Apps Script reads plus `book_for_server` | Native website booking | DEPRECATE |
 | `/remove-booking` | Cancel caller's legacy Sheet booking | Apps Script `remove_booking_for_server` | Native website cancellation | DEPRECATE |
-| `/my-bookings` | Read caller's current Sheet cells | Apps Script `get_my_bookings_for_server` | Website My bookings/future Legacy view | LEGACY READ-ONLY |
+| `/my-bookings` | Read caller's current Sheet cells | Apps Script `get_my_bookings_for_server` | Native website My bookings | REPLACED; no Legacy tab/import |
 | `/admin-add-booking` | Create a manager booking | Apps Script `admin_add_booking_for_server` | Native manager appointment board | DEPRECATE |
 | `/admin-remove-booking` | Cancel a player's booking | Apps Script `admin_remove_booking_for_server` | Native manager board cancellation | DEPRECATE |
 | `/admin-reserve-slots` | Reserve legacy Sheet cells | Apps Script read plus `admin_reserve_slots_for_server` | Native slot blocking | DEPRECATE |
@@ -41,7 +41,7 @@ or component receives a migration response before any legacy handler can run.
 | `/setup` (canonical) | Preview/apply idempotent community and Discord-resource reconciliation | Bot PostgreSQL, Discord channels/messages, signed native community-link route | Same command | KEEP |
 | `/event-scheduler` | Configure alliance/community events | Scheduler PostgreSQL | Separate discoverable command | KEEP |
 | `/event-scheduler-help` | Read scheduler help | Static Discord response | Same command | KEEP |
-| `/set-bot-admin-role` | Set custom bot-manager role | Apps Script bot config | Future PostgreSQL config | KEEP |
+| `/set-bot-admin-role` | Set custom bot-manager role | Native PostgreSQL setup row | Same command | KEEP |
 | `/clear-bot-admin-role` | Clear custom bot-manager role | Native PostgreSQL setup row | Same command | KEEP |
 | `/set-banter-channel` | Set banter channel | Deferred | Deferred | DORMANT |
 | `/clear-banter-channel` | Clear banter channel | Deferred | Deferred | DORMANT |
@@ -88,6 +88,18 @@ Still required solely by the registered legacy read-only navigation command:
 - `/sheet-link`: `get_sheet_link_for_server`. It resolves the current Discord
   guild through the legacy registry and returns the existing Google Sheet URL;
   the command does not expose the returned write-capable booking-page URL.
+  This is an emergency fallback for the next live cycle, not a supported
+  mutation path, and should be deleted after that native cycle succeeds.
+
+## Genuine remaining gaps
+
+- Platform-admin tooling to unlink or remap the shared State/Kingdom Discord is
+  intentionally deferred. Booking Admin cannot perform that operation.
+- Removal of the final `/sheet-link` Apps Script read dependency waits only for
+  one successful native live booking cycle.
+
+There are no remaining player booking, manager booking, alliance-unlink,
+registration, booking-window, announcement, or guest-link replacement gaps.
 
 No other Apps Script action is required by a registered or passive live path.
 Bot-manager authorization and its set/clear commands use

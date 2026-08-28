@@ -1550,7 +1550,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("sheet-link")
-    .setDescription("Open this server's read-only legacy booking sheet"),
+    .setDescription("Open the emergency read-only legacy booking sheet"),
     
 
   new SlashCommandBuilder()
@@ -3394,10 +3394,11 @@ Recommended order
       }
 
       await interaction.editReply(
-        `**Legacy booking records — read-only**\n\n` +
+        `**Emergency legacy booking fallback — read-only**\n\n` +
         `Community: ${result.state_code}\n` +
-        `Existing historical Google Sheet:\n${result.sheet_url}\n\n` +
-        "New bookings and changes remain available only through the authenticated community website."
+        `Existing legacy Google Sheet:\n${result.sheet_url}\n\n` +
+        "This link is navigation only: the bot cannot open, close, create, or change bookings through Apps Script. " +
+        "Use the authenticated community website for normal operation. This fallback is scheduled for removal after one successful native live booking cycle."
       )
       return
     }

@@ -13,8 +13,9 @@ The bot services may share standard Postgres. `game_profile` is included in sche
 
 ## Remaining Apps Script Boundary
 
-The only registered live Apps Script dependency is `/sheet-link`, which reads
-the legacy Sheet URL. Legacy handler source and responsibility clients remain
+The only registered live Apps Script dependency is `/sheet-link`, a temporary
+emergency command which only reads the legacy Sheet URL. It must be removed
+after one successful native live booking cycle. Legacy handler source and responsibility clients remain
 for audit/rollback reference but booking, `/register`, bot-manager
 authorization, and booking-open announcements do not call them. Banter command
 registration and passive message handling are dormant.
@@ -23,6 +24,9 @@ Website manager authorization uses the existing signed internal listener. The
 website sends the exact linked guild and authenticated Discord user to the
 matching profile bot; the bot evaluates current owner/Administrator state and
 the native PostgreSQL bot-manager role. Role decisions are live and uncached.
+The separate signed guild-ownership read verifies exact Discord ownership for
+alliance unlinking; Administrator permission and the bot-manager role are not
+accepted for that higher-trust action.
 
 Historically, `index.js` routed Apps Script payloads through four internal clients:
 

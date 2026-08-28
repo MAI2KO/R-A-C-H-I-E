@@ -56,7 +56,7 @@ test("every legacy Sheet booking write surface is retired and stale controls fai
 
 test("sheet-link stays registered as a strictly read-only legacy navigation command", () => {
   assert.equal(RETIRED_LEGACY_BOOKING_COMMANDS.has("sheet-link"), false)
-  assert.match(source, /\.setName\("sheet-link"\)\s*\.setDescription\("Open this server's read-only legacy booking sheet"\)/)
+  assert.match(source, /\.setName\("sheet-link"\)\s*\.setDescription\("Open the emergency read-only legacy booking sheet"\)/)
 
   const start = source.indexOf('if (interaction.commandName === "sheet-link")')
   const end = source.indexOf('if (interaction.commandName === "settings")', start)
@@ -64,7 +64,8 @@ test("sheet-link stays registered as a strictly read-only legacy navigation comm
   const handler = source.slice(start, end)
   assert.match(handler, /stateAppsScriptClient\.post\(\{\s*action: "get_sheet_link_for_server"/)
   assert.match(handler, /discordServerId: interaction\.guildId/)
-  assert.match(handler, /Legacy booking records — read-only/)
+  assert.match(handler, /Emergency legacy booking fallback — read-only/)
+  assert.match(handler, /scheduled for removal after one successful native live booking cycle/)
   assert.match(handler, /result\.sheet_url/)
   assert.doesNotMatch(handler, /result\.booking_url/)
   assert.doesNotMatch(handler,

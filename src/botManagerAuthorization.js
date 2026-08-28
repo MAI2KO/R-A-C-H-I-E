@@ -75,10 +75,29 @@ function createLiveBotManagerVerifier({ client, repositoryProvider, logger = con
   }
 }
 
+function createLiveGuildOwnerVerifier({ client, logger = console }) {
+  if (!client?.guilds) throw new Error("Discord client is required")
+  return async function verify({ guildId, discordUserId }) {
+    try {
+      const guild = client.guilds.cache?.get(guildId) || await client.guilds.fetch(guildId)
+      return guild.ownerId === discordUserId
+        ? Object.freeze({ status: "owner" })
+        : Object.freeze({ status: "not_owner" })
+    } catch (error) {
+      logger.error(JSON.stringify({
+        event: "native_guild_owner_verification_failed",
+        error_code: String(error?.code || "discord_unavailable").slice(0, 80)
+      }))
+      return Object.freeze({ status: "unavailable" })
+    }
+  }
+}
+
 module.exports = {
   interactionIsGuildOwner,
   interactionIsDiscordAdministrator,
   createBotManagerDecision,
   createBotManagerAuthorizer,
-  createLiveBotManagerVerifier
+  createLiveBotManagerVerifier,
+  createLiveGuildOwnerVerifier
 }

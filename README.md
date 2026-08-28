@@ -14,7 +14,8 @@ query and claim remains isolated by `game_profile`.
 
 Native PostgreSQL and the booking website own booking, registration projection,
 automatic booking-open announcements, and bot-manager authorization. Apps
-Script remains live only for `/sheet-link` read-only legacy navigation. Banter
+Script remains live only for `/sheet-link`, a read-only emergency fallback for
+the next native live booking cycle. Remove it after that cycle succeeds. Banter
 is deferred and dormant.
 
 Postgres owns scheduler data and, when enabled, canonical player accounts and gift-code records. If Postgres is disabled or unavailable, the Discord bot still starts and existing Apps Script-backed features continue to operate. Database-backed commands report temporary unavailability without taking down booking or banter.

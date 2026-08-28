@@ -8,7 +8,10 @@ const {
   verifyPublicAllianceEventsRequest
 } = require("../src/publicAllianceEventsAuth")
 const { handlePublicAllianceEventsRead } = require("../src/publicAllianceEventsServer")
-const { handleNativeManagerAuthorization } = require("../src/nativeManagerAuthorizationServer")
+const {
+  handleNativeGuildOwnership,
+  handleNativeManagerAuthorization
+} = require("../src/nativeManagerAuthorizationServer")
 const {
   publicAllianceEventsConfig,
   createPublicAllianceEventsBootstrap
@@ -181,6 +184,26 @@ test("native manager endpoint rejects cross-profile signatures and controls fail
     body: { ok: false, code: "manager_verification_unavailable" } })
 })
 
+test("signed guild-ownership endpoint returns only the exact-owner decision", async () => {
+  const path = "/internal/v1/guild-ownership/guild/300000000000000003/user/200000000000000002"
+  const headers = signedPublicAllianceEventsHeaders({ secret, profile: "wos", method: "GET", path,
+    now: () => now.getTime(), createNonce: () => "abcdefghijklmnop" })
+  const owned = await handleNativeGuildOwnership({ method: "GET", path, headers }, {
+    config: { secret, profile: "wos" }, verifyOwner: async input => {
+      assert.deepEqual(input, { guildId: "300000000000000003",
+        discordUserId: "200000000000000002" })
+      return { status: "owner" }
+    }, now: () => now
+  })
+  assert.deepEqual(owned, { status: 200, body: { ok: true, isOwner: true } })
+  const denied = await handleNativeGuildOwnership({ method: "GET", path, headers }, {
+    config: { secret, profile: "wos" }, verifyOwner: async () => ({ status: "not_owner" }),
+    now: () => now
+  })
+  assert.deepEqual(denied, { status: 200, body: { ok: true, isOwner: false } })
+  assert.doesNotMatch(JSON.stringify(denied), /guild|user|role/i)
+})
+
 test("private listener can serve manager authorization without scheduler availability", async () => {
   let serverInput
   const bootstrap = createPublicAllianceEventsBootstrap({
@@ -200,4 +223,5 @@ test("private listener can serve manager authorization without scheduler availab
   assert.deepEqual(await bootstrap.start(), { started: true })
   assert.equal(serverInput.repository, null)
   assert.equal(typeof serverInput.verifyManager, "function")
+  assert.equal(typeof serverInput.verifyOwner, "function")
 })

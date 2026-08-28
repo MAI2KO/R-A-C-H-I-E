@@ -2,7 +2,10 @@ const http = require("http")
 
 const { verifyPublicAllianceEventsRequest } = require("./publicAllianceEventsAuth")
 const { publicAllianceEventsReadModel } = require("./publicAllianceEvents")
-const { handleNativeManagerAuthorization } = require("./nativeManagerAuthorizationServer")
+const {
+  handleNativeManagerAuthorization,
+  handleNativeGuildOwnership
+} = require("./nativeManagerAuthorizationServer")
 
 function header(headers, name) {
   const value = headers?.[name]
@@ -48,7 +51,7 @@ async function handlePublicAllianceEventsRead(input, {
 }
 
 function createPublicAllianceEventsServer({ config, repository, logger = console,
-  verifyManager = null, createServer = http.createServer, now = () => new Date() }) {
+  verifyManager = null, verifyOwner = null, createServer = http.createServer, now = () => new Date() }) {
   let server = null
   async function requestHandler(request, response) {
     const path = new URL(request.url || "/", "http://internal").pathname
@@ -59,7 +62,9 @@ function createPublicAllianceEventsServer({ config, repository, logger = console
     }
     const result = path.startsWith("/internal/v1/manager-authorization/")
       ? await handleNativeManagerAuthorization(input, { config, verifyManager, now })
-      : await handlePublicAllianceEventsRead(input, { config, repository, now })
+      : path.startsWith("/internal/v1/guild-ownership/")
+        ? await handleNativeGuildOwnership(input, { config, verifyOwner, now })
+        : await handlePublicAllianceEventsRead(input, { config, repository, now })
     response.writeHead(result.status, {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "private, no-store",
