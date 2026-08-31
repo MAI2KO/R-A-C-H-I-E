@@ -19,18 +19,21 @@ const {
 const {
   buildBotSetupCommand,
   handleBotSetupInteraction,
-  handlePersistentOnboardingInteraction
+  handlePersistentOnboardingInteraction,
+  setupPublicError
 } = require("../src/botSetupInteractions")
 const { profileTerminology } = require("../src/giftCodes/terminology")
 const community = { communityNumber: "9999", allianceAbbreviation: "HWC" }
 
-function memoryRepository(initialDestinations = { gift: null, event: null }) {
+function memoryRepository(initialDestinations = { gift: null, event: null },
+  schedulerSummary = { configured: false, scheduledEvents: 0, stateLinked: false }) {
   let stored = null
   const destinations = []
   return {
     async get() { return stored ? { ...stored } : null },
     async save(_guildId, values) { stored = { ...values }; return stored },
     async getDestinations() { return initialDestinations },
+    async getSchedulerSummary() { return schedulerSummary },
     async reconcileDestinations(input) {
       destinations.push(input)
     },
@@ -254,12 +257,13 @@ test("setup preserves valid custom announcement destinations", async () => {
   const repository = memoryRepository({
     gift: { gift_code_channel_id: gift.id },
     event: { event_channel_id: events.id, weekly_roundup_channel_id: roundups.id }
-  })
+  }, { configured: true, scheduledEvents: 4, stateLinked: true })
   const service = createBotSetupService({
     repository, client: discord.client, gameProfile: "kingshot",
     botInstanceName: "test-kingshot", logger: { log() {} }
   })
-  const result = await service.reconcile(discord.guild.id, community)
+  const result = await service.reconcile(discord.guild.id, community,
+    "native community created and linked; bookings closed", { created: true })
   assert.deepEqual(result.destinations, {
     giftDestination: gift.id,
     eventDestination: events.id,
@@ -270,6 +274,12 @@ test("setup preserves valid custom announcement destinations", async () => {
     roundupChannelId: roundups.id, botInstanceName: "test-kingshot",
     allianceAbbreviation: "HWC"
   })
+  assert.ok(result.created.includes("Native booking community"))
+  assert.ok(result.reused.includes("Existing event scheduler configuration"))
+  assert.ok(result.reused.includes("4 scheduled events"))
+  assert.ok(result.reused.includes("State/Kingdom roundup linkage"))
+  assert.match(result.content, /Native booking community/)
+  assert.match(result.content, /4 scheduled events/)
 })
 
 test("transient Discord fetch errors do not create replacement channels", async () => {
@@ -318,6 +328,8 @@ test("bot setup command remains admin-scoped and reports service errors privatel
   const interaction = {
     commandName: "setup",
     guildId: "777777777777777777",
+    guild: { ownerId: "111111111111111111" },
+    user: { id: "111111111111111111" },
     client: {},
     isChatInputCommand: () => true,
     async showModal(value) { this.modal = value }
@@ -342,4 +354,14 @@ test("canonical setup status reports reconciliation without pulling specialised 
     assert.match(status, /`\/event-scheduler`/)
     assert.doesNotMatch(status, /bot-admin|banter/i)
   }
+})
+
+test("native setup conflicts and unsupported Kingshot defaults have controlled guidance", () => {
+  assert.match(setupPublicError({ code: "community_claim_conflict" }, "wos"),
+    /State.*already linked.*Platform approval/)
+  assert.match(setupPublicError({ code: "guild_conflict" }, "kingshot"),
+    /Kingdom.*already linked.*no mapping was changed/)
+  assert.match(setupPublicError({ code: "kingshot_defaults_unavailable" }, "kingshot"),
+    /not yet configured.*No setup was changed/)
+  assert.equal(setupPublicError({ code: "network_error" }, "wos"), null)
 })

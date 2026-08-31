@@ -93,6 +93,29 @@ function createBotSetupRepository(pool, gameProfile) {
       return { gift: gift.rows[0] || null, event: event.rows[0] || null }
     },
 
+    async getSchedulerSummary(guildId) {
+      const [settings, events, stateLink] = await Promise.all([
+        pool.query(
+          `SELECT 1 FROM event_guild_settings
+            WHERE game_profile=$1 AND guild_id=$2`, [gameProfile, guildId]
+        ),
+        pool.query(
+          `SELECT count(*)::integer AS count FROM scheduled_events
+            WHERE game_profile=$1 AND guild_id=$2 AND status<>'deleted'`,
+          [gameProfile, guildId]
+        ),
+        pool.query(
+          `SELECT 1 FROM event_state_links
+            WHERE game_profile=$1 AND alliance_guild_id=$2`, [gameProfile, guildId]
+        )
+      ])
+      return {
+        configured: settings.rowCount === 1,
+        scheduledEvents: events.rows[0]?.count || 0,
+        stateLinked: stateLink.rowCount === 1
+      }
+    },
+
     async reconcileDestinations({ guildId, giftChannelId, eventChannelId,
       roundupChannelId, botInstanceName, allianceAbbreviation }) {
       await pool.query(

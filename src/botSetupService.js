@@ -246,7 +246,7 @@ function createBotSetupService({ repository, client, gameProfile, botInstanceNam
       }
     },
 
-    async reconcile(guildId, rawCommunity, bookingStatus = "linked") {
+    async reconcile(guildId, rawCommunity, bookingStatus = "linked", nativeBooking = {}) {
       const community = validateCommunitySetup(rawCommunity, gameProfile)
       const inspection = await inspect(guildId)
       const { guild, stored } = inspection
@@ -326,6 +326,9 @@ function createBotSetupService({ repository, client, gameProfile, botInstanceNam
       )
       await persist()
       const destinations = await repository.getDestinations(guildId)
+      const schedulerSummary = repository.getSchedulerSummary
+        ? await repository.getSchedulerSummary(guildId)
+        : { configured: Boolean(destinations.event), scheduledEvents: 0, stateLinked: false }
       const giftDestination = destinations.gift?.gift_code_channel_id
         && await validDestination(guild, destinations.gift.gift_code_channel_id)
         ? destinations.gift.gift_code_channel_id : channels.gift_announcements.id
@@ -340,6 +343,12 @@ function createBotSetupService({ repository, client, gameProfile, botInstanceNam
         roundupChannelId: roundupDestination, botInstanceName,
         allianceAbbreviation: community.allianceAbbreviation
       })
+      ;(nativeBooking.created ? created : reused).push("Native booking community")
+      if (schedulerSummary.configured) reused.push("Existing event scheduler configuration")
+      if (schedulerSummary.scheduledEvents) {
+        reused.push(`${schedulerSummary.scheduledEvents} scheduled event${schedulerSummary.scheduledEvents === 1 ? "" : "s"}`)
+      }
+      if (schedulerSummary.stateLinked) reused.push("State/Kingdom roundup linkage")
       logger.log(JSON.stringify({
         event: "bot_setup_reconciled",
         game_profile: gameProfile,

@@ -8,6 +8,10 @@ const { getPlayerGiftCodesHealth } = require("./giftCodes/runtime")
 const { createBotSetupRepository } = require("./botSetupRepository")
 const { BotSetupError, createBotSetupService } = require("./botSetupService")
 const { BOT_SETUP_IDS } = require("./botSetupService")
+const {
+  interactionIsDiscordAdministrator,
+  interactionIsGuildOwner
+} = require("./botManagerAuthorization")
 
 const SETUP_MODAL_ID = "botsetup:community"
 const SETUP_APPLY_PREFIX = "botsetup:apply:"
@@ -16,6 +20,20 @@ const setupSessions = new Map()
 
 function nativeBookingStatus(result) {
   return `${result.status}; bookings ${result.bookingsOpen ? "open" : "closed"}`
+}
+
+function setupPublicError(error, gameProfile) {
+  const location = gameProfile === "kingshot" ? "Kingdom" : "State"
+  if (error?.code === "kingshot_defaults_unavailable") {
+    return "This Kingdom is not yet configured for automatic native booking cycles. No setup was changed."
+  }
+  if (["community_claim_conflict", "guild_conflict"].includes(error?.code)) {
+    return `That ${location} or Discord server is already linked elsewhere. Platform approval is required; no mapping was changed.`
+  }
+  if (error?.code === "community_inactive") {
+    return `That native ${location} is inactive. No setup was changed.`
+  }
+  return null
 }
 
 function pruneSetupSessions(now = Date.now()) {
@@ -50,11 +68,10 @@ function buildBotSetupCommand() {
   return new SlashCommandBuilder()
     .setName("setup")
     .setDescription("Create or reconcile the bot-managed server channels")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 }
 
 async function handleBotSetupInteraction(interaction, {
-  userCanManageServer,
   bookingApi = null,
   healthProvider = getPlayerGiftCodesHealth,
   poolProvider = () => getPool(),
@@ -66,7 +83,7 @@ async function handleBotSetupInteraction(interaction, {
   const isModal = interaction.isModalSubmit?.() && interaction.customId === SETUP_MODAL_ID
   const isApply = interaction.isButton?.() && String(interaction.customId || "").startsWith(SETUP_APPLY_PREFIX)
   if (!isCommand && !isModal && !isApply) return false
-  if (!await userCanManageServer(interaction)) {
+  if (!interactionIsGuildOwner(interaction) && !interactionIsDiscordAdministrator(interaction)) {
     await interaction.reply({ content: "You do not have permission to run bot setup.", flags: MessageFlags.Ephemeral })
     return true
   }
@@ -130,7 +147,7 @@ async function handleBotSetupInteraction(interaction, {
       allianceAbbreviation: session.community.allianceAbbreviation, dryRun: false
     })
     const result = await service.reconcile(
-      interaction.guildId, session.community, nativeBookingStatus(native)
+      interaction.guildId, session.community, nativeBookingStatus(native), native
     )
     await interaction.editReply({ content: result.content, components: [] })
   } catch (error) {
@@ -138,7 +155,8 @@ async function handleBotSetupInteraction(interaction, {
       await interaction.editReply({ content: error.message, components: [] })
     } else {
       logger.error(`[Bot setup] Failed: ${String(error?.code || error?.name || "error").slice(0, 100)}`)
-      await interaction.editReply({ content: "Bot setup could not be completed. No unrelated channels were changed.", components: [] })
+      await interaction.editReply({ content: setupPublicError(error, health.gameProfile)
+        || "Bot setup could not be completed. No unrelated channels were changed.", components: [] })
     }
   }
   return true
@@ -160,6 +178,7 @@ module.exports = {
   buildCommunitySetupModal,
   SETUP_MODAL_ID,
   SETUP_APPLY_PREFIX,
+  setupPublicError,
   handleBotSetupInteraction,
   handlePersistentOnboardingInteraction
 }

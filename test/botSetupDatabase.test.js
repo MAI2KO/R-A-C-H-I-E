@@ -69,6 +69,26 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
        ) VALUES ($1, 'wos', 'rachie-wos', 'HwC', '700000000000000099')`,
       [guildId]
     )
+    await pool.query(
+      `INSERT INTO event_alliances (
+         guild_id, game_profile, alliance_name, is_default, created_by_bot_instance
+       ) VALUES ($1, 'wos', 'HwC', true, 'rachie-wos')`,
+      [guildId]
+    )
+    await pool.query(
+      `INSERT INTO scheduled_events (
+         guild_id, game_profile, created_by_bot_instance, alliance_name,
+         event_name, first_occurrence_date, event_time_utc, recurrence_days,
+         reminder_at_start, created_by_user_id
+       ) VALUES (
+         $1, 'wos', 'rachie-wos', 'HwC', 'Existing event',
+         current_date + 1, '10:00', 7, true, '700000000000000020'
+       )`,
+      [guildId]
+    )
+    const summaryBefore = await wos.getSchedulerSummary(guildId)
+    assert.equal(summaryBefore.configured, true)
+    assert.equal(summaryBefore.scheduledEvents, 1)
     await wos.reconcileDestinations({
       guildId, giftChannelId: values.gift_announcements_channel_id,
       eventChannelId: values.event_announcements_channel_id,
@@ -85,6 +105,11 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
     )).rows[0]
     assert.equal(scheduler.event_channel_id, values.event_announcements_channel_id)
     assert.equal(scheduler.weekly_roundup_channel_id, values.event_announcements_channel_id)
+    assert.equal((await pool.query(
+      `SELECT count(*)::integer AS count FROM scheduled_events
+        WHERE game_profile='wos' AND guild_id=$1 AND event_name='Existing event'`,
+      [guildId]
+    )).rows[0].count, 1, "/setup destination reconciliation must preserve scheduled events")
     const untouchedStatusCard = (await pool.query(
       `SELECT channel_id, message_id FROM gift_code_engagement_events
         WHERE id = '11111111-1111-4111-8111-111111111111'`

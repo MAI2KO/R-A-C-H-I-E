@@ -25,10 +25,14 @@ Never share the WOS and Kingshot secrets. The HMAC covers method, path, timestam
 
 ## Discord setup
 
-`/setup` requires this integration because it reconciles an existing native
-community link. The preview is read-only; Apply links the current Discord guild
-only when the matching State/Kingdom community already exists and is active.
-Conflicting guild links fail closed. `/register` stores the complete canonical
+`/setup` requires this integration because it reconciles the native community
+link. The preview is read-only. Apply reuses an active matching community, or
+creates a WOS community with the platform's deterministic cycle defaults when
+none exists, then links the current guild. Creation and linking are profile
+scoped, transactionally audited, advisory-lock serialized, and safe to rerun.
+An existing link or a community already claimed by another active guild fails
+closed instead of being remapped. Kingshot creation currently fails with an
+explicit unsupported-defaults response; no cycle is invented. `/register` stores the complete canonical
 identity in the bot database, then upserts the matching website participant by
 the signed guild/profile scope. If the website is temporarily unavailable the
 player is told to retry; no legacy Sheet registration is attempted.
