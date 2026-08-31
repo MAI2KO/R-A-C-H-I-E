@@ -14,6 +14,7 @@ const {
   giftCard,
   eventCard,
   ministerCard,
+  bookingWebsiteUrl,
   setupStatus,
   createBotSetupService
 } = require("../src/botSetupService")
@@ -127,6 +128,8 @@ test("bot setup creates one managed category, five channels and persistent cards
       repository,
       client: discord.client,
       gameProfile: profile, botInstanceName: `test-${profile}`,
+      bookingWebsiteBaseUrl: profile === "wos"
+        ? "https://r-a-c-h-i-e.com" : "https://peggie.r-a-c-h-i-e.com",
       logger: { log() {} }
     })
     const first = await service.reconcile(discord.guild.id, community)
@@ -139,6 +142,14 @@ test("bot setup creates one managed category, five channels and persistent cards
     )
     assert.equal(repository.destinations.length, 1)
     assert.equal(discord.channels.has(discord.unrelated.id), true)
+    const ministerMessage = discord.channels.get(
+      repository.state().minister_sign_up_channel_id
+    ).sent[0]
+    assert.equal(ministerMessage.components[0].components[0].data.custom_id,
+      BOT_SETUP_IDS.registerCharacter)
+    assert.equal(ministerMessage.components[0].components[1].data.url,
+      profile === "wos" ? "https://r-a-c-h-i-e.com/booking"
+        : "https://peggie.r-a-c-h-i-e.com/booking")
 
     const before = discord.created.length
     await service.reconcile(discord.guild.id, community)
@@ -202,6 +213,12 @@ test("deleted setup messages are recreated while stored live messages are edited
   assert.equal(giftChannel.sent.length, 2)
   assert.notEqual(repository.state().gift_auto_redeem_message_id, first.gift_auto_redeem_message_id)
   assert.equal(discord.channels.get(first.minister_sign_up_channel_id).edits.length, 1)
+  const ministerChannel = discord.channels.get(first.minister_sign_up_channel_id)
+  ministerChannel.messagesMap.delete(first.minister_sign_up_message_id)
+  await service.reconcile(discord.guild.id, community)
+  assert.equal(ministerChannel.sent.length, 2)
+  assert.notEqual(repository.state().minister_sign_up_message_id,
+    first.minister_sign_up_message_id)
 })
 
 test("partial setup checkpoints make a restart safe without duplicate resources", async () => {
@@ -312,9 +329,30 @@ test("persistent cards expose only canonical player-facing registration controls
     assert.doesNotMatch(card.content, /diagnostic|queue|source|verifier/i)
   }
 
-  const minister = ministerCard(profileTerminology("wos"))
-  assert.equal(minister.components.length, 0)
-  assert.match(minister.content, /authenticated community website/)
+  const minister = ministerCard(profileTerminology("wos"), "https://r-a-c-h-i-e.com")
+  assert.match(minister.content, /Register your Whiteout Survival player account for this State/)
+  assert.match(minister.content, /book appointments[\s\S]*manage their own bookings[\s\S]*automatic gift-code redemption[\s\S]*account points/)
+  assert.doesNotMatch(minister.content,
+    /authenticated|canonical|database|integration|profile|Apps Script/i)
+  assert.equal(minister.components[0].components[0].data.custom_id,
+    BOT_SETUP_IDS.registerCharacter)
+  assert.equal(minister.components[0].components[0].data.label, "Register")
+  assert.equal(minister.components[0].components[1].data.url,
+    "https://r-a-c-h-i-e.com/booking")
+  const kingshotMinister = ministerCard(profileTerminology("kingshot"),
+    "https://peggie.r-a-c-h-i-e.com/")
+  assert.match(kingshotMinister.content, /Kingshot player account for this Kingdom/)
+  assert.equal(kingshotMinister.components[0].components[1].data.url,
+    "https://peggie.r-a-c-h-i-e.com/booking")
+  for (const unsafe of [null, "https://localhost:8080", "https://service.railway.internal",
+    "https://staging.r-a-c-h-i-e.com", "https://peggie.r-a-c-h-i-e.com"]) {
+    const safeCard = ministerCard(profileTerminology("wos"), unsafe)
+    assert.equal(safeCard.components[0].components.length, 1)
+    assert.equal(safeCard.components[0].components[0].data.custom_id,
+      BOT_SETUP_IDS.registerCharacter)
+  }
+  assert.equal(bookingWebsiteUrl("wos", "https://r-a-c-h-i-e.com"),
+    "https://r-a-c-h-i-e.com/booking")
   assert.match(eventCard(profileTerminology("wos"), "state").content,
     /State-wide events[\s\S]*linked alliance event aggregation/)
   assert.doesNotMatch(eventCard(profileTerminology("wos"), "state").content,
@@ -395,17 +433,20 @@ test("State and alliance setup selection allow owner or Administrator but not bo
 test("State Administrator can preview and apply an existing-guild reconciliation", async () => {
   const calls = []
   const reconciled = []
+  const serviceOptions = []
   const dependencies = {
     healthProvider: () => ({ available: true, gameProfile: "wos",
       botInstanceName: "test-wos" }),
     poolProvider: () => ({}),
     repositoryFactory: () => ({}),
-    bookingApi: { async communitySetup(input) {
+    bookingApi: { baseUrl: "https://r-a-c-h-i-e.com", async communitySetup(input) {
       calls.push(input)
       return { status: input.dryRun ? "already linked" : "linked and reconciled",
         bookingsOpen: false, created: false }
     } },
-    serviceFactory: () => ({
+    serviceFactory: options => {
+      serviceOptions.push(options)
+      return ({
       async preview(_guildId, selected) {
         return { content: "State preview: already linked", community: {
           guildKind: "state", communityNumber: String(selected.communityNumber),
@@ -416,7 +457,8 @@ test("State Administrator can preview and apply an existing-guild reconciliation
         reconciled.push(selected)
         return { content: "State setup reconciled" }
       }
-    })
+      })
+    }
   }
   const base = {
     guildId: "777777777777777777", user: { id: "222222222222222222" },
@@ -443,6 +485,8 @@ test("State Administrator can preview and apply an existing-guild reconciliation
     { guildKind: "state", allianceAbbreviation: null, dryRun: false }
   ])
   assert.equal(reconciled[0].guildKind, "state")
+  assert.equal(serviceOptions.every(({ bookingWebsiteBaseUrl }) =>
+    bookingWebsiteBaseUrl === "https://r-a-c-h-i-e.com"), true)
 })
 
 test("State reconciliation stores no alliance identity and preserves its custom roundup destination", async () => {
@@ -451,7 +495,8 @@ test("State reconciliation stores no alliance identity and preserves its custom 
   const repository = memoryRepository({ gift: null, event: null,
     state: { state_roundup_channel_id: custom.id } })
   const service = createBotSetupService({ repository, client: discord.client,
-    gameProfile: "wos", botInstanceName: "test-wos", logger: { log() {} } })
+    gameProfile: "wos", botInstanceName: "test-wos",
+    bookingWebsiteBaseUrl: "https://r-a-c-h-i-e.com", logger: { log() {} } })
   const result = await service.reconcile(discord.guild.id,
     { guildKind: "state", communityNumber: "9999", allianceAbbreviation: null })
   assert.equal(repository.state().alliance_abbreviation, null)
@@ -460,6 +505,13 @@ test("State reconciliation stores no alliance identity and preserves its custom 
   assert.equal(repository.destinations[0].allianceAbbreviation, null)
   assert.match(result.content, /Discord type: State Discord/)
   assert.doesNotMatch(result.content, /Alliance:/)
+  const ministerPayload = discord.channels.get(
+    repository.state().minister_sign_up_channel_id
+  ).sent[0]
+  assert.equal(ministerPayload.components[0].components[0].data.custom_id,
+    BOT_SETUP_IDS.registerCharacter)
+  assert.equal(ministerPayload.components[0].components[1].data.url,
+    "https://r-a-c-h-i-e.com/booking")
 })
 
 test("canonical setup status reports reconciliation without pulling specialised configuration in", () => {

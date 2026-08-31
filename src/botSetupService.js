@@ -89,16 +89,51 @@ function giftCard(terms) {
   }
 }
 
-function ministerCard(terms) {
+const PUBLIC_BOOKING_ORIGINS = Object.freeze({
+  wos: "https://r-a-c-h-i-e.com",
+  kingshot: "https://peggie.r-a-c-h-i-e.com"
+})
+
+function bookingWebsiteUrl(gameProfile, configuredBaseUrl) {
+  try {
+    const parsed = new URL(String(configuredBaseUrl || ""))
+    if (parsed.origin !== PUBLIC_BOOKING_ORIGINS[gameProfile]
+        || parsed.username || parsed.password
+        || parsed.pathname.replace(/\/$/, "") !== ""
+        || parsed.search || parsed.hash) return null
+    return `${parsed.origin}/booking`
+  } catch {
+    return null
+  }
+}
+
+function ministerCard(terms, configuredBaseUrl = null) {
+  const websiteUrl = bookingWebsiteUrl(terms.gameProfile, configuredBaseUrl)
+  const buttons = [
+    new ButtonBuilder()
+      .setCustomId(BOT_SETUP_IDS.registerCharacter)
+      .setLabel("Register")
+      .setStyle(ButtonStyle.Primary)
+  ]
+  if (websiteUrl) {
+    buttons.push(new ButtonBuilder()
+      .setLabel("Open Booking Website")
+      .setStyle(ButtonStyle.Link)
+      .setURL(websiteUrl))
+  }
   return {
     content: [
       "**Minister Sign-Up**",
       "",
-      `Minister registration and bookings for ${terms.gameName} now use the authenticated community website.`,
-      "Choose your community on the website, then use its Booking tab to register and book.",
-      "Use `/register` in Discord to manage the same character identity used for booking prefill and gift-code features."
+      `Register your ${terms.gameName} player account for this ${terms.locationLabel} in Discord, then book appointments on the website.`,
+      "",
+      "Registered players can:",
+      "• book appointments",
+      "• manage their own bookings",
+      "• use automatic gift-code redemption",
+      "• earn account points"
     ].join("\n"),
-    components: []
+    components: [new ActionRowBuilder().addComponents(buttons)]
   }
 }
 
@@ -183,7 +218,8 @@ function setupPreview(profile, guildName, community, inspection, bookingStatus) 
   ].join("\n")
 }
 
-function createBotSetupService({ repository, client, gameProfile, botInstanceName, logger = console }) {
+function createBotSetupService({ repository, client, gameProfile, botInstanceName,
+  bookingWebsiteBaseUrl = null, logger = console }) {
   const terms = profileTerminology(gameProfile)
   const profile = PROFILE_NAMES[gameProfile]
   if (!profile) throw new Error("Unsupported game profile")
@@ -333,7 +369,7 @@ function createBotSetupService({ repository, client, gameProfile, botInstanceNam
       values.minister_sign_up_message_id = await maintainCard(
         channels.minister_sign_up,
         values.minister_sign_up_message_id,
-        ministerCard(terms)
+        ministerCard(terms, bookingWebsiteBaseUrl)
       )
       await persist()
       values.event_scheduler_message_id = await maintainCard(
@@ -393,6 +429,7 @@ module.exports = {
   giftCard,
   ministerCard,
   eventCard,
+  bookingWebsiteUrl,
   validateCommunitySetup,
   setupPreview,
   setupStatus,

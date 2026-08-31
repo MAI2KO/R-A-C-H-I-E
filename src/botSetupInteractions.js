@@ -142,6 +142,7 @@ async function handleBotSetupInteraction(interaction, {
       client: interaction.client,
       gameProfile: health.gameProfile,
       botInstanceName: health.botInstanceName,
+      bookingWebsiteBaseUrl: bookingApi.baseUrl,
       logger
     })
     if (isModal) {
