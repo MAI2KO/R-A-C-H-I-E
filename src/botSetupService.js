@@ -102,16 +102,25 @@ function ministerCard(terms) {
   }
 }
 
-function eventCard(terms) {
+function eventCard(terms, guildKind = "alliance") {
+  const capabilities = guildKind === "state"
+    ? [
+        `- ${terms.locationLabel}-wide events, phases, recurrence, and reminders`,
+        `- linked alliance event aggregation and ${terms.locationLabel}-wide roundups`,
+        "- existing State/Kingdom event configuration and delivery destinations"
+      ]
+    : [
+        "- alliance events, groups, recurrence, and reminders",
+        `- ${terms.locationLabel}-wide events and linked ${terms.locationLabel} servers`,
+        "- weekly alliance and community roundups",
+        "- existing event configuration and delivery destinations"
+      ]
   return {
     content: [
       "**Event Scheduler**",
       "",
       "Authorised event managers can use `/event-scheduler` to create and manage:",
-      "- alliance events, groups, recurrence, and reminders",
-      `- ${terms.locationLabel}-wide events and linked ${terms.locationLabel} servers`,
-      "- weekly alliance and community roundups",
-      "- existing event configuration and delivery destinations"
+      ...capabilities
     ].join("\n"),
     components: []
   }
@@ -120,14 +129,19 @@ function eventCard(terms) {
 function validateCommunitySetup(input, profile) {
   const terms = profileTerminology(profile)
   const communityNumber = String(input?.communityNumber || "").trim()
-  const allianceAbbreviation = String(input?.allianceAbbreviation || "").trim().toUpperCase()
+  const guildKind = String(input?.guildKind || "")
+  const allianceAbbreviation = guildKind === "alliance"
+    ? String(input?.allianceAbbreviation || "").trim().toUpperCase() : null
   if (!/^\d{1,10}$/.test(communityNumber)) {
     throw new BotSetupError("INVALID_COMMUNITY", `${terms.locationLabel} number must contain 1 to 10 digits.`)
   }
-  if (!/^[A-Z0-9]{3}$/.test(allianceAbbreviation)) {
+  if (!["state", "alliance"].includes(guildKind)) {
+    throw new BotSetupError("INVALID_KIND", "Choose State/Kingdom Discord or Alliance Discord.")
+  }
+  if (guildKind === "alliance" && !/^[A-Z0-9]{3}$/.test(allianceAbbreviation)) {
     throw new BotSetupError("INVALID_ALLIANCE", "Alliance abbreviation must contain exactly three letters or digits.")
   }
-  return Object.freeze({ communityNumber, allianceAbbreviation })
+  return Object.freeze({ communityNumber, guildKind, allianceAbbreviation })
 }
 
 function setupStatus(profile, result) {
@@ -138,7 +152,9 @@ function setupStatus(profile, result) {
     "",
     `${terms.locationLabel}: ${result.community.communityNumber}`,
     `Discord server: ${result.community.guildName}`,
-    `Alliance: ${result.community.allianceAbbreviation}`,
+    `Discord type: ${result.community.guildKind === "state" ? `${terms.locationLabel} Discord` : "Alliance Discord"}`,
+    ...(result.community.guildKind === "alliance"
+      ? [`Alliance: ${result.community.allianceAbbreviation}`] : []),
     "",
     "**Created:**",
     ...(result.created.length ? result.created.map(name => `• ${name}`) : ["• Nothing"]),
@@ -157,7 +173,8 @@ function setupPreview(profile, guildName, community, inspection, bookingStatus) 
     "**Community setup**", "",
     `${terms.locationLabel}: ${community.communityNumber}`,
     `Discord server: ${guildName}`,
-    `Alliance: ${community.allianceAbbreviation}`, "",
+    `Discord type: ${community.guildKind === "state" ? `${terms.locationLabel} Discord` : "Alliance Discord"}`,
+    ...(community.guildKind === "alliance" ? [`Alliance: ${community.allianceAbbreviation}`] : []), "",
     "**Existing:**",
     ...(inspection.existing.length ? inspection.existing.map(name => `✓ ${name}`) : ["None"]),
     "", "**Missing:**",
@@ -322,7 +339,7 @@ function createBotSetupService({ repository, client, gameProfile, botInstanceNam
       values.event_scheduler_message_id = await maintainCard(
         channels.event_scheduler,
         values.event_scheduler_message_id,
-        eventCard(terms)
+        eventCard(terms, community.guildKind)
       )
       await persist()
       const destinations = await repository.getDestinations(guildId)
@@ -335,13 +352,16 @@ function createBotSetupService({ repository, client, gameProfile, botInstanceNam
       const eventDestination = destinations.event?.event_channel_id
         && await validDestination(guild, destinations.event.event_channel_id)
         ? destinations.event.event_channel_id : channels.event_announcements.id
-      const roundupDestination = destinations.event?.weekly_roundup_channel_id
-        && await validDestination(guild, destinations.event.weekly_roundup_channel_id)
-        ? destinations.event.weekly_roundup_channel_id : channels.event_announcements.id
+      const existingRoundup = community.guildKind === "state"
+        ? destinations.state?.state_roundup_channel_id
+        : destinations.event?.weekly_roundup_channel_id
+      const roundupDestination = existingRoundup && await validDestination(guild, existingRoundup)
+        ? existingRoundup : channels.event_announcements.id
       await repository.reconcileDestinations({
         guildId, giftChannelId: giftDestination, eventChannelId: eventDestination,
         roundupChannelId: roundupDestination, botInstanceName,
-        allianceAbbreviation: community.allianceAbbreviation
+        allianceAbbreviation: community.allianceAbbreviation,
+        guildKind: community.guildKind, communityNumber: community.communityNumber
       })
       ;(nativeBooking.created ? created : reused).push("Native booking community")
       if (schedulerSummary.configured) reused.push("Existing event scheduler configuration")

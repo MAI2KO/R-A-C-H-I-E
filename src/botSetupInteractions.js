@@ -14,6 +14,7 @@ const {
 } = require("./botManagerAuthorization")
 
 const SETUP_MODAL_ID = "botsetup:community"
+const SETUP_TYPE_PREFIX = "botsetup:type:"
 const SETUP_APPLY_PREFIX = "botsetup:apply:"
 const SETUP_SESSION_TTL_MS = 15 * 60 * 1000
 const setupSessions = new Map()
@@ -30,6 +31,12 @@ function setupPublicError(error, gameProfile) {
   if (["community_claim_conflict", "guild_conflict"].includes(error?.code)) {
     return `That ${location} or Discord server is already linked elsewhere. Platform approval is required; no mapping was changed.`
   }
+  if (error?.code === "state_guild_already_configured") {
+    return `This community already has a shared ${location} Discord. Platform approval is required to replace it; no mapping was changed.`
+  }
+  if (["guild_kind_conflict", "guild_request_kind_conflict"].includes(error?.code)) {
+    return "This Discord is already linked or pending as a different server type. No mapping was changed."
+  }
   if (error?.code === "community_inactive") {
     return `That native ${location} is inactive. No setup was changed.`
   }
@@ -42,19 +49,36 @@ function pruneSetupSessions(now = Date.now()) {
   }
 }
 
-function buildCommunitySetupModal(gameProfile) {
+function buildSetupTypeChoice(gameProfile) {
   const location = gameProfile === "kingshot" ? "Kingdom" : "State"
-  return new ModalBuilder().setCustomId(SETUP_MODAL_ID).setTitle("Community setup")
+  return {
+    content: "What kind of Discord server is this?",
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${SETUP_TYPE_PREFIX}state`)
+        .setLabel(`${location} Discord`).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${SETUP_TYPE_PREFIX}alliance`)
+        .setLabel("Alliance Discord").setStyle(ButtonStyle.Secondary)
+    )],
+    flags: MessageFlags.Ephemeral
+  }
+}
+
+function buildCommunitySetupModal(gameProfile, guildKind = "alliance") {
+  const location = gameProfile === "kingshot" ? "Kingdom" : "State"
+  const modal = new ModalBuilder().setCustomId(`${SETUP_MODAL_ID}:${guildKind}`)
+    .setTitle(`${location} setup`)
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("community_number").setLabel(`${location} number`)
           .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
-      ),
+      )
+    )
+  if (guildKind === "alliance") modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("alliance").setLabel("Alliance abbreviation")
           .setStyle(TextInputStyle.Short).setRequired(true).setMinLength(3).setMaxLength(3)
-      )
-    )
+      ))
+  return modal
 }
 
 function applyRow(token) {
@@ -80,9 +104,12 @@ async function handleBotSetupInteraction(interaction, {
   logger = console
 } = {}) {
   const isCommand = interaction.isChatInputCommand?.() && interaction.commandName === "setup"
-  const isModal = interaction.isModalSubmit?.() && interaction.customId === SETUP_MODAL_ID
+  const isType = interaction.isButton?.()
+    && String(interaction.customId || "").startsWith(SETUP_TYPE_PREFIX)
+  const isModal = interaction.isModalSubmit?.()
+    && String(interaction.customId || "").startsWith(`${SETUP_MODAL_ID}:`)
   const isApply = interaction.isButton?.() && String(interaction.customId || "").startsWith(SETUP_APPLY_PREFIX)
-  if (!isCommand && !isModal && !isApply) return false
+  if (!isCommand && !isType && !isModal && !isApply) return false
   if (!interactionIsGuildOwner(interaction) && !interactionIsDiscordAdministrator(interaction)) {
     await interaction.reply({ content: "You do not have permission to run bot setup.", flags: MessageFlags.Ephemeral })
     return true
@@ -97,7 +124,17 @@ async function handleBotSetupInteraction(interaction, {
     return true
   }
   if (isCommand) {
-    await interaction.showModal(buildCommunitySetupModal(health.gameProfile))
+    await interaction.reply(buildSetupTypeChoice(health.gameProfile))
+    return true
+  }
+  if (isType) {
+    const guildKind = String(interaction.customId).slice(SETUP_TYPE_PREFIX.length)
+    if (!["state", "alliance"].includes(guildKind)) return false
+    if (guildKind === "state" && !interactionIsGuildOwner(interaction)) {
+      await interaction.reply({ content: "Only the exact Discord server owner can set up the shared State/Kingdom Discord.", flags: MessageFlags.Ephemeral })
+      return true
+    }
+    await interaction.showModal(buildCommunitySetupModal(health.gameProfile, guildKind))
     return true
   }
   if (isModal) await interaction.deferReply({ flags: MessageFlags.Ephemeral })
@@ -113,14 +150,21 @@ async function handleBotSetupInteraction(interaction, {
     })
     if (isModal) {
       pruneSetupSessions()
+      const guildKind = String(interaction.customId).slice(`${SETUP_MODAL_ID}:`.length)
+      if (!["state", "alliance"].includes(guildKind)) throw new BotSetupError("INVALID_KIND", "Choose a valid Discord server type.")
+      if (guildKind === "state" && !interactionIsGuildOwner(interaction)) {
+        throw new BotSetupError("OWNER_REQUIRED", "Only the exact Discord server owner can set up the shared State/Kingdom Discord.")
+      }
       const community = {
+        guildKind,
         communityNumber: interaction.fields.getTextInputValue("community_number"),
-        allianceAbbreviation: interaction.fields.getTextInputValue("alliance")
+        allianceAbbreviation: guildKind === "alliance"
+          ? interaction.fields.getTextInputValue("alliance") : null
       }
       const native = await bookingApi.communitySetup({
         guildId: interaction.guildId, guildName: interaction.guild.name,
         communityCode: community.communityNumber, discordUserId: interaction.user.id,
-        allianceAbbreviation: community.allianceAbbreviation, dryRun: true
+        guildKind, allianceAbbreviation: community.allianceAbbreviation, dryRun: true
       })
       const preview = await service.preview(
         interaction.guildId, community, nativeBookingStatus(native)
@@ -141,9 +185,14 @@ async function handleBotSetupInteraction(interaction, {
       await interaction.editReply({ content: "This setup preview expired. Run `/setup` again.", components: [] })
       return true
     }
+    if (session.community.guildKind === "state" && !interactionIsGuildOwner(interaction)) {
+      await interaction.editReply({ content: "Only the exact Discord server owner can apply shared State/Kingdom Discord setup.", components: [] })
+      return true
+    }
     const native = await bookingApi.communitySetup({
       guildId: interaction.guildId, guildName: interaction.guild.name,
       communityCode: session.community.communityNumber, discordUserId: interaction.user.id,
+      guildKind: session.community.guildKind,
       allianceAbbreviation: session.community.allianceAbbreviation, dryRun: false
     })
     const result = await service.reconcile(
@@ -176,7 +225,9 @@ async function handlePersistentOnboardingInteraction(interaction) {
 module.exports = {
   buildBotSetupCommand,
   buildCommunitySetupModal,
+  buildSetupTypeChoice,
   SETUP_MODAL_ID,
+  SETUP_TYPE_PREFIX,
   SETUP_APPLY_PREFIX,
   setupPublicError,
   handleBotSetupInteraction,

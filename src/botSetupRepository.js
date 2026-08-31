@@ -78,7 +78,7 @@ function createBotSetupRepository(pool, gameProfile) {
     },
 
     async getDestinations(guildId) {
-      const [gift, event] = await Promise.all([
+      const [gift, event, state] = await Promise.all([
         pool.query(
           `SELECT gift_code_channel_id FROM gift_code_guild_settings
             WHERE game_profile = $1 AND guild_id = $2`,
@@ -88,9 +88,16 @@ function createBotSetupRepository(pool, gameProfile) {
           `SELECT event_channel_id, weekly_roundup_channel_id FROM event_guild_settings
             WHERE game_profile = $1 AND guild_id = $2`,
           [gameProfile, guildId]
+        ),
+        pool.query(
+          `SELECT state_roundup_channel_id,state_number,enabled
+             FROM event_state_destinations
+            WHERE game_profile = $1 AND state_guild_id = $2`,
+          [gameProfile, guildId]
         )
       ])
-      return { gift: gift.rows[0] || null, event: event.rows[0] || null }
+      return { gift: gift.rows[0] || null, event: event.rows[0] || null,
+        state: state.rows[0] || null }
     },
 
     async getSchedulerSummary(guildId) {
@@ -117,7 +124,8 @@ function createBotSetupRepository(pool, gameProfile) {
     },
 
     async reconcileDestinations({ guildId, giftChannelId, eventChannelId,
-      roundupChannelId, botInstanceName, allianceAbbreviation }) {
+      roundupChannelId, botInstanceName, allianceAbbreviation, guildKind,
+      communityNumber }) {
       await pool.query(
         `INSERT INTO gift_code_guild_settings (
            game_profile, guild_id, gift_code_channel_id
@@ -127,6 +135,21 @@ function createBotSetupRepository(pool, gameProfile) {
            updated_at_utc = now()`,
         [gameProfile, guildId, giftChannelId]
       )
+      if (guildKind === "state") {
+        await pool.query(
+          `INSERT INTO event_state_destinations (
+             state_guild_id, game_profile, configured_by_bot_instance,
+             state_roundup_channel_id, state_number
+           ) VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (state_guild_id, game_profile) DO UPDATE SET
+             configured_by_bot_instance = EXCLUDED.configured_by_bot_instance,
+             state_roundup_channel_id = EXCLUDED.state_roundup_channel_id,
+             state_number = COALESCE(event_state_destinations.state_number, EXCLUDED.state_number),
+             updated_at = now()`,
+          [guildId, gameProfile, botInstanceName, roundupChannelId, communityNumber]
+        )
+        return
+      }
       await pool.query(
         `INSERT INTO event_guild_settings (
            guild_id, game_profile, bot_instance_name, alliance_name,

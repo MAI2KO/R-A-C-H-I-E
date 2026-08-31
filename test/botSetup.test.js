@@ -12,6 +12,7 @@ const {
   CHANNELS,
   permissionOverwrites,
   giftCard,
+  eventCard,
   ministerCard,
   setupStatus,
   createBotSetupService
@@ -20,10 +21,12 @@ const {
   buildBotSetupCommand,
   handleBotSetupInteraction,
   handlePersistentOnboardingInteraction,
-  setupPublicError
+  setupPublicError,
+  buildCommunitySetupModal,
+  buildSetupTypeChoice
 } = require("../src/botSetupInteractions")
 const { profileTerminology } = require("../src/giftCodes/terminology")
-const community = { communityNumber: "9999", allianceAbbreviation: "HWC" }
+const community = { guildKind: "alliance", communityNumber: "9999", allianceAbbreviation: "HWC" }
 
 function memoryRepository(initialDestinations = { gift: null, event: null },
   schedulerSummary = { configured: false, scheduledEvents: 0, stateLinked: false }) {
@@ -272,7 +275,7 @@ test("setup preserves valid custom announcement destinations", async () => {
   assert.deepEqual(repository.destinations[0], {
     guildId: discord.guild.id, giftChannelId: gift.id, eventChannelId: events.id,
     roundupChannelId: roundups.id, botInstanceName: "test-kingshot",
-    allianceAbbreviation: "HWC"
+    allianceAbbreviation: "HWC", guildKind: "alliance", communityNumber: "9999"
   })
   assert.ok(result.created.includes("Native booking community"))
   assert.ok(result.reused.includes("Existing event scheduler configuration"))
@@ -312,6 +315,10 @@ test("persistent cards expose only canonical player-facing registration controls
   const minister = ministerCard(profileTerminology("wos"))
   assert.equal(minister.components.length, 0)
   assert.match(minister.content, /authenticated community website/)
+  assert.match(eventCard(profileTerminology("wos"), "state").content,
+    /State-wide events[\s\S]*linked alliance event aggregation/)
+  assert.doesNotMatch(eventCard(profileTerminology("wos"), "state").content,
+    /alliance events, groups/)
 
   const interaction = {
     customId: BOT_SETUP_IDS.registerMinisters,
@@ -323,7 +330,7 @@ test("persistent cards expose only canonical player-facing registration controls
   assert.equal(interaction.replied.flags, MessageFlags.Ephemeral)
 })
 
-test("bot setup command remains admin-scoped and reports service errors privately", async () => {
+test("bot setup command first asks for an explicit Discord type", async () => {
   assert.equal(buildBotSetupCommand().toJSON().name, "setup")
   const interaction = {
     commandName: "setup",
@@ -332,22 +339,74 @@ test("bot setup command remains admin-scoped and reports service errors privatel
     user: { id: "111111111111111111" },
     client: {},
     isChatInputCommand: () => true,
-    async showModal(value) { this.modal = value }
+    async reply(value) { this.replied = value }
   }
   assert.equal(await handleBotSetupInteraction(interaction, {
     userCanManageServer: async () => true,
     healthProvider: () => ({ available: true, gameProfile: "wos" }),
     bookingApi: { communitySetup: async () => ({ status: "ready" }) }
   }), true)
-  assert.equal(interaction.modal.data.custom_id, "botsetup:community")
-  assert.equal(interaction.modal.components[0].components[0].data.label, "State number")
-  assert.equal(interaction.modal.components[1].components[0].data.label, "Alliance abbreviation")
+  assert.match(interaction.replied.content, /kind of Discord server/)
+  assert.deepEqual(interaction.replied.components[0].components.map(button => button.data.custom_id),
+    ["botsetup:type:state", "botsetup:type:alliance"])
+  assert.equal(buildSetupTypeChoice("kingshot").components[0].components[0].data.label,
+    "Kingdom Discord")
+  const stateModal = buildCommunitySetupModal("wos", "state")
+  assert.equal(stateModal.data.custom_id, "botsetup:community:state")
+  assert.equal(stateModal.components.length, 1)
+  const allianceModal = buildCommunitySetupModal("wos", "alliance")
+  assert.equal(allianceModal.components.length, 2)
+  assert.equal(allianceModal.components[1].components[0].data.label, "Alliance abbreviation")
+})
+
+test("State setup type requires exact ownership while alliance setup allows Administrator", async () => {
+  const base = {
+    guildId: "777777777777777777", user: { id: "222222222222222222" },
+    guild: { ownerId: "111111111111111111" }, client: {}, isButton: () => true,
+    memberPermissions: { has: permission => permission === PermissionFlagsBits.Administrator },
+    async reply(value) { this.replied = value },
+    async showModal(value) { this.modal = value }
+  }
+  const dependencies = {
+    healthProvider: () => ({ available: true, gameProfile: "wos" }),
+    bookingApi: { communitySetup: async () => ({ status: "ready" }) }
+  }
+  const stateChoice = { ...base, customId: "botsetup:type:state" }
+  assert.equal(await handleBotSetupInteraction(stateChoice, dependencies), true)
+  assert.match(stateChoice.replied.content, /exact Discord server owner/)
+  assert.equal(stateChoice.modal, undefined)
+
+  const allianceChoice = { ...base, customId: "botsetup:type:alliance" }
+  assert.equal(await handleBotSetupInteraction(allianceChoice, dependencies), true)
+  assert.equal(allianceChoice.modal.data.custom_id, "botsetup:community:alliance")
+
+  const ownerStateChoice = { ...base, user: { id: "111111111111111111" },
+    customId: "botsetup:type:state" }
+  assert.equal(await handleBotSetupInteraction(ownerStateChoice, dependencies), true)
+  assert.equal(ownerStateChoice.modal.data.custom_id, "botsetup:community:state")
+})
+
+test("State reconciliation stores no alliance identity and preserves its custom roundup destination", async () => {
+  const discord = discordSetupFixture()
+  const custom = await discord.guild.channels.create({ name: "state-roundups", type: ChannelType.GuildText })
+  const repository = memoryRepository({ gift: null, event: null,
+    state: { state_roundup_channel_id: custom.id } })
+  const service = createBotSetupService({ repository, client: discord.client,
+    gameProfile: "wos", botInstanceName: "test-wos", logger: { log() {} } })
+  const result = await service.reconcile(discord.guild.id,
+    { guildKind: "state", communityNumber: "9999", allianceAbbreviation: null })
+  assert.equal(repository.state().alliance_abbreviation, null)
+  assert.equal(result.destinations.roundupDestination, custom.id)
+  assert.equal(repository.destinations[0].guildKind, "state")
+  assert.equal(repository.destinations[0].allianceAbbreviation, null)
+  assert.match(result.content, /Discord type: State Discord/)
+  assert.doesNotMatch(result.content, /Alliance:/)
 })
 
 test("canonical setup status reports reconciliation without pulling specialised configuration in", () => {
   for (const profile of ["wos", "kingshot"]) {
     const status = setupStatus(profile, {
-      community: { communityNumber: "9999", guildName: "HoboswithCandy", allianceAbbreviation: "HWC" },
+      community: { guildKind: "alliance", communityNumber: "9999", guildName: "HoboswithCandy", allianceAbbreviation: "HWC" },
       created: ["#gift-code-announcements"], reused: ["#event-scheduler"], bookingStatus: "linked"
     })
     assert.match(status, profile === "wos" ? /State: 9999/ : /Kingdom: 9999/)

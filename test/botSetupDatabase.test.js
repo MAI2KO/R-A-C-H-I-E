@@ -126,6 +126,36 @@ test("bot-managed setup persistence is durable, idempotent and profile scoped", 
         WHERE game_profile = 'wos' AND guild_id = $1`, [guildId]
     )).rows[0].count, 1)
     assert.equal((await wos.get(guildId)).gift_auto_redeem_message_id, values.gift_auto_redeem_message_id)
+
+    const stateGuildId = "700000000000000101"
+    await wos.save(stateGuildId, { ...values, alliance_abbreviation: null,
+      discord_guild_name: "Shared State" })
+    assert.equal((await wos.get(stateGuildId)).alliance_abbreviation, null)
+    await pool.query(
+      `INSERT INTO event_state_destinations (
+         state_guild_id,game_profile,configured_by_bot_instance,
+         state_roundup_channel_id,state_number
+       ) VALUES ($1,'wos','rachie-wos','700000000000000102','9999')`,
+      [stateGuildId]
+    )
+    await wos.reconcileDestinations({
+      guildId: stateGuildId, guildKind: "state", communityNumber: "9999",
+      giftChannelId: "700000000000000103", eventChannelId: "700000000000000104",
+      roundupChannelId: "700000000000000102", botInstanceName: "rachie-wos",
+      allianceAbbreviation: null
+    })
+    assert.deepEqual((await pool.query(
+      `SELECT state_roundup_channel_id,state_number FROM event_state_destinations
+        WHERE game_profile='wos' AND state_guild_id=$1`, [stateGuildId]
+    )).rows[0], { state_roundup_channel_id: "700000000000000102", state_number: "9999" })
+    assert.equal((await pool.query(
+      `SELECT gift_code_channel_id FROM gift_code_guild_settings
+        WHERE game_profile='wos' AND guild_id=$1`, [stateGuildId]
+    )).rows[0].gift_code_channel_id, "700000000000000103")
+    assert.equal((await pool.query(
+      `SELECT count(*)::integer AS count FROM event_guild_settings
+        WHERE game_profile='wos' AND guild_id=$1`, [stateGuildId]
+    )).rows[0].count, 0, "State setup must not create a fake alliance scheduler identity")
   } finally {
     await pool?.end().catch(() => {})
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})
