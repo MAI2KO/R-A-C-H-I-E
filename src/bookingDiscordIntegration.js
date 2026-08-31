@@ -114,29 +114,25 @@ function manualGuestLinkMessage(work) {
   }
 }
 
-async function addQualifiedManagers(guild, managerRoleId, managers) {
+async function addQualifiedManagers(guild, managerRoleId, managers, valueFor = member => member) {
   const members = await guild.members.fetch()
   for (const member of members.values()) {
     if (member.user?.bot) continue
     const qualified = member.id === guild.ownerId
       || member.permissions?.has(PermissionFlagsBits.Administrator)
       || (managerRoleId && member.roles?.cache?.has(managerRoleId))
-    if (qualified && !managers.has(member.id)) managers.set(member.id, member)
+    if (qualified && !managers.has(member.id)) managers.set(member.id, valueFor(member))
   }
 }
 
-async function discoverManagers(client, work) {
+async function discoverManagers(client, work, setupRepository = null) {
   const recipients = new Map()
   for (const link of work.guilds || []) {
-    const guild = await client.guilds.fetch(link.guildId)
-    const members = await guild.members.fetch()
-    for (const member of members.values()) {
-      if (member.user?.bot) continue
-      const qualified = member.id === guild.ownerId
-        || member.permissions?.has(PermissionFlagsBits.Administrator)
-        || (link.managerRoleId && member.roles?.cache?.has(link.managerRoleId))
-      if (qualified && !recipients.has(member.id)) recipients.set(member.id, link.guildId)
-    }
+    const guildId = link.guildId
+    const setup = setupRepository ? await setupRepository.get(guildId) : null
+    const managerRoleId = setup?.bot_manager_role_id
+    const guild = await client.guilds.fetch(guildId)
+    await addQualifiedManagers(guild, managerRoleId, recipients, () => guildId)
   }
   return [...recipients].map(([discordUserId, sourceGuildId]) => ({ discordUserId, sourceGuildId }))
 }
@@ -205,6 +201,34 @@ async function deliverManualGuestLink(client, api, work, setupRepository) {
   }
   const managers = new Map()
   try {
+    let configuredBase
+    let suppliedPath = typeof work.guestPath === "string" ? work.guestPath : null
+    let legacyGuestUrl = null
+    try {
+      configuredBase = new URL(api.baseUrl)
+      if (!suppliedPath && work.guestUrl) {
+        legacyGuestUrl = new URL(work.guestUrl)
+        suppliedPath = legacyGuestUrl.pathname
+      }
+    } catch {}
+    const configuredLoopback = configuredBase
+      && ["localhost", "127.0.0.1", "::1"].includes(configuredBase.hostname)
+    const validConfiguredBase = configuredBase
+      && ((configuredBase.protocol === "https:" && (!configuredLoopback || api.allowLoopback === true))
+        || (configuredBase.protocol === "http:" && configuredLoopback && api.allowLoopback === true))
+      && configuredBase.username === "" && configuredBase.password === ""
+      && configuredBase.pathname.replace(/\/$/, "") === ""
+      && configuredBase.search === "" && configuredBase.hash === ""
+    const validGuestPath = typeof suppliedPath === "string"
+      && /^\/book\/[A-Za-z0-9_-]{43}$/.test(suppliedPath)
+      && (!legacyGuestUrl || (legacyGuestUrl.search === "" && legacyGuestUrl.hash === ""))
+    if (!validConfiguredBase || !validGuestPath) {
+      return api.outcome(work, { status: "retry", errorCode: "booking_website_public_url_invalid" })
+    }
+    const authoritativeWork = {
+      ...work,
+      guestUrl: `${configuredBase.origin}${suppliedPath}`
+    }
     for (const guildId of work.guilds || []) {
       const setup = await setupRepository.get(guildId)
       if (!setup?.minister_sign_up_channel_id) continue
@@ -219,7 +243,7 @@ async function deliverManualGuestLink(client, api, work, setupRepository) {
       try {
         const dm = await manager.user.createDM()
         const sent = await sendChannelIdempotently(
-          dm, `${work.workId}${manager.id}manual-guest`, manualGuestLinkMessage(work),
+          dm, `${work.workId}${manager.id}manual-guest`, manualGuestLinkMessage(authoritativeWork),
         )
         if (!first) first = { discordChannelId: dm.id, discordMessageId: sent.id }
       } catch (error) {
@@ -242,7 +266,17 @@ async function deliverWork(client, api, work, { setupRepository = null } = {}) {
   if (work.type === "manager_guest_link") {
     return deliverManualGuestLink(client, api, work, setupRepository)
   }
-  if (work.type === "manager_discovery") return api.recipients(work, await discoverManagers(client, work))
+  if (work.type === "manager_discovery") {
+    if (!setupRepository) {
+      return api.outcome(work, { status: "retry", errorCode: "bot_setup_database_unavailable" })
+    }
+    try {
+      return api.recipients(work, await discoverManagers(client, work, setupRepository))
+    } catch (error) {
+      return api.outcome(work, { status: "retry",
+        errorCode: String(error?.code || "manager_discovery_failed").slice(0, 80) })
+    }
+  }
   if (work.type === "manager_request" && new Date(work.holdExpiresAt).getTime() <= Date.now()) {
     return api.outcome(work, { status: "permanent_failure", errorCode: "hold_expired_before_delivery" })
   }

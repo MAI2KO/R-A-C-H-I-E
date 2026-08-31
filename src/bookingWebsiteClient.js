@@ -19,10 +19,13 @@ function bookingWebsiteConfig(env = process.env) {
   const requested = String(env.BOOKING_WEBSITE_INTEGRATION_ENABLED || "").trim().toLowerCase() === "true"
   const baseUrlConfigured = baseUrl.length > 0
   const secretConfigured = secret.length > 0
+  const allowLoopback = String(env.NODE_ENV || "").trim().toLowerCase() !== "production"
   let safeUrl = false
   try {
     const parsed = new URL(baseUrl)
-    safeUrl = parsed.protocol === "https:" || (parsed.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname))
+    const loopback = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)
+    safeUrl = (parsed.protocol === "https:" && (!loopback || allowLoopback))
+      || (parsed.protocol === "http:" && loopback && allowLoopback)
   } catch {}
   const secretValid = secret.length >= 32
   const enabled = requested && PROFILES.has(profile) && safeUrl && secretValid
@@ -33,7 +36,7 @@ function bookingWebsiteConfig(env = process.env) {
           : !safeUrl ? "BOOKING_WEBSITE_BASE_URL must use HTTPS (or loopback HTTP locally)"
             : !secretConfigured ? "BOOKING_WEBSITE_INTEGRATION_SECRET is missing"
               : "BOOKING_WEBSITE_INTEGRATION_SECRET must contain at least 32 characters"
-  return Object.freeze({ enabled, requested, profile, baseUrl, secret,
+  return Object.freeze({ enabled, requested, profile, baseUrl, secret, allowLoopback,
     baseUrlConfigured, secretConfigured, disabledReason,
     pollIntervalMs: Math.max(5000, Number(env.BOOKING_WEBSITE_POLL_INTERVAL_MS) || 10000) })
 }
@@ -75,6 +78,8 @@ function createBookingWebsiteClient({ config, fetchImplementation = fetch, now =
   }
   return Object.freeze({
     profile: config.profile,
+    baseUrl: config.baseUrl,
+    allowLoopback: config.allowLoopback === true,
     claim: limit => post("/api/internal/v1/discord/work/claim", { limit }),
     recipients: (work, recipients) => post(`/api/internal/v1/discord/work/${work.workId}/recipients`, { claimToken: work.claimToken, recipients }),
     outcome: (work, outcome) => post(`/api/internal/v1/discord/work/${work.workId}/outcome`, { claimToken: work.claimToken, ...outcome }),

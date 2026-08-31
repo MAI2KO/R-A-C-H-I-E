@@ -9,7 +9,6 @@ const {
 } = require("../src/bookingWebsiteClient")
 const {
   deliverWork,
-  discoverManagers,
   bookingWindowOpenMessages,
   manualGuestLinkMessage,
   handleBookingApprovalInteraction,
@@ -32,6 +31,7 @@ test("website client signs the exact profile-specific canonical request", async 
       return { ok: true, async json() { return { ok: true, work: [] } } }
     } })
   await api.claim(3)
+  assert.equal(api.baseUrl, "https://wos.example.test")
   const path = "/api/internal/v1/discord/work/claim"
   const expected = signRequest({ secret, method: "POST", path, timestamp: "1800000000",
     nonce: "nonce-value-123456789", body: "{\"limit\":3}" })
@@ -75,6 +75,9 @@ test("integration is disabled unless complete configuration is explicitly enable
     BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).disabledReason, "BOOKING_WEBSITE_BASE_URL is missing")
   assert.equal(bookingWebsiteConfig({ GAME_PROFILE: "wos", BOOKING_WEBSITE_INTEGRATION_ENABLED: "true",
     BOOKING_WEBSITE_BASE_URL: "https://wos.example" }).disabledReason, "BOOKING_WEBSITE_INTEGRATION_SECRET is missing")
+  assert.equal(bookingWebsiteConfig({ NODE_ENV: "production", GAME_PROFILE: "wos",
+    BOOKING_WEBSITE_INTEGRATION_ENABLED: "true", BOOKING_WEBSITE_BASE_URL: "https://localhost:8080",
+    BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).enabled, false)
   assert.equal(bookingWebsiteConfig({ GAME_PROFILE: "other", BOOKING_WEBSITE_INTEGRATION_ENABLED: "true",
     BOOKING_WEBSITE_BASE_URL: "https://bad.example", BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).enabled, false)
 })
@@ -161,17 +164,18 @@ test("manual guest-link delivery DMs deduplicated managers only with exact profi
   }
   const outcomes = []
   await deliverWork({ guilds: { fetch: async id => guilds[id] } }, {
+    baseUrl: "https://peggie.r-a-c-h-i-e.com",
     async outcome(_work, outcome) { outcomes.push(outcome) }
   }, {
     workId, type: "manager_guest_link", profile: "kingshot", communityCode: "1234",
-    guilds: ["700", "701"], guestUrl: "https://ks.example/book/opaque"
+    guilds: ["700", "701"], guestUrl: `https://localhost:8080/book/${"k".repeat(43)}`
   }, { setupRepository: { async get() {
     return { minister_sign_up_channel_id: "800", bot_manager_role_id: "42" }
   } } })
   assert.deepEqual(sends.map(([id]) => id), ["1", "2", "3"])
   assert.equal(sends.every(([, payload]) => payload.enforceNonce === true), true)
   assert.equal(sends[0][1].content,
-    "New guest booking link — Kingdom 1234\n\nA new guest sign-up link has been created.\n\nhttps://ks.example/book/opaque\n\nGuest bookings require manager approval.")
+    `New guest booking link — Kingdom 1234\n\nA new guest sign-up link has been created.\n\nhttps://peggie.r-a-c-h-i-e.com/book/${"k".repeat(43)}\n\nGuest bookings require manager approval.`)
   assert.deepEqual(outcomes, [{ status: "sent", discordChannelId: "dm-1",
     discordMessageId: "message-1" }])
   assert.equal(manualGuestLinkMessage({ profile: "wos", communityCode: "1234", guestUrl: "url" }).content,
@@ -185,9 +189,10 @@ test("manual guest-link retries use the same Discord-enforced nonce", async () =
   } } }, permissions: { has: () => false }, roles: { cache: { has: () => false } } }
   const client = { guilds: { fetch: async () => ({ ownerId: "1",
     members: { fetch: async () => new Map([["1", member]]) } }) } }
-  const api = { async outcome() {} }
+  const api = { baseUrl: "https://r-a-c-h-i-e.com", async outcome() {} }
   const work = { workId, type: "manager_guest_link", profile: "wos", communityCode: "1234",
-    guilds: ["700"], guestUrl: "https://r-a-c-h-i-e.com/book/opaque" }
+    guilds: ["700"], guestPath: `/book/${"w".repeat(43)}`,
+    guestUrl: `https://staging.internal.example/book/${"x".repeat(43)}` }
   const options = { setupRepository: { async get() {
     return { minister_sign_up_channel_id: "800", bot_manager_role_id: null }
   } } }
@@ -196,6 +201,25 @@ test("manual guest-link retries use the same Discord-enforced nonce", async () =
   assert.equal(payloads.length, 2)
   assert.equal(payloads[0].nonce, payloads[1].nonce)
   assert.equal(payloads.every(payload => payload.enforceNonce === true), true)
+  assert.match(payloads[0].content, new RegExp(`https://r-a-c-h-i-e\\.com/book/${"w".repeat(43)}`))
+  assert.doesNotMatch(payloads[0].content, /localhost|railway|staging/i)
+})
+
+test("manual guest-link delivery fails safely without a valid configured website URL", async () => {
+  const token = "s".repeat(43)
+  const outcomes = []
+  let fetched = false
+  const client = { guilds: { async fetch() { fetched = true } } }
+  for (const baseUrl of [undefined, "http://internal.railway", "not-a-url"]) {
+    await deliverWork(client, { baseUrl, async outcome(_work, outcome) { outcomes.push(outcome) } }, {
+      workId, type: "manager_guest_link", profile: "wos", communityCode: "1234",
+      guilds: ["700"], guestUrl: `http://localhost:8080/book/${token}`
+    }, { setupRepository: { async get() { return { bot_manager_role_id: "42" } } } })
+  }
+  assert.equal(fetched, false)
+  assert.equal(outcomes.every(outcome => outcome.status === "retry"
+    && outcome.errorCode === "booking_website_public_url_invalid"), true)
+  assert.equal(JSON.stringify(outcomes).includes(token), false)
 })
 
 test("manager final updates preserve request context and remove approval buttons", () => {
@@ -344,15 +368,21 @@ test("manager mutations add bounded attribution while self-service notifications
   }
 })
 
-test("manager discovery includes owner, administrators and manager role and deduplicates guilds", async () => {
+test("guest approval discovery includes owner, administrator and native manager role without unrelated members", async () => {
   const member = (id, { owner = false, admin = false, role = false } = {}) => ({ id,
     user: { bot: false }, permissions: { has: () => admin }, roles: { cache: { has: () => role } }, owner })
   const guilds = {
     a: { ownerId: "1", members: { fetch: async () => new Map([["1", member("1")], ["2", member("2", { admin: true })], ["3", member("3", { role: true })], ["4", member("4")]]) } },
     b: { ownerId: "5", members: { fetch: async () => new Map([["2", member("2", { admin: true })], ["5", member("5")]]) } }
   }
-  const recipients = await discoverManagers({ guilds: { fetch: async id => guilds[id] } }, {
-    guilds: [{ guildId: "a", managerRoleId: "role" }, { guildId: "b", managerRoleId: null }]
+  let recipients
+  await deliverWork({ guilds: { fetch: async id => guilds[id] } }, {
+    async recipients(_work, value) { recipients = value },
+    async outcome() { assert.fail("manager discovery should register recipients") }
+  }, { workId, type: "manager_discovery", guilds: [{ guildId: "a" }, { guildId: "b" }] }, {
+    setupRepository: { async get(guildId) {
+      return { bot_manager_role_id: guildId === "a" ? "role" : null }
+    } }
   })
   assert.deepEqual(recipients.map(row => row.discordUserId), ["1", "2", "3", "5"])
   assert.equal(recipients.filter(row => row.discordUserId === "2").length, 1)
