@@ -130,10 +130,6 @@ async function handleBotSetupInteraction(interaction, {
   if (isType) {
     const guildKind = String(interaction.customId).slice(SETUP_TYPE_PREFIX.length)
     if (!["state", "alliance"].includes(guildKind)) return false
-    if (guildKind === "state" && !interactionIsGuildOwner(interaction)) {
-      await interaction.reply({ content: "Only the exact Discord server owner can set up the shared State/Kingdom Discord.", flags: MessageFlags.Ephemeral })
-      return true
-    }
     await interaction.showModal(buildCommunitySetupModal(health.gameProfile, guildKind))
     return true
   }
@@ -152,9 +148,6 @@ async function handleBotSetupInteraction(interaction, {
       pruneSetupSessions()
       const guildKind = String(interaction.customId).slice(`${SETUP_MODAL_ID}:`.length)
       if (!["state", "alliance"].includes(guildKind)) throw new BotSetupError("INVALID_KIND", "Choose a valid Discord server type.")
-      if (guildKind === "state" && !interactionIsGuildOwner(interaction)) {
-        throw new BotSetupError("OWNER_REQUIRED", "Only the exact Discord server owner can set up the shared State/Kingdom Discord.")
-      }
       const community = {
         guildKind,
         communityNumber: interaction.fields.getTextInputValue("community_number"),
@@ -183,10 +176,6 @@ async function handleBotSetupInteraction(interaction, {
     if (!session || Date.now() - session.createdAt > SETUP_SESSION_TTL_MS
         || session.guildId !== interaction.guildId || session.userId !== interaction.user.id) {
       await interaction.editReply({ content: "This setup preview expired. Run `/setup` again.", components: [] })
-      return true
-    }
-    if (session.community.guildKind === "state" && !interactionIsGuildOwner(interaction)) {
-      await interaction.editReply({ content: "Only the exact Discord server owner can apply shared State/Kingdom Discord setup.", components: [] })
       return true
     }
     const native = await bookingApi.communitySetup({

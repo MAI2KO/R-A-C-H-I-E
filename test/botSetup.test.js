@@ -359,7 +359,7 @@ test("bot setup command first asks for an explicit Discord type", async () => {
   assert.equal(allianceModal.components[1].components[0].data.label, "Alliance abbreviation")
 })
 
-test("State setup type requires exact ownership while alliance setup allows Administrator", async () => {
+test("State and alliance setup selection allow owner or Administrator but not bot-manager role alone", async () => {
   const base = {
     guildId: "777777777777777777", user: { id: "222222222222222222" },
     guild: { ownerId: "111111111111111111" }, client: {}, isButton: () => true,
@@ -373,8 +373,7 @@ test("State setup type requires exact ownership while alliance setup allows Admi
   }
   const stateChoice = { ...base, customId: "botsetup:type:state" }
   assert.equal(await handleBotSetupInteraction(stateChoice, dependencies), true)
-  assert.match(stateChoice.replied.content, /exact Discord server owner/)
-  assert.equal(stateChoice.modal, undefined)
+  assert.equal(stateChoice.modal.data.custom_id, "botsetup:community:state")
 
   const allianceChoice = { ...base, customId: "botsetup:type:alliance" }
   assert.equal(await handleBotSetupInteraction(allianceChoice, dependencies), true)
@@ -384,6 +383,66 @@ test("State setup type requires exact ownership while alliance setup allows Admi
     customId: "botsetup:type:state" }
   assert.equal(await handleBotSetupInteraction(ownerStateChoice, dependencies), true)
   assert.equal(ownerStateChoice.modal.data.custom_id, "botsetup:community:state")
+
+  const roleOnly = { ...base, customId: "botsetup:type:state",
+    memberPermissions: { has: () => false },
+    member: { roles: { cache: new Map([["700000000000000099", {}]]) } } }
+  assert.equal(await handleBotSetupInteraction(roleOnly, dependencies), true)
+  assert.match(roleOnly.replied.content, /do not have permission/)
+  assert.equal(roleOnly.modal, undefined)
+})
+
+test("State Administrator can preview and apply an existing-guild reconciliation", async () => {
+  const calls = []
+  const reconciled = []
+  const dependencies = {
+    healthProvider: () => ({ available: true, gameProfile: "wos",
+      botInstanceName: "test-wos" }),
+    poolProvider: () => ({}),
+    repositoryFactory: () => ({}),
+    bookingApi: { async communitySetup(input) {
+      calls.push(input)
+      return { status: input.dryRun ? "already linked" : "linked and reconciled",
+        bookingsOpen: false, created: false }
+    } },
+    serviceFactory: () => ({
+      async preview(_guildId, selected) {
+        return { content: "State preview: already linked", community: {
+          guildKind: "state", communityNumber: String(selected.communityNumber),
+          allianceAbbreviation: null
+        } }
+      },
+      async reconcile(_guildId, selected) {
+        reconciled.push(selected)
+        return { content: "State setup reconciled" }
+      }
+    })
+  }
+  const base = {
+    guildId: "777777777777777777", user: { id: "222222222222222222" },
+    guild: { ownerId: "111111111111111111", name: "Shared State" }, client: {},
+    memberPermissions: { has: permission => permission === PermissionFlagsBits.Administrator }
+  }
+  const modal = {
+    ...base, customId: "botsetup:community:state", isModalSubmit: () => true,
+    fields: { getTextInputValue: id => id === "community_number" ? "9999" : "" },
+    async deferReply() {}, async editReply(value) { this.edited = value }
+  }
+  assert.equal(await handleBotSetupInteraction(modal, dependencies), true)
+  assert.match(modal.edited.content, /already linked/)
+  const applyId = modal.edited.components[0].components[0].data.custom_id
+  const apply = {
+    ...base, customId: applyId, isButton: () => true,
+    async deferUpdate() {}, async editReply(value) { this.edited = value }
+  }
+  assert.equal(await handleBotSetupInteraction(apply, dependencies), true)
+  assert.equal(apply.edited.content, "State setup reconciled")
+  assert.deepEqual(calls.map(({ guildKind, allianceAbbreviation, dryRun }) =>
+    ({ guildKind, allianceAbbreviation, dryRun })), [
+    { guildKind: "state", allianceAbbreviation: null, dryRun: true },
+    { guildKind: "state", allianceAbbreviation: null, dryRun: false }
+  ])
+  assert.equal(reconciled[0].guildKind, "state")
 })
 
 test("State reconciliation stores no alliance identity and preserves its custom roundup destination", async () => {
