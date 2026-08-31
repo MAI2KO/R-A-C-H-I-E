@@ -102,6 +102,29 @@ function bookingWindowOpenMessages(work) {
   })
 }
 
+function manualGuestLinkMessage(work) {
+  return {
+    content: [
+      `New guest booking link — ${locationLabel(work.profile)} ${work.communityCode}`,
+      "", "A new guest sign-up link has been created.",
+      "", work.guestUrl,
+      "", "Guest bookings require manager approval."
+    ].join("\n"),
+    components: []
+  }
+}
+
+async function addQualifiedManagers(guild, managerRoleId, managers) {
+  const members = await guild.members.fetch()
+  for (const member of members.values()) {
+    if (member.user?.bot) continue
+    const qualified = member.id === guild.ownerId
+      || member.permissions?.has(PermissionFlagsBits.Administrator)
+      || (managerRoleId && member.roles?.cache?.has(managerRoleId))
+    if (qualified && !managers.has(member.id)) managers.set(member.id, member)
+  }
+}
+
 async function discoverManagers(client, work) {
   const recipients = new Map()
   for (const link of work.guilds || []) {
@@ -154,14 +177,7 @@ async function deliverBookingWindowOpen(client, api, work, setupRepository) {
       )
       publicDestinations++
       if (!firstPublic) firstPublic = { discordChannelId: channel.id, discordMessageId: sent.id }
-      const members = await guild.members.fetch()
-      for (const member of members.values()) {
-        if (member.user?.bot) continue
-        const qualified = member.id === guild.ownerId
-          || member.permissions?.has(PermissionFlagsBits.Administrator)
-          || (setup.bot_manager_role_id && member.roles?.cache?.has(setup.bot_manager_role_id))
-        if (qualified && !managers.has(member.id)) managers.set(member.id, member)
-      }
+      await addQualifiedManagers(guild, setup.bot_manager_role_id, managers)
     }
     if (publicDestinations === 0) {
       return api.outcome(work, { status: "retry", errorCode: "minister_signup_channel_unavailable" })
@@ -183,9 +199,48 @@ async function deliverBookingWindowOpen(client, api, work, setupRepository) {
   }
 }
 
+async function deliverManualGuestLink(client, api, work, setupRepository) {
+  if (!setupRepository) {
+    return api.outcome(work, { status: "retry", errorCode: "bot_setup_database_unavailable" })
+  }
+  const managers = new Map()
+  try {
+    for (const guildId of work.guilds || []) {
+      const setup = await setupRepository.get(guildId)
+      if (!setup?.minister_sign_up_channel_id) continue
+      const guild = await client.guilds.fetch(guildId)
+      await addQualifiedManagers(guild, setup.bot_manager_role_id, managers)
+    }
+    if (managers.size === 0) {
+      return api.outcome(work, { status: "retry", errorCode: "booking_managers_unavailable" })
+    }
+    let first = null
+    for (const manager of managers.values()) {
+      try {
+        const dm = await manager.user.createDM()
+        const sent = await sendChannelIdempotently(
+          dm, `${work.workId}${manager.id}manual-guest`, manualGuestLinkMessage(work),
+        )
+        if (!first) first = { discordChannelId: dm.id, discordMessageId: sent.id }
+      } catch (error) {
+        if (!permanentDiscordCodes.has(error?.code)) throw error
+      }
+    }
+    return api.outcome(work, { status: "sent", ...first })
+  } catch (error) {
+    return api.outcome(work, {
+      status: permanentDiscordCodes.has(error?.code) ? "permanent_failure" : "retry",
+      errorCode: String(error?.code || "manual_guest_link_delivery_failed").slice(0, 80)
+    })
+  }
+}
+
 async function deliverWork(client, api, work, { setupRepository = null } = {}) {
   if (work.type === "booking_window_open") {
     return deliverBookingWindowOpen(client, api, work, setupRepository)
+  }
+  if (work.type === "manager_guest_link") {
+    return deliverManualGuestLink(client, api, work, setupRepository)
   }
   if (work.type === "manager_discovery") return api.recipients(work, await discoverManagers(client, work))
   if (work.type === "manager_request" && new Date(work.holdExpiresAt).getTime() <= Date.now()) {
@@ -342,5 +397,6 @@ function createBookingWebsiteRuntime({ client, api, setupRepository = null,
 }
 
 module.exports = { BUTTON_PREFIX, MEMBER_SIGNUP_PREFIX, renderWork, bookingWindowOpenMessages,
+  manualGuestLinkMessage,
   discoverManagers, deliverWork, parseApprovalButton, handleBookingApprovalInteraction,
   handleBookingMemberSignupInteraction, createBookingWebsiteRuntime }

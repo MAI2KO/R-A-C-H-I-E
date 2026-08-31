@@ -11,6 +11,7 @@ const {
   deliverWork,
   discoverManagers,
   bookingWindowOpenMessages,
+  manualGuestLinkMessage,
   handleBookingApprovalInteraction,
   parseApprovalButton,
   renderWork
@@ -139,6 +140,62 @@ test("booking-open delivery posts once with stable nonces and DMs every native m
   assert.deepEqual(sends.map(([kind]) => kind), ["public", "1", "2", "3"])
   assert.equal(sends.every(([, payload]) => payload.enforceNonce === true), true)
   assert.deepEqual(outcomes, [{ status: "sent", discordChannelId: "700", discordMessageId: "701" }])
+})
+
+test("manual guest-link delivery DMs deduplicated managers only with exact profile copy", async () => {
+  const sends = []
+  const member = (id, { admin = false, role = false } = {}) => ({
+    id, user: { bot: false, async createDM() { return { id: `dm-${id}`, async send(payload) {
+      sends.push([id, payload]); return { id: `message-${id}` }
+    } } } },
+    permissions: { has: () => admin }, roles: { cache: { has: () => role } }
+  })
+  const shared = member("1")
+  const guilds = {
+    "700": { ownerId: "1", members: { fetch: async () => new Map([
+      ["1", shared], ["2", member("2", { admin: true })], ["4", member("4")]
+    ]) } },
+    "701": { ownerId: "3", members: { fetch: async () => new Map([
+      ["1", shared], ["3", member("3", { role: true })]
+    ]) } }
+  }
+  const outcomes = []
+  await deliverWork({ guilds: { fetch: async id => guilds[id] } }, {
+    async outcome(_work, outcome) { outcomes.push(outcome) }
+  }, {
+    workId, type: "manager_guest_link", profile: "kingshot", communityCode: "1234",
+    guilds: ["700", "701"], guestUrl: "https://ks.example/book/opaque"
+  }, { setupRepository: { async get() {
+    return { minister_sign_up_channel_id: "800", bot_manager_role_id: "42" }
+  } } })
+  assert.deepEqual(sends.map(([id]) => id), ["1", "2", "3"])
+  assert.equal(sends.every(([, payload]) => payload.enforceNonce === true), true)
+  assert.equal(sends[0][1].content,
+    "New guest booking link — Kingdom 1234\n\nA new guest sign-up link has been created.\n\nhttps://ks.example/book/opaque\n\nGuest bookings require manager approval.")
+  assert.deepEqual(outcomes, [{ status: "sent", discordChannelId: "dm-1",
+    discordMessageId: "message-1" }])
+  assert.equal(manualGuestLinkMessage({ profile: "wos", communityCode: "1234", guestUrl: "url" }).content,
+    "New guest booking link — State 1234\n\nA new guest sign-up link has been created.\n\nurl\n\nGuest bookings require manager approval.")
+})
+
+test("manual guest-link retries use the same Discord-enforced nonce", async () => {
+  const payloads = []
+  const member = { id: "1", user: { bot: false, async createDM() { return {
+    id: "dm-1", async send(payload) { payloads.push(payload); return { id: "message-1" } }
+  } } }, permissions: { has: () => false }, roles: { cache: { has: () => false } } }
+  const client = { guilds: { fetch: async () => ({ ownerId: "1",
+    members: { fetch: async () => new Map([["1", member]]) } }) } }
+  const api = { async outcome() {} }
+  const work = { workId, type: "manager_guest_link", profile: "wos", communityCode: "1234",
+    guilds: ["700"], guestUrl: "https://r-a-c-h-i-e.com/book/opaque" }
+  const options = { setupRepository: { async get() {
+    return { minister_sign_up_channel_id: "800", bot_manager_role_id: null }
+  } } }
+  await deliverWork(client, api, work, options)
+  await deliverWork(client, api, work, options)
+  assert.equal(payloads.length, 2)
+  assert.equal(payloads[0].nonce, payloads[1].nonce)
+  assert.equal(payloads.every(payload => payload.enforceNonce === true), true)
 })
 
 test("manager final updates preserve request context and remove approval buttons", () => {
