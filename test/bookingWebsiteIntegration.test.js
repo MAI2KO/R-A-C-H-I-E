@@ -78,6 +78,18 @@ test("integration is disabled unless complete configuration is explicitly enable
   assert.equal(bookingWebsiteConfig({ NODE_ENV: "production", GAME_PROFILE: "wos",
     BOOKING_WEBSITE_INTEGRATION_ENABLED: "true", BOOKING_WEBSITE_BASE_URL: "https://localhost:8080",
     BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).enabled, false)
+  assert.equal(bookingWebsiteConfig({ NODE_ENV: "production", GAME_PROFILE: "wos",
+    BOOKING_WEBSITE_INTEGRATION_ENABLED: "true",
+    BOOKING_WEBSITE_BASE_URL: "https://staging.r-a-c-h-i-e.com",
+    BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).enabled, false)
+  assert.equal(bookingWebsiteConfig({ NODE_ENV: "production", GAME_PROFILE: "kingshot",
+    BOOKING_WEBSITE_INTEGRATION_ENABLED: "true",
+    BOOKING_WEBSITE_BASE_URL: "https://r-a-c-h-i-e.com",
+    BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).enabled, false)
+  assert.equal(bookingWebsiteConfig({ NODE_ENV: "production", GAME_PROFILE: "kingshot",
+    BOOKING_WEBSITE_INTEGRATION_ENABLED: "true",
+    BOOKING_WEBSITE_BASE_URL: "https://peggie.r-a-c-h-i-e.com",
+    BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).enabled, true)
   assert.equal(bookingWebsiteConfig({ GAME_PROFILE: "other", BOOKING_WEBSITE_INTEGRATION_ENABLED: "true",
     BOOKING_WEBSITE_BASE_URL: "https://bad.example", BOOKING_WEBSITE_INTEGRATION_SECRET: secret }).enabled, false)
 })
@@ -93,23 +105,17 @@ test("manager rendering is profile-correct and includes only supplied requiremen
   assert.equal(rendered.components[0].components.length, 2)
 })
 
-test("booking-open rendering has exact public buttons and copy-friendly manager links", () => {
+test("booking-open rendering is guest-only with exact resolved close time", () => {
+  const guestUrl = `https://r-a-c-h-i-e.com/book/${"g".repeat(43)}`
   const rendered = bookingWindowOpenMessages({
     profile: "wos", communityCode: "9999",
-    memberUrl: "https://wos.example/booking",
-    guestUrl: "https://wos.example/book/opaque"
+    closesAt: "2030-09-06T12:30:00Z", guestUrl
   })
   assert.equal(rendered.public.content,
-    "Minister sign-up is now open\n\nSign-up closes Sunday at 12:00 UTC.")
-  assert.deepEqual(rendered.public.components[0].components.map(button => button.data.label), [
-    "Guest sign up", "Member sign up"
-  ])
-  assert.equal(rendered.public.components[0].components[0].data.url,
-    "https://wos.example/book/opaque")
-  assert.match(rendered.public.components[0].components[1].data.custom_id,
-    /^booking-member:v1:9999$/)
-  assert.equal(rendered.manager.content,
-    "Booking links — State 9999\n\nMember sign-up:\nhttps://wos.example/booking\n\nGuest sign-up:\nhttps://wos.example/book/opaque\n\nCloses:\nSunday 12:00 UTC")
+    `Guest booking — State 9999\n\nUse this link for players who cannot access Discord.\nCopy and paste this link into in-game chat so those players can request a booking:\n${guestUrl}\n\nCloses:\n6 September 2030, 12:30 UTC`)
+  assert.deepEqual(rendered.public.components, [])
+  assert.equal(rendered.manager.content, rendered.public.content)
+  assert.doesNotMatch(rendered.public.content, /Member sign-up|Guest sign-up|\/booking/)
 })
 
 test("booking-open delivery posts once with stable nonces and DMs every native manager", async () => {
@@ -132,17 +138,52 @@ test("booking-open delivery posts once with stable nonces and DMs every native m
   }
   const outcomes = []
   await deliverWork({ guilds: { fetch: async () => guild } }, {
+    baseUrl: "https://r-a-c-h-i-e.com",
     async outcome(_work, outcome) { outcomes.push(outcome) }
   }, {
     workId, type: "booking_window_open", profile: "wos", communityCode: "9999",
     guilds: ["777"], closesAt: "2999-09-06T12:00:00Z",
-    memberUrl: "https://wos.example/booking", guestUrl: "https://wos.example/book/token"
+    guestPath: `/book/${"w".repeat(43)}`
   }, { setupRepository: { async get() {
     return { minister_sign_up_channel_id: "700", bot_manager_role_id: "42" }
   } } })
   assert.deepEqual(sends.map(([kind]) => kind), ["public", "1", "2", "3"])
   assert.equal(sends.every(([, payload]) => payload.enforceNonce === true), true)
   assert.deepEqual(outcomes, [{ status: "sent", discordChannelId: "700", discordMessageId: "701" }])
+  assert.equal(sends.every(([, payload]) => payload.components.length === 0), true)
+  assert.equal(sends.every(([, payload]) => payload.content.includes(
+    `https://r-a-c-h-i-e.com/book/${"w".repeat(43)}`)), true)
+})
+
+test("booking-open uses the Kingshot public origin and rejects missing, internal, or staging origins", async () => {
+  const token = "k".repeat(43)
+  const sent = []
+  const outcomes = []
+  const guild = { ownerId: "1", channels: { fetch: async () => ({ id: "channel", async send(payload) {
+    sent.push(payload); return { id: "message" }
+  } }) }, members: { fetch: async () => new Map() } }
+  const setupRepository = { async get() {
+    return { minister_sign_up_channel_id: "channel", bot_manager_role_id: null }
+  } }
+  const work = { workId, type: "booking_window_open", profile: "kingshot",
+    communityCode: "1234", guilds: ["777"], closesAt: "2999-09-06T12:00:00Z",
+    guestPath: `/book/${token}`, guestUrl: `https://localhost:8080/book/${token}` }
+  await deliverWork({ guilds: { fetch: async () => guild } }, {
+    baseUrl: "https://peggie.r-a-c-h-i-e.com",
+    async outcome(_work, outcome) { outcomes.push(outcome) }
+  }, work, { setupRepository })
+  assert.match(sent[0].content, new RegExp(`https://peggie\\.r-a-c-h-i-e\\.com/book/${token}`))
+  assert.doesNotMatch(sent[0].content, /localhost|railway|staging|\/booking/i)
+  for (const baseUrl of [undefined, "https://localhost:8080", "https://127.0.0.1:8080",
+    "https://web.railway.internal", "https://staging.r-a-c-h-i-e.com",
+    "https://r-a-c-h-i-e.com"]) {
+    await deliverWork({ guilds: { async fetch() { throw new Error("must not fetch") } } }, {
+      baseUrl, async outcome(_work, outcome) { outcomes.push(outcome) }
+    }, work, { setupRepository })
+  }
+  assert.equal(outcomes.slice(1).every((outcome) => outcome.status === "retry"
+    && outcome.errorCode === "booking_website_public_url_invalid"), true)
+  assert.equal(JSON.stringify(outcomes).includes(token), false)
 })
 
 test("manual guest-link delivery DMs deduplicated managers only with exact profile copy", async () => {

@@ -1,6 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require("discord.js")
 const { createHash } = require("node:crypto")
 const { discordTimestamp, utcAppointmentInstant, validInstant } = require("./discordTimeFormatting")
+const { PRODUCTION_WEBSITE_ORIGINS } = require("./bookingWebsiteClient")
 
 const BUTTON_PREFIX = "booking-approval:v1:"
 const MEMBER_SIGNUP_PREFIX = "booking-member:v1:"
@@ -79,26 +80,44 @@ function renderWork(work) {
   return { content: lines.join("\n"), components: [] }
 }
 
+function bookingWindowCloseText(value) {
+  const instant = new Date(value)
+  if (Number.isNaN(instant.getTime())) return null
+  const date = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric", month: "long", year: "numeric", timeZone: "UTC"
+  }).format(instant)
+  return `${date}, ${instant.toISOString().slice(11, 16)} UTC`
+}
+
+function authoritativeGuestUrl(api, work) {
+  const expectedOrigin = PRODUCTION_WEBSITE_ORIGINS[work.profile]
+  const suppliedPath = typeof work.guestPath === "string" ? work.guestPath : null
+  try {
+    const configured = new URL(api.baseUrl)
+    if (configured.origin !== expectedOrigin
+        || configured.username !== "" || configured.password !== ""
+        || configured.pathname.replace(/\/$/, "") !== ""
+        || configured.search !== "" || configured.hash !== ""
+        || !/^\/book\/[A-Za-z0-9_-]{43}$/.test(suppliedPath)) return null
+    return `${configured.origin}${suppliedPath}`
+  } catch {
+    return null
+  }
+}
+
 function bookingWindowOpenMessages(work) {
+  const closes = bookingWindowCloseText(work.closesAt)
+  if (!closes || !work.guestUrl) return null
+  const content = [
+    `Guest booking — ${locationLabel(work.profile)} ${work.communityCode}`,
+    "", "Use this link for players who cannot access Discord.",
+    "Copy and paste this link into in-game chat so those players can request a booking:",
+    work.guestUrl,
+    "", "Closes:", closes
+  ].join("\n")
   return Object.freeze({
-    public: {
-      content: "Minister sign-up is now open\n\nSign-up closes Sunday at 12:00 UTC.",
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setLabel("Guest sign up").setStyle(ButtonStyle.Link)
-          .setURL(work.guestUrl),
-        new ButtonBuilder().setLabel("Member sign up").setStyle(ButtonStyle.Primary)
-          .setCustomId(`${MEMBER_SIGNUP_PREFIX}${work.communityCode}`)
-      )]
-    },
-    manager: {
-      content: [
-        `Booking links — ${locationLabel(work.profile)} ${work.communityCode}`,
-        "", "Member sign-up:", work.memberUrl,
-        "", "Guest sign-up:", work.guestUrl,
-        "", "Closes:", "Sunday 12:00 UTC"
-      ].join("\n"),
-      components: []
-    }
+    public: { content, components: [] },
+    manager: { content, components: [] }
   })
 }
 
@@ -158,7 +177,11 @@ async function deliverBookingWindowOpen(client, api, work, setupRepository) {
   if (!setupRepository) {
     return api.outcome(work, { status: "retry", errorCode: "bot_setup_database_unavailable" })
   }
-  const messages = bookingWindowOpenMessages(work)
+  const guestUrl = authoritativeGuestUrl(api, work)
+  const messages = guestUrl ? bookingWindowOpenMessages({ ...work, guestUrl }) : null
+  if (!messages) {
+    return api.outcome(work, { status: "retry", errorCode: "booking_website_public_url_invalid" })
+  }
   let firstPublic = null
   let publicDestinations = 0
   const managers = new Map()
@@ -201,33 +224,22 @@ async function deliverManualGuestLink(client, api, work, setupRepository) {
   }
   const managers = new Map()
   try {
-    let configuredBase
     let suppliedPath = typeof work.guestPath === "string" ? work.guestPath : null
     let legacyGuestUrl = null
     try {
-      configuredBase = new URL(api.baseUrl)
       if (!suppliedPath && work.guestUrl) {
         legacyGuestUrl = new URL(work.guestUrl)
         suppliedPath = legacyGuestUrl.pathname
       }
     } catch {}
-    const configuredLoopback = configuredBase
-      && ["localhost", "127.0.0.1", "::1"].includes(configuredBase.hostname)
-    const validConfiguredBase = configuredBase
-      && ((configuredBase.protocol === "https:" && (!configuredLoopback || api.allowLoopback === true))
-        || (configuredBase.protocol === "http:" && configuredLoopback && api.allowLoopback === true))
-      && configuredBase.username === "" && configuredBase.password === ""
-      && configuredBase.pathname.replace(/\/$/, "") === ""
-      && configuredBase.search === "" && configuredBase.hash === ""
-    const validGuestPath = typeof suppliedPath === "string"
-      && /^\/book\/[A-Za-z0-9_-]{43}$/.test(suppliedPath)
-      && (!legacyGuestUrl || (legacyGuestUrl.search === "" && legacyGuestUrl.hash === ""))
-    if (!validConfiguredBase || !validGuestPath) {
+    const guestUrl = (!legacyGuestUrl || (legacyGuestUrl.search === "" && legacyGuestUrl.hash === ""))
+      ? authoritativeGuestUrl(api, { ...work, guestPath: suppliedPath }) : null
+    if (!guestUrl) {
       return api.outcome(work, { status: "retry", errorCode: "booking_website_public_url_invalid" })
     }
     const authoritativeWork = {
       ...work,
-      guestUrl: `${configuredBase.origin}${suppliedPath}`
+      guestUrl
     }
     for (const guildId of work.guilds || []) {
       const setup = await setupRepository.get(guildId)

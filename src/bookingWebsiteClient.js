@@ -1,6 +1,10 @@
 const { createHash, createHmac, randomUUID } = require("crypto")
 
 const PROFILES = new Set(["wos", "kingshot"])
+const PRODUCTION_WEBSITE_ORIGINS = Object.freeze({
+  wos: "https://r-a-c-h-i-e.com",
+  kingshot: "https://peggie.r-a-c-h-i-e.com"
+})
 
 function canonicalRequest({ method, path, timestamp, nonce, body }) {
   return ["v1", method.toUpperCase(), path, String(timestamp), nonce,
@@ -24,8 +28,13 @@ function bookingWebsiteConfig(env = process.env) {
   try {
     const parsed = new URL(baseUrl)
     const loopback = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)
-    safeUrl = (parsed.protocol === "https:" && (!loopback || allowLoopback))
+    const cleanOrigin = parsed.username === "" && parsed.password === ""
+      && parsed.pathname.replace(/\/$/, "") === "" && parsed.search === "" && parsed.hash === ""
+    const allowedProtocol = (parsed.protocol === "https:" && (!loopback || allowLoopback))
       || (parsed.protocol === "http:" && loopback && allowLoopback)
+    const productionOriginMatches = allowLoopback
+      || parsed.origin === PRODUCTION_WEBSITE_ORIGINS[profile]
+    safeUrl = cleanOrigin && allowedProtocol && productionOriginMatches
   } catch {}
   const secretValid = secret.length >= 32
   const enabled = requested && PROFILES.has(profile) && safeUrl && secretValid
@@ -33,7 +42,7 @@ function bookingWebsiteConfig(env = process.env) {
     : !requested ? "BOOKING_WEBSITE_INTEGRATION_ENABLED is not true"
       : !PROFILES.has(profile) ? "GAME_PROFILE must be wos or kingshot"
         : !baseUrlConfigured ? "BOOKING_WEBSITE_BASE_URL is missing"
-          : !safeUrl ? "BOOKING_WEBSITE_BASE_URL must use HTTPS (or loopback HTTP locally)"
+          : !safeUrl ? "BOOKING_WEBSITE_BASE_URL is not a valid website origin for this profile"
             : !secretConfigured ? "BOOKING_WEBSITE_INTEGRATION_SECRET is missing"
               : "BOOKING_WEBSITE_INTEGRATION_SECRET must contain at least 32 characters"
   return Object.freeze({ enabled, requested, profile, baseUrl, secret, allowLoopback,
@@ -89,4 +98,5 @@ function createBookingWebsiteClient({ config, fetchImplementation = fetch, now =
   })
 }
 
-module.exports = { canonicalRequest, signRequest, bookingWebsiteConfig, createBookingWebsiteClient }
+module.exports = { PRODUCTION_WEBSITE_ORIGINS, canonicalRequest, signRequest,
+  bookingWebsiteConfig, createBookingWebsiteClient }
