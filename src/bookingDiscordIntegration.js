@@ -445,4 +445,5 @@ function createBookingWebsiteRuntime({ client, api, setupRepository = null,
 module.exports = { BUTTON_PREFIX, MEMBER_SIGNUP_PREFIX, renderWork, bookingWindowOpenMessages,
   manualGuestLinkMessage,
   discoverManagers, deliverWork, parseApprovalButton, handleBookingApprovalInteraction,
-  handleBookingMemberSignupInteraction, createBookingWebsiteRuntime }
+  handleBookingMemberSignupInteraction, createBookingWebsiteRuntime,
+  addQualifiedManagers, authoritativeGuestUrl }

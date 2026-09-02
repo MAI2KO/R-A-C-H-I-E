@@ -94,7 +94,16 @@ function createBookingWebsiteClient({ config, fetchImplementation = fetch, now =
     outcome: (work, outcome) => post(`/api/internal/v1/discord/work/${work.workId}/outcome`, { claimToken: work.claimToken, ...outcome }),
     approval: (requestId, action, actor) => post(`/api/internal/v1/discord/approval/${requestId}/${action}`, actor),
     communitySetup: input => post("/api/internal/v1/discord/setup/community", input),
-    registration: input => post("/api/internal/v1/discord/registration", input)
+    registration: input => post("/api/internal/v1/discord/registration", input),
+    announcementRepairCandidates: sentBefore => post(
+      "/api/internal/v1/discord/announcement-repair/candidates", { sentBefore }
+    ),
+    beginAnnouncementRepair: (notificationId, sentBefore) => post(
+      `/api/internal/v1/discord/announcement-repair/${notificationId}/begin`, { sentBefore }
+    ),
+    completeAnnouncementRepair: (notificationId, message) => post(
+      `/api/internal/v1/discord/announcement-repair/${notificationId}/complete`, message
+    )
   })
 }
 

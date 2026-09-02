@@ -6,6 +6,7 @@
   "scripts": {
     "check": "node --check index.js && find src test scripts -name '*.js' -print0 | xargs -0 -n1 node --check",
     "migrate": "node src/migrate.js",
+    "repair:booking-announcements": "node scripts/repairBookingAnnouncements.js",
     "start": "node index.js",
     "test": "node --test",
     "test:live-century:wos": "node scripts/controlledCenturyVerification.js",
