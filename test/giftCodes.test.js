@@ -89,6 +89,27 @@ test("player service validates ownership inputs and does not roll back after mir
   )
 })
 
+test("new registrations cannot reach persistence with incomplete canonical identity", async () => {
+  let writes = 0
+  const service = createPlayerService({ gameProfile: "wos", repository: {
+    async registerAccount() { writes += 1 }
+  } })
+  for (const invalid of [
+    { inGameName: "", allianceAbbreviation: "TAG", locationNumber: "689",
+      discordUserId: "999" },
+    { inGameName: "Player", allianceAbbreviation: "", locationNumber: "689",
+      discordUserId: "999" },
+    { inGameName: "Player", allianceAbbreviation: "TAG", locationNumber: "",
+      discordUserId: "999" },
+    { inGameName: "Player", allianceAbbreviation: "TAG", locationNumber: "689",
+      discordUserId: "" }
+  ]) {
+    await assert.rejects(service.register({ playerId: "12345", ...invalid }),
+      error => error.name === "PlayerValidationError")
+  }
+  assert.equal(writes, 0)
+})
+
 test("authoritative primary state is mirrored independently of gift redemption", async () => {
   const mirrored = []
   const replacement = {

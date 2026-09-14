@@ -42,8 +42,8 @@ test("gift-code workers are profile scoped, concurrency safe, durable and locati
     })
     const first = await runMigrations({ pool, logger: silentLogger })
     const second = await runMigrations({ pool, logger: silentLogger })
-    assert.equal(first.applied.length, 21)
-    assert.equal(first.applied.at(-1), "021_native_bot_manager_role.sql")
+    assert.equal(first.applied.length, 22)
+    assert.equal(first.applied.at(-1), "022_active_player_account_identity_guard.sql")
     assert.deepEqual(second.applied, [])
 
     const attemptColumns = (await pool.query(
@@ -505,12 +505,13 @@ test("stored 40011 review attempts recover once without another Century request"
     await pool.query(
       `INSERT INTO player_accounts (
          id, game_profile, discord_user_id, player_id,
-         state_or_kingdom_number, gift_redemption_enabled
+         state_or_kingdom_number, in_game_name, alliance_abbreviation,
+         gift_redemption_enabled
        ) VALUES
          ('10000000-0000-4000-8000-000000000001', 'kingshot',
-          '100000000000000001', '368775177', '521', true),
+          '100000000000000001', '368775177', '521', 'Kingshot Player', 'TAG', true),
          ('10000000-0000-4000-8000-000000000002', 'wos',
-          '100000000000000002', '282021376', '689', true)`
+          '100000000000000002', '282021376', '689', 'WOS Player', 'TAG', true)`
     )
     const ks = createGiftCodeRepository(pool, "kingshot")
     const wos = createGiftCodeRepository(pool, "wos")
@@ -651,10 +652,11 @@ test("stored 40004 timeout review becomes one bounded retry and later activates 
     await pool.query(
       `INSERT INTO player_accounts (
          id, game_profile, discord_user_id, player_id,
-         state_or_kingdom_number, gift_redemption_enabled
+         state_or_kingdom_number, in_game_name, alliance_abbreviation,
+         gift_redemption_enabled
        ) VALUES (
          '30000000-0000-4000-8000-000000000001', 'wos',
-         '300000000000000001', '282021376', '689', true
+         '300000000000000001', '282021376', '689', 'WOS Player', 'TAG', true
        )`
     )
     const repository = createGiftCodeRepository(pool, "wos")
@@ -842,10 +844,11 @@ test("admin re-verifies historical WOS protocol reviews with the current worker 
     await pool.query(
       `INSERT INTO player_accounts (
          id, game_profile, discord_user_id, player_id,
-         state_or_kingdom_number, gift_redemption_enabled
+         state_or_kingdom_number, in_game_name, alliance_abbreviation,
+         gift_redemption_enabled
        ) VALUES (
          '20000000-0000-4000-8000-000000000001', 'wos',
-         '200000000000000001', '282021376', '689', true
+         '200000000000000001', '282021376', '689', 'WOS Player', 'TAG', true
        )`
     )
     const repository = createGiftCodeRepository(pool, "wos")

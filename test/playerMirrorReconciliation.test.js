@@ -4,7 +4,7 @@ const test = require("node:test")
 const { createBookingWebsiteClient } = require("../src/bookingWebsiteClient")
 const { createPlayerRepository } = require("../src/giftCodes/playerRepository")
 const { runPlayerMirrorReconciliation } = require("../src/giftCodes/playerMirrorReconciliation")
-const { parseArguments } = require("../scripts/reconcilePlayerMirrors")
+const { parseArguments, runCli } = require("../scripts/reconcilePlayerMirrors")
 
 function sourceAccount(playerId, overrides = {}) {
   return { game_profile: "wos", discord_user_id: "1234567", player_id: playerId,
@@ -83,6 +83,51 @@ test("execution uses execute only and rejects every profile crossover", async ()
     api: { ...api, profile: "kingshot" }, dryRun: false }), /profile mismatch/)
 })
 
+test("invalid-metadata owner groups are counted as skipped without stopping later owners", async () => {
+  const accounts = [sourceAccount("111111", { in_game_name: "", alliance_abbreviation: "" }),
+    sourceAccount("222222", { discord_user_id: "7654321" })]
+  const owners = []
+  const api = { profile: "wos", async playerMirrorPreview(group) {
+    owners.push(group[0].discordUserId)
+    const invalid = group[0].inGameName === ""
+    return { reconciliation: { conflict: invalid ? "invalid_account_metadata" : null,
+      mutations: 0, results: group.map(value => ({ profile: "wos",
+        discordUserId: value.discordUserId, playerId: value.playerId,
+        botIsPrimary: value.isPrimary,
+        websiteMirrorStatus: invalid ? "ambiguous/conflict" : "matching",
+        communities: invalid ? [] : ["1001"],
+        plannedAction: invalid
+          ? "skip: owner group contains invalid account metadata" : "none" })) } }
+  } }
+  const result = await runPlayerMirrorReconciliation({ profile: "wos", dryRun: true, api,
+    repository: { gameProfile: "wos", async listActiveAccountsForReconciliation() {
+      return accounts
+    } } })
+  assert.equal(owners.length, 2)
+  assert.equal(result.summary.activeBotAccounts, 2)
+  assert.equal(result.summary.skipped, 1)
+  assert.equal(result.summary.ambiguousConflicted, 1)
+  assert.equal(result.summary.matching, 1)
+})
+
+test("CLI exits 2 for completed skips and 1 for infrastructure failure", async () => {
+  const completedRuntime = { exitCode: undefined, stderr: { write() {
+    assert.fail("completed reconciliation must not write an error")
+  } } }
+  await runCli({ operation: async () => ({ summary: { skipped: 1 } }),
+    runtime: completedRuntime })
+  assert.equal(completedRuntime.exitCode, 2)
+
+  const messages = []
+  const failedRuntime = { exitCode: undefined, stderr: { write(message) {
+    messages.push(message)
+  } } }
+  await runCli({ operation: async () => { throw new Error("private account data") },
+    runtime: failedRuntime })
+  assert.equal(failedRuntime.exitCode, 1)
+  assert.deepEqual(messages, ["Player mirror reconciliation failed safely.\n"])
+})
+
 test("signed website client uses distinct preview and execute endpoints", async () => {
   const paths = []
   const client = createBookingWebsiteClient({ config: { enabled: true, profile: "wos",
@@ -95,11 +140,16 @@ test("signed website client uses distinct preview and execute endpoints", async 
   } })
   await client.playerMirrorPreview([{ playerId: "1" }])
   await client.playerMirrorExecute([{ playerId: "1" }])
+  await client.playerAccountCleanupPreview([{ accountRef: "a" }])
+  await client.playerAccountCleanupExecute([{ accountRef: "a" }])
   assert.deepEqual(paths.map(([path]) => path), [
     "/api/internal/v1/discord/player-mirrors/preview",
-    "/api/internal/v1/discord/player-mirrors/execute"
+    "/api/internal/v1/discord/player-mirrors/execute",
+    "/api/internal/v1/discord/player-account-cleanup/preview",
+    "/api/internal/v1/discord/player-account-cleanup/execute"
   ])
-  assert.ok(paths.every(([, body, headers]) => Array.isArray(body.accounts)
+  assert.ok(paths.every(([, body, headers]) => (Array.isArray(body.accounts)
+      || Array.isArray(body.candidates))
     && headers["x-booking-profile"] === "wos"
     && /^v1=/.test(headers["x-booking-signature"])))
 })

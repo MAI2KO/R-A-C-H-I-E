@@ -341,13 +341,30 @@ test("explicit release preserves canonical history and safely establishes a new 
       }),
       error => error.code === "PLAYER_OWNERSHIP_CHANGED"
     )
-    const operatorRelease = await kingshotPlayers.operatorRelease({
+    const cleanupRef = "fedcba9876543210"
+    const operatorRelease = await kingshotRepository.releaseAccount({
       playerId,
-      operatorDiscordUserId: operator,
+      performedByDiscordUserId: operator,
+      actionType: "operator_release",
       expectedAccountId: kingshotAccount.id,
-      expectedOwnerDiscordUserId: oldOwner
+      expectedOwnerDiscordUserId: oldOwner,
+      sourceMetadata: { source: "invalid_player_cleanup", accountRef: cleanupRef,
+        reasons: ["invalid_in_game_name"] }
     })
     assert.equal(operatorRelease.previousOwnerDiscordUserId, oldOwner)
+    const completedCleanup = await kingshotRepository.findCompletedPlayerCleanup(cleanupRef)
+    assert.equal(completedCleanup.account.id, kingshotAccount.id)
+    assert.equal(completedCleanup.previousOwnerDiscordUserId, oldOwner)
+    assert.deepEqual(completedCleanup.cleanupMetadata.reasons, ["invalid_in_game_name"])
+    assert.equal(await kingshotRepository.releaseAccount({
+      playerId,
+      performedByDiscordUserId: operator,
+      actionType: "operator_release",
+      expectedAccountId: kingshotAccount.id,
+      expectedOwnerDiscordUserId: oldOwner,
+      sourceMetadata: { source: "invalid_player_cleanup", accountRef: cleanupRef,
+        reasons: ["invalid_in_game_name"] }
+    }), null)
     const operatorAudit = (await pool.query(
       `SELECT * FROM player_account_ownership_history
         WHERE game_profile = 'kingshot' AND player_account_id = $1`,
@@ -356,6 +373,12 @@ test("explicit release preserves canonical history and safely establishes a new 
     assert.equal(operatorAudit.action_type, "operator_release")
     assert.equal(operatorAudit.performed_by_discord_user_id, operator)
     assert.equal(operatorAudit.previous_discord_user_id, oldOwner)
+    assert.equal((await pool.query(
+      `SELECT count(*)::int AS count FROM player_account_ownership_history
+        WHERE game_profile='kingshot' AND player_account_id=$1
+          AND source_metadata->>'accountRef'=$2`,
+      [kingshotAccount.id, cleanupRef]
+    )).rows[0].count, 1)
   } finally {
     await pool?.end().catch(() => {})
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {})

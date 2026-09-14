@@ -7,6 +7,7 @@
     "check": "node --check index.js && find src test scripts -name '*.js' -print0 | xargs -0 -n1 node --check",
     "migrate": "node src/migrate.js",
     "reconcile:player-mirrors": "node scripts/reconcilePlayerMirrors.js",
+    "audit:player-accounts": "node scripts/auditInvalidPlayerAccounts.js",
     "repair:booking-announcements": "node scripts/repairBookingAnnouncements.js",
     "start": "node index.js",
     "test": "node --test",

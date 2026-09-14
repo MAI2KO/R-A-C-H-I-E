@@ -101,6 +101,12 @@ function createBookingWebsiteClient({ config, fetchImplementation = fetch, now =
     playerMirrorExecute: accounts => post(
       "/api/internal/v1/discord/player-mirrors/execute", { accounts }
     ),
+    playerAccountCleanupPreview: candidates => post(
+      "/api/internal/v1/discord/player-account-cleanup/preview", { candidates }
+    ),
+    playerAccountCleanupExecute: candidates => post(
+      "/api/internal/v1/discord/player-account-cleanup/execute", { candidates }
+    ),
     announcementRepairCandidates: sentBefore => post(
       "/api/internal/v1/discord/announcement-repair/candidates", { sentBefore }
     ),

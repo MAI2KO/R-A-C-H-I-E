@@ -28,6 +28,131 @@ function createPlayerRepository(pool, gameProfile) {
       return result.rows
     },
 
+    async listActiveAccountsForDiagnostics() {
+      return (await pool.query(
+        `SELECT id,game_profile,discord_user_id,player_id,state_or_kingdom_number,
+                in_game_name,alliance_abbreviation,is_primary,is_active
+           FROM player_accounts
+          WHERE game_profile=$1 AND is_active=true
+          ORDER BY created_at_utc,id`,
+        [gameProfile]
+      )).rows
+    },
+
+    async findCompletedPlayerCleanup(accountRef) {
+      const historyResult = await pool.query(
+        `SELECT account.*,
+                history.previous_discord_user_id AS cleanup_previous_owner,
+                history.source_metadata AS cleanup_metadata,
+                primary_account.id AS replacement_id,
+                primary_account.discord_user_id AS replacement_discord_user_id,
+                primary_account.player_id AS replacement_player_id,
+                primary_account.is_primary AS replacement_is_primary
+           FROM player_account_ownership_history AS history
+           JOIN player_accounts AS account
+             ON account.id=history.player_account_id
+            AND account.game_profile=history.game_profile
+           LEFT JOIN player_accounts AS primary_account
+             ON primary_account.game_profile=history.game_profile
+            AND primary_account.discord_user_id=history.previous_discord_user_id
+            AND primary_account.is_active=true AND primary_account.is_primary=true
+          WHERE history.game_profile=$1 AND history.action_type='operator_release'
+            AND history.source_metadata->>'source'='invalid_player_cleanup'
+            AND history.source_metadata->>'accountRef'=$2
+            AND account.is_active=false AND account.discord_user_id IS NULL
+          ORDER BY history.changed_at_utc DESC,history.id DESC`,
+        [gameProfile, accountRef]
+      )
+      const completedAccountIds = new Set(historyResult.rows.map(item => String(item.id)))
+      if (completedAccountIds.size > 1) throw new Error("cleanup account reference is ambiguous")
+      let row = historyResult.rows[0]
+      if (!row) {
+        row = (await pool.query(
+          `SELECT account.*,
+                  NULL::varchar AS cleanup_previous_owner,
+                  account.account_metadata->'legacyCleanup' AS cleanup_metadata,
+                  NULL::uuid AS replacement_id,
+                  NULL::varchar AS replacement_discord_user_id,
+                  NULL::varchar AS replacement_player_id,
+                  NULL::boolean AS replacement_is_primary
+             FROM player_accounts AS account
+            WHERE account.game_profile=$1 AND account.is_active=false
+              AND account.discord_user_id IS NULL
+              AND account.account_metadata->'legacyCleanup'->>'source'='invalid_player_cleanup'
+              AND account.account_metadata->'legacyCleanup'->>'accountRef'=$2
+            ORDER BY account.id`,
+          [gameProfile, accountRef]
+        )).rows
+        if (row.length > 1) throw new Error("cleanup account reference is ambiguous")
+        row = row[0]
+      }
+      if (!row) return null
+      return {
+        account: row,
+        previousOwnerDiscordUserId: row.cleanup_previous_owner,
+        replacement: row.replacement_id ? {
+          id: row.replacement_id,
+          discord_user_id: row.replacement_discord_user_id,
+          player_id: row.replacement_player_id,
+          is_primary: row.replacement_is_primary
+        } : null,
+        cleanupMetadata: row.cleanup_metadata,
+        alreadyCompleted: true
+      }
+    },
+
+    async deactivateInvalidUnownedAccount({ accountId, playerId, operatorDiscordUserId,
+      accountRef, reasons }) {
+      const client = await pool.connect()
+      try {
+        await client.query("BEGIN")
+        const account = (await client.query(
+          `SELECT * FROM player_accounts
+            WHERE id=$1 AND game_profile=$2 AND player_id=$3
+              AND discord_user_id IS NULL AND is_active=true
+            FOR UPDATE`,
+          [accountId, gameProfile, playerId]
+        )).rows[0] || null
+        if (!account) { await client.query("ROLLBACK"); return null }
+        await client.query(
+          `UPDATE gift_code_redemptions
+              SET status=CASE WHEN status IN ('queued','claimed','rate_limited','temporary_error')
+                    THEN 'disabled' ELSE status END,
+                  retryable=false,next_retry_at_utc=NULL,claimed_by_worker=NULL,
+                  claimed_at_utc=NULL,claimed_until_utc=NULL,
+                  notification_status=CASE WHEN notification_status='sent' THEN 'sent'
+                    ELSE 'suppressed' END,updated_at_utc=now()
+            WHERE game_profile=$1 AND player_account_id=$2`,
+          [gameProfile, account.id]
+        )
+        await client.query(
+          `UPDATE player_account_guilds
+              SET gift_code_enrolled=false,gift_code_updated_at_utc=now()
+            WHERE game_profile=$1 AND player_account_id=$2`,
+          [gameProfile, account.id]
+        )
+        const updated = (await client.query(
+          `UPDATE player_accounts
+              SET is_active=false,is_primary=false,gift_redemption_enabled=false,
+                  account_metadata=jsonb_set(account_metadata,'{legacyCleanup}',
+                    jsonb_build_object('action','deactivate_invalid_unowned',
+                      'source','invalid_player_cleanup','accountRef',$5::text,
+                      'reasons',$6::jsonb,
+                      'performedByDiscordUserId',$4::text,'at',now()),true),
+                  updated_at_utc=now()
+            WHERE id=$1 AND game_profile=$2 AND player_id=$3
+            RETURNING *`,
+          [account.id, gameProfile, playerId, operatorDiscordUserId,
+            accountRef, JSON.stringify(reasons)]
+        )).rows[0]
+        await client.query("COMMIT")
+        return updated
+      } catch (error) {
+        await client.query("ROLLBACK")
+        throw error
+      } finally { client.release() }
+    },
+
     async registerAccount({ discordUserId, playerId, inGameName, locationNumber,
       allianceAbbreviation, guildId = null }) {
       const client = await pool.connect()
@@ -265,6 +390,10 @@ function createPlayerRepository(pool, gameProfile) {
               WHERE id = (
                 SELECT id FROM player_accounts
                  WHERE game_profile = $1 AND discord_user_id = $2 AND is_active = true
+                   AND state_or_kingdom_number ~ '^[0-9]{1,10}$'
+                   AND in_game_name IS NOT NULL AND in_game_name = btrim(in_game_name)
+                   AND in_game_name <> '' AND in_game_name !~ '[[:cntrl:]]'
+                   AND alliance_abbreviation ~ '^[A-Z0-9]{3}$'
                  ORDER BY created_at_utc, id LIMIT 1
               )
               RETURNING *`,
@@ -286,7 +415,8 @@ function createPlayerRepository(pool, gameProfile) {
       performedByDiscordUserId,
       actionType,
       expectedOwnerDiscordUserId = null,
-      expectedAccountId = null
+      expectedAccountId = null,
+      sourceMetadata = { source: "discord" }
     }) {
       if (!["release", "operator_release"].includes(actionType)) {
         throw new Error("Unsupported ownership release action")
@@ -389,7 +519,7 @@ function createPlayerRepository(pool, gameProfile) {
            ) VALUES ($1, $2, $3, $4, NULL, $5, $6, $7)`,
           [
             crypto.randomUUID(), gameProfile, account.id, previousOwner,
-            actionType, performedByDiscordUserId, { source: "discord" }
+            actionType, performedByDiscordUserId, sourceMetadata
           ]
         )
         let replacement = null
@@ -400,6 +530,10 @@ function createPlayerRepository(pool, gameProfile) {
               WHERE id = (
                 SELECT id FROM player_accounts
                  WHERE game_profile = $1 AND discord_user_id = $2 AND is_active = true
+                   AND state_or_kingdom_number ~ '^[0-9]{1,10}$'
+                   AND in_game_name IS NOT NULL AND in_game_name = btrim(in_game_name)
+                   AND in_game_name <> '' AND in_game_name !~ '[[:cntrl:]]'
+                   AND alliance_abbreviation ~ '^[A-Z0-9]{3}$'
                  ORDER BY created_at_utc, id LIMIT 1
               )
               RETURNING *`,

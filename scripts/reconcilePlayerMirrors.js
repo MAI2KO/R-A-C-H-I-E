@@ -33,14 +33,21 @@ async function run({ env = process.env, args = process.argv.slice(2), write = co
   }
 }
 
-if (require.main === module) {
-  require("dotenv").config()
-  run().then(result => {
-    if (result.summary.skipped > 0) process.exitCode = 2
-  }).catch(error => {
-    process.stderr.write(`Player mirror reconciliation failed safely: ${error.message}\n`)
-    process.exitCode = 1
-  })
+async function runCli({ operation = run, runtime = process } = {}) {
+  try {
+    const result = await operation()
+    runtime.exitCode = result.summary.skipped > 0 ? 2 : 0
+    return result
+  } catch {
+    runtime.stderr.write("Player mirror reconciliation failed safely.\n")
+    runtime.exitCode = 1
+    return null
+  }
 }
 
-module.exports = { parseArguments, run }
+if (require.main === module) {
+  require("dotenv").config()
+  runCli()
+}
+
+module.exports = { parseArguments, run, runCli }
