@@ -27,6 +27,20 @@ function duplicatePlayerError(error) {
 function createPlayerService({ repository, gameProfile, mirror = createNoopPlayerMirror(), logger = console }) {
   const terms = profileTerminology(gameProfile)
 
+  async function mirrorPromotedPrimary(result) {
+    if (!result?.replacement || typeof mirror.mirrorPrimary !== "function") return result
+    try {
+      await mirror.mirrorPrimary(result.replacement)
+    } catch (error) {
+      logger.warn(`[Player accounts] Native booking primary sync failed for ${gameProfile}: ${error?.code || "error"}`)
+      throw new PlayerAccountError(
+        "BOOKING_REGISTRATION_SYNC_FAILED",
+        "Your account change was saved, but the primary booking character could not be synchronized. Run `/register` for the promoted character before booking."
+      )
+    }
+    return result
+  }
+
   return {
     terms,
 
@@ -104,7 +118,7 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
       if (!result) {
         throw new PlayerAccountError("PLAYER_NOT_FOUND", `No active ${terms.playerLabel} was found.`)
       }
-      return result
+      return mirrorPromotedPrimary(result)
     },
 
     async release({ discordUserId, playerId }) {
@@ -122,7 +136,7 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
           `You are no longer the current owner of that ${terms.playerLabel}.`
         )
       }
-      return result
+      return mirrorPromotedPrimary(result)
     },
 
     async operatorLookup({ playerId }) {
@@ -151,7 +165,7 @@ function createPlayerService({ repository, gameProfile, mirror = createNoopPlaye
           `That ${terms.playerLabel}'s ownership changed before confirmation. Start again.`
         )
       }
-      return result
+      return mirrorPromotedPrimary(result)
     }
   }
 }

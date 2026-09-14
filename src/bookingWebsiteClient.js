@@ -95,6 +95,12 @@ function createBookingWebsiteClient({ config, fetchImplementation = fetch, now =
     approval: (requestId, action, actor) => post(`/api/internal/v1/discord/approval/${requestId}/${action}`, actor),
     communitySetup: input => post("/api/internal/v1/discord/setup/community", input),
     registration: input => post("/api/internal/v1/discord/registration", input),
+    playerMirrorPreview: accounts => post(
+      "/api/internal/v1/discord/player-mirrors/preview", { accounts }
+    ),
+    playerMirrorExecute: accounts => post(
+      "/api/internal/v1/discord/player-mirrors/execute", { accounts }
+    ),
     announcementRepairCandidates: sentBefore => post(
       "/api/internal/v1/discord/announcement-repair/candidates", { sentBefore }
     ),

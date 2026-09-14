@@ -574,7 +574,21 @@ async function handleGiftCodePanelInteraction(interaction, {
             playerId: account.player_id,
             inGameName: account.in_game_name,
             communityCode: account.state_or_kingdom_number,
-            allianceAbbreviation: account.alliance_abbreviation
+            allianceAbbreviation: account.alliance_abbreviation,
+            isPrimary: account.is_primary === true
+          })
+        },
+        async mirrorPrimary(account) {
+          if (!bookingApi?.registration) {
+            const error = new Error("native booking registration integration unavailable")
+            error.code = "BOOKING_REGISTRATION_UNAVAILABLE"
+            throw error
+          }
+          return bookingApi.registration({
+            discordUserId: account.discord_user_id,
+            playerId: account.player_id,
+            isPrimary: true,
+            primarySyncOnly: true
           })
         }
       }

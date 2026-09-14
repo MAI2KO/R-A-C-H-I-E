@@ -89,6 +89,41 @@ test("player service validates ownership inputs and does not roll back after mir
   )
 })
 
+test("authoritative primary state is mirrored independently of gift redemption", async () => {
+  const mirrored = []
+  const replacement = {
+    player_id: "22222", discord_user_id: "999", is_primary: true,
+    gift_redemption_enabled: false
+  }
+  const service = createPlayerService({
+    gameProfile: "wos",
+    repository: {
+      async registerAccount() {
+        return { player_id: "11111", discord_user_id: "999", is_primary: false,
+          gift_redemption_enabled: true }
+      },
+      async deactivateAccount() {
+        return { account: { player_id: "11111", is_primary: false }, replacement }
+      }
+    },
+    mirror: {
+      async mirrorRegistration(account) { mirrored.push({ kind: "registration", account }) },
+      async mirrorPrimary(account) { mirrored.push({ kind: "primary", account }) }
+    },
+    logger: { warn() {} }
+  })
+  await service.register({
+    discordUserId: "999", playerId: "11111", inGameName: "Alt",
+    locationNumber: "689", allianceAbbreviation: "HWC"
+  })
+  await service.remove({ discordUserId: "999", playerId: "11111" })
+  assert.equal(mirrored[0].account.is_primary, false)
+  assert.equal(mirrored[0].account.gift_redemption_enabled, true)
+  assert.equal(mirrored[1].kind, "primary")
+  assert.equal(mirrored[1].account.player_id, "22222")
+  assert.equal(mirrored[1].account.gift_redemption_enabled, false)
+})
+
 function playerInteraction(gameProfile, subcommand, values = {}) {
   return {
     commandName: "player",

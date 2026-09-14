@@ -1380,6 +1380,15 @@ test("new player panel performs registration and complete identity updates throu
   ])
 })
 
+test("trusted booking mirror payload carries authoritative primary without coupling auto-redeem", () => {
+  const source = require("node:fs").readFileSync(
+    require.resolve("../src/giftCodes/discord/panelInteractions"), "utf8"
+  )
+  assert.match(source, /isPrimary: account\.is_primary === true/)
+  assert.match(source, /primarySyncOnly: true/)
+  assert.doesNotMatch(source, /isPrimary:\s*account\.gift_redemption_enabled/)
+})
+
 test("persistent Register Character button launches the canonical player registration flow", async () => {
   const localAccounts = []
   const dependencies = panelDependencies({ accounts: localAccounts })

@@ -15,6 +15,19 @@ function createPlayerRepository(pool, gameProfile) {
   return {
     gameProfile,
 
+    async listActiveAccountsForReconciliation() {
+      const result = await pool.query(
+        `SELECT game_profile,discord_user_id,player_id,state_or_kingdom_number,
+                in_game_name,alliance_abbreviation,is_primary,is_active,
+                gift_redemption_enabled
+           FROM player_accounts
+          WHERE game_profile=$1 AND is_active=true AND discord_user_id IS NOT NULL
+          ORDER BY discord_user_id,is_primary DESC,created_at_utc,id`,
+        [gameProfile]
+      )
+      return result.rows
+    },
+
     async registerAccount({ discordUserId, playerId, inGameName, locationNumber,
       allianceAbbreviation, guildId = null }) {
       const client = await pool.connect()
